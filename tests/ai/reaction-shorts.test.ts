@@ -228,3 +228,62 @@ describe("planShortExportFolder", () => {
     })).toThrow(/absolute path/);
   });
 });
+
+describe("readable caption splitting", () => {
+  // Opening of a real conference welcome speech (Whisper word timings, place names changed). It used to
+  // render as one 139-character cue held for 10.6 s.
+  const speech = [
+    ["It", 24.38, 24.94], ["is", 24.94, 25.2], ["my", 25.2, 25.44], ["pleasure", 25.44, 25.78], ["to", 25.78, 25.96],
+    ["be", 25.96, 26.14], ["with", 26.14, 26.36], ["you", 26.36, 26.48], ["this", 26.48, 26.76], ["morning", 26.76, 27.2],
+    ["and", 27.2, 27.86], ["extend", 27.86, 28.16], ["a", 28.16, 28.52], ["very", 28.52, 28.8], ["warm", 28.8, 29.08],
+    ["welcome", 29.08, 29.42], ["to", 29.42, 29.72], ["all", 29.72, 29.84], ["of", 29.84, 29.96], ["you", 29.96, 30.2],
+    ["in", 30.2, 30.36], ["Lisbon", 30.36, 30.68], ["and", 30.68, 31.18], ["Porto,", 31.18, 31.58], ["I'd", 31.58, 31.78],
+    ["like", 31.78, 32.06], ["to", 32.06, 32.3], ["say", 32.3, 32.48], ["Bom", 32.48, 33.6], ["dia.", 33.6, 34.94],
+  ].map(([text, start, end]) => ({ text: String(text), start_seconds: Number(start), end_seconds: Number(end), speaker_label: "Host" }));
+  const input = {
+    word_timeline: { source_project_item_id: "000f426c", transcript_revision: `sha256:${"b".repeat(64)}`, words: speech },
+    speaker_palette: [{ speaker_label: "Host", color: "#F2A900" }],
+    frame_rate: 25,
+  };
+
+  it("splits a long sentence into readable cues that keep every word in order", () => {
+    const plan = planReactionCaptions(input);
+    expect(plan.cues.length).toBeGreaterThan(1);
+    for (const cue of plan.cues) {
+      expect(cue.text.length).toBeLessThanOrEqual(84);
+      expect(cue.end_seconds - cue.start_seconds).toBeLessThanOrEqual(6 + 1e-6);
+    }
+    const rejoined = plan.cues.map((cue) => cue.text).join(" ").toLowerCase().replace(/[^a-z' ]/g, "");
+    expect(rejoined.split(/\s+/)).toEqual(speech.map((w) => w.text.toLowerCase().replace(/[^a-z']/g, "")));
+    expect(plan.cues[0].start_seconds).toBe(24.38);
+    expect(plan.cues[plan.cues.length - 1].end_seconds).toBe(34.94);
+  });
+
+  it("balances parts and keeps mid-sentence casing", () => {
+    const texts = planReactionCaptions(input).cues.map((cue) => cue.text);
+    expect(texts).toEqual([
+      "It is my pleasure to be with you this morning and extend a very warm welcome",
+      "to all of you in Lisbon and Porto, I'd like to say Bom dia.",
+    ]);
+  });
+
+  it("breaks after a clause when one falls near the balance point", () => {
+    let t = 87.66;
+    const words = "The region is urbanizing now, and I think it is imperative to figure out how to implement these solutions quickly."
+      .split(" ")
+      .map((text) => ({ text, start_seconds: (t += 0.3) - 0.3, end_seconds: t - 0.05, speaker_label: "Host" }));
+    const plan = planReactionCaptions({
+      ...input,
+      word_timeline: { ...input.word_timeline, words },
+      max_cue_chars: 64,
+      max_cue_seconds: 30,
+    });
+    expect(plan.cues[0].text).toBe("The region is urbanizing now, and I think it is imperative");
+    expect(plan.cues[1].text).toBe("to figure out how to implement these solutions quickly.");
+  });
+
+  it("honors custom limits and rejects out-of-range values", () => {
+    expect(planReactionCaptions({ ...input, max_cue_chars: 400, max_cue_seconds: 30 }).cues).toHaveLength(1);
+    expect(() => planReactionCaptions({ ...input, max_cue_chars: 5 })).toThrow(/max_cue_chars/);
+  });
+});

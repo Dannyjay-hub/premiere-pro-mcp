@@ -307,7 +307,7 @@ export function getCompetitorGapTools(
             if (!catalog.ok) return __error(catalog.error + " Crop was not added.");
             var cropEffect = null;
             for (i = 0; i < catalog.effects.numItems; i++) {
-              if (catalog.effects[i].name === "Crop") { cropEffect = catalog.effects[i]; break; }
+              if (catalog.effects[i].name === "Crop") { cropEffect = __qeEffectObject("video", catalog.effects[i]); break; }
             }
             if (!cropEffect) return __error("The legacy QE video-effect catalog does not contain Crop. No effect was added.");
             var qeSeq = qe.project.getActiveSequence();
@@ -767,7 +767,7 @@ export function getCompetitorGapTools(
               var component = clip.components[ci];
               if (!component || (component.displayName !== componentName && component.matchName !== matchName)) continue;
               for (var pi = 0; pi < component.properties.numItems; pi++) {
-                if (component.properties[pi].displayName === propertyName) return component.properties[pi];
+                if (__propertyNameMatches(component.properties[pi].displayName, propertyName)) return component.properties[pi];
               }
             }
             return null;
@@ -798,6 +798,9 @@ export function getCompetitorGapTools(
                   resolved.old.position = resolved.position.getValue();
                   if (!resolved.old.position || resolved.old.position.length < 2) return __error("Motion Position was unreadable on batch item " + i + ". No batch mutation was attempted.");
                 } catch (positionReadError) { return __error("Position could not be read on batch item " + i + ". No batch mutation was attempted."); }
+                // position_x/y are sequence pixels; Premiere 25.2 stores Position normalized.
+                resolved.positionScale = __motionPointScale(resolved.position, __sequenceFrameSize(app.project.activeSequence));
+                if (!resolved.positionScale) return __error("The sequence frame size is unreadable on batch item " + i + ". No batch mutation was attempted.");
               }
               if (spec.rotation !== null) {
                 resolved.rotation = findProperty(found.clip, "Motion", "AE.ADBE Motion", "Rotation");
@@ -824,8 +827,8 @@ export function getCompetitorGapTools(
               if (update.opacity) update.opacity.setValue(spec.opacity, true);
               if (update.scale) update.scale.setValue(spec.scale, true);
               if (update.position) update.position.setValue([
-                spec.positionX === null ? update.old.position[0] : spec.positionX,
-                spec.positionY === null ? update.old.position[1] : spec.positionY
+                spec.positionX === null ? update.old.position[0] : spec.positionX * update.positionScale.x,
+                spec.positionY === null ? update.old.position[1] : spec.positionY * update.positionScale.y
               ], true);
               if (update.rotation) update.rotation.setValue(spec.rotation, true);
             } catch (writeError) {
@@ -838,8 +841,8 @@ export function getCompetitorGapTools(
             try {
               if (update.position) {
                 var actualPosition = update.position.getValue();
-                var expectedX = spec.positionX === null ? update.old.position[0] : spec.positionX;
-                var expectedY = spec.positionY === null ? update.old.position[1] : spec.positionY;
+                var expectedX = spec.positionX === null ? update.old.position[0] : spec.positionX * update.positionScale.x;
+                var expectedY = spec.positionY === null ? update.old.position[1] : spec.positionY * update.positionScale.y;
                 if (!actualPosition || Math.abs(Number(actualPosition[0]) - Number(expectedX)) > 0.0001 || Math.abs(Number(actualPosition[1]) - Number(expectedY)) > 0.0001) mismatch = true;
               }
             } catch (readPositionError) { mismatch = true; }

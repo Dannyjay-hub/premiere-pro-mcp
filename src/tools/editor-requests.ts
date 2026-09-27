@@ -102,7 +102,7 @@ const SNAPSHOT_HELPER = `
             outPointSeconds: __ticksToSeconds(clip.outPoint.ticks),
             enabled: true
           };
-          try { info.enabled = !clip.isDisabled(); } catch (disabledError) {}
+          try { info.enabled = !__isClipDisabled(clip); } catch (disabledError) {}
           if (includeSpeed) { try { info.speed = clip.getSpeed(); } catch (speedError) {} }
           try { if (clip.projectItem) info.sourceProjectItemId = clip.projectItem.nodeId; } catch (sourceError) {}
           clips.push(info);
@@ -383,7 +383,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
                 var start = __ticksToSeconds(clip.start.ticks);
                 var end = __ticksToSeconds(clip.end.ticks);
                 var duration = end - start;
-                if (!includeDisabled) { try { if (clip.isDisabled()) continue; } catch (disabledError) {} }
+                if (!includeDisabled) { try { if (__isClipDisabled(clip)) continue; } catch (disabledError) {} }
                 if (nameContains !== null && String(clip.name).toLowerCase().indexOf(nameContains) === -1) continue;
                 if (nameRegex !== null && !nameRegex.test(String(clip.name))) continue;
                 if (minDuration !== null && duration < minDuration - 0.0001) continue;
@@ -517,10 +517,14 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
 
           if (action === "start") target = 0;
           else if (action === "end") target = endTicks;
-          else if (action === "in_point") { target = __secondsToTicks(Number(seq.getInPoint())); }
-          else if (action === "out_point") { target = __secondsToTicks(Number(seq.getOutPoint())); }
-          else if (action === "work_area_in") { target = parseFloat(seq.getWorkAreaInPoint()); }
-          else if (action === "work_area_out") { target = parseFloat(seq.getWorkAreaOutPoint()); }
+          // Sequence point getters return seconds (-400000 when unset), not ticks.
+          else if (action === "in_point" || action === "out_point" || action === "work_area_in" || action === "work_area_out") {
+            var pointSeconds = action === "in_point" ? __sequencePointSeconds(seq.getInPoint())
+              : (action === "out_point" ? __sequencePointSeconds(seq.getOutPoint())
+              : (action === "work_area_in" ? __workAreaSeconds(seq.getWorkAreaInPoint()) : __workAreaSeconds(seq.getWorkAreaOutPoint())));
+            if (pointSeconds === null) detail = "The sequence has no " + action.replace(/_/g, " ") + " set";
+            else target = __secondsToTicks(pointSeconds);
+          }
           else if (action === "next_edit") { target = nextAfter(collectEdits()); if (target === null) detail = "No edit point after the playhead"; }
           else if (action === "previous_edit") { target = previousBefore(collectEdits()); if (target === null) detail = "No edit point before the playhead"; }
           else if (action === "next_marker") { target = nextAfter(collectMarkers()); if (target === null) detail = "No marker after the playhead"; }
@@ -664,7 +668,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           }
           checkpoints.sort(function(left, right) {
             var l = left.createdUtc || ""; var r = right.createdUtc || "";
-            return l < r ? 1 : l > r ? -1 : 0;
+            return l < r ? 1 : (l > r ? -1 : 0);
           });
           return __result({ count: checkpoints.length, filteredTo: originalName, checkpoints: checkpoints });
         `);
@@ -750,7 +754,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
               enabled: true,
               speed: 100
             };
-            try { info.enabled = !clip.isDisabled(); } catch (disabledError) {}
+            try { info.enabled = !__isClipDisabled(clip); } catch (disabledError) {}
             try { info.speed = Number(clip.getSpeed()) * 100; } catch (speedError) {}
             try {
               var item = clip.projectItem;

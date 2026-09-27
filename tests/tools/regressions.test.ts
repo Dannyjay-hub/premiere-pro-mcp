@@ -98,6 +98,34 @@ describe("real-host social sequence regressions", () => {
     expect(script).toContain("id: reframed.sequenceID");
   });
 
+  it("resizes the reframed sequence to the requested frame (live 25.2: 9:16 of 1080p came out 607x1080)", async () => {
+    const run = async (accept: boolean) => {
+      const settings = { videoFrameWidth: 607, videoFrameHeight: 1080 };
+      const reframed = {
+        name: "Vertical",
+        sequenceID: "v-1",
+        frameSizeHorizontal: 607,
+        frameSizeVertical: 1080,
+        getSettings: () => ({ ...settings }),
+        setSettings: (next: typeof settings) => { if (accept) Object.assign(settings, next); },
+      };
+      const script = await scriptFor(sequence.auto_reframe_sequence, { target_width: 1080, target_height: 1920, new_name: "Vertical" });
+      const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+        app: { project: { activeSequence: { name: "Recap", autoReframeSequence: () => reframed } } },
+      })));
+      return { result, settings };
+    };
+    const ok = await run(true);
+    expect(ok.result).toMatchObject({
+      success: true,
+      data: { width: 1080, height: 1920, premiereFrameSize: "607x1080", resizedToRequest: true, verified: true },
+    });
+    expect(ok.settings).toEqual({ videoFrameWidth: 1080, videoFrameHeight: 1920 });
+    await expect(run(false)).resolves.toMatchObject({
+      result: { success: false, error: expect.stringContaining("did not accept the requested 1080x1920"), data: { id: "v-1" } },
+    });
+  });
+
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
     expect(setScript).toContain("seq.setInPoint(0)");
@@ -106,7 +134,7 @@ describe("real-host social sequence regressions", () => {
     expect(setScript).toContain("Math.abs(observedOut - 60)");
 
     const getScript = await scriptFor(playhead.get_sequence_in_out_points, {});
-    expect(getScript).toContain("outSeconds: Number(seq.getOutPoint())");
+    expect(getScript).toContain("__sequencePointSeconds(seq.getOutPoint())");
     expect(getScript).not.toContain("__ticksToSeconds(seq.getOutPoint())");
   });
 
@@ -202,13 +230,18 @@ describe("issue #7 — no calls to nonexistent ExtendScript methods", () => {
     expect(script).not.toContain("Proxy creation started");
   });
 
-  it("manage_proxies 'toggle' reports the state it actually set", async () => {
+  it("manage_proxies 'toggle' flips Premiere's app-level proxy setting and reads it back (live: app.project.isProxyEnabled is not a function)", async () => {
+    let enabled = 0;
     const script = await scriptFor(exportTools.manage_proxies, { item_id: "clip1", action: "toggle" });
-
-    // The old code reported !isProxyEnabled() *after* flipping it — i.e. the inverse
-    // of the truth, every single time.
-    expect(script).toContain("proxiesEnabled: enabled");
-    expect(script).not.toContain("proxiesEnabled: !app.project.isProxyEnabled()");
+    const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: {
+        project: { rootItem: { children: { numItems: 1, 0: { nodeId: "clip1", name: "Clip", type: 1 } } } },
+        getEnableProxies: () => enabled,
+        setEnableProxies: (value: number) => { enabled = value; },
+      },
+    })));
+    expect(result).toMatchObject({ success: true, data: { proxiesEnabled: true, verified: true } });
+    expect(enabled).toBe(1);
   });
 
   it("get_encoder_presets never calls encoder.getFormatList()", async () => {
@@ -307,8 +340,8 @@ describe("PR #3 follow-ups — color_correct and export_sequence", () => {
     const script = await scriptFor(exportTools.export_sequence, { output_path: "/tmp/out.mp4" });
 
     expect(script).toContain("var exportResult = seq.exportAsMediaDirect(");
-    expect(script).toContain('if (exportResult === false) return __error("Premiere rejected the sequence export.")');
-    expect(script).toContain('if (!outputFile.exists) return __error("Premiere did not write the requested export file.")');
+    expect(script).toContain('if (exportResult === false) return __error("Premiere rejected the sequence export; nothing was written to " + outputPath + ".")');
+    expect(script).toContain("if (!written.exists || written.length <= 0)");
     expect(script).toContain("verified: true");
   });
 });
@@ -350,8 +383,21 @@ describe("issue #189 — Premiere 26.3 capability boundaries and macOS presets",
     expect(helpers).toContain("function __adobeApplicationResourceFolder(");
     expect(helpers).toContain('"/Contents/"');
     expect(helpers).toContain('"MediaIO/systempresets"');
-    expect(code).toContain('__presetSearchText("H.264")');
-    expect(code).toContain("__presetSearchText(p.name)");
+    expect(code).toContain("__collectAllPresets()");
+  });
+
+  it("labels each preset's real container and ranks format matches first (live: 'H264 ...' presets in the MooV folder write .mov)", async () => {
+    const ame = "/Applications/Adobe Media Encoder 2025/Adobe Media Encoder 2025.app/Contents/MediaIO/systempresets";
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { presets: [
+      { name: "H264 Match Source - High bitrate", path: `${ame}/3F3F3F3F_4D6F6F56/H264 Match Source - High bitrate.epr`, format: "3F3F3F3F_4D6F6F56" },
+      { name: "Match Source - High bitrate", path: `${ame}/4E49434B_48323634/Match Source - High bitrate.epr`, format: "4E49434B_48323634" },
+      { name: "Waveform Audio 48kHz 16-bit", path: `${ame}/3F3F3F3F_57415645/Waveform Audio 48kHz 16-bit.epr`, format: "3F3F3F3F_57415645" },
+    ] } });
+    const result = await trackTargeting.get_encoder_presets.handler({ format: "H.264" }) as { success: boolean; data: { presets: Array<Record<string, unknown>> } };
+    expect(result.data.presets.map((p) => [p.name, p.formatLabel, p.extension])).toEqual([
+      ["Match Source - High bitrate", "H.264 (MP4)", "mp4"],
+      ["H264 Match Source - High bitrate", "QuickTime (MOV)", "mov"],
+    ]);
   });
 
   it("never calls unsupported speed setters", async () => {
@@ -572,6 +618,25 @@ describe("issue #335 — pixel aspect ratio must fail closed on unsupported CEP 
     })).resolves.toMatchObject({
       success: false,
       error: expect.stringContaining("could not apply the sequence pixel-aspect-ratio update"),
+    });
+  });
+
+  it("accepts a request that already matches Premiere's read-only num:den ratio (live 25.2)", async () => {
+    const readOnly: Record<string, string> = {};
+    Object.defineProperty(readOnly, "videoPixelAspectRatio", {
+      get: () => "1:1",
+      set: () => { throw new TypeError("Cannot set property videoPixelAspectRatio"); },
+    });
+    const setSettings = vi.fn();
+    const sequence = { name: "Square", getSettings: () => readOnly, setSettings };
+    await expect(executePixelAspectRatioScript(sequence, "1.0")).resolves.toMatchObject({
+      success: true,
+      data: { alreadySet: true, hostRatio: "1:1", verified: true },
+    });
+    expect(setSettings).not.toHaveBeenCalled();
+    await expect(executePixelAspectRatioScript(sequence, "1.4222")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("rejected the sequence pixel-aspect-ratio update"),
     });
   });
 
@@ -815,26 +880,35 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
   });
 
-  it("passes work area before removal and never passes undefined Time values", async () => {
-    const wholeFile = await scriptFor(exports.encode_file, {
-      input_path: "/tmp/source.mov",
-      output_path: "/tmp/render.mp4",
-      preset_path: "/tmp/preset.epr",
-    });
-    const range = await scriptFor(exports.encode_file, {
-      input_path: "/tmp/source.mov",
-      output_path: "/tmp/render.mp4",
-      preset_path: "/tmp/preset.epr",
-      in_seconds: 1,
-      out_seconds: 2,
-    });
-
-    expect(wholeFile).toContain("var srcIn = new Time()");
-    expect(wholeFile).toContain("var workArea = 0");
-    expect(range).toContain("var workArea = 1");
-    expect(range).toContain("workArea,");
-    expect(range).not.toContain("var srcIn = undefined");
-    expect(range).toContain("var jobId = app.encoder.encodeFile");
+  it("uses the documented encodeFile signature without a workArea argument (live: 'Illegal Parameter type')", async () => {
+    const run = async (args: Record<string, unknown>) => {
+      const calls: unknown[][] = [];
+      const script = await scriptFor(exports.encode_file, { input_path: "/tmp/source.mov", output_path: "/tmp/render.mp4", preset_path: "/tmp/preset.epr", ...args });
+      function Time(this: { seconds: number }) { this.seconds = 0; }
+      function File(this: { exists: boolean; fsName: string; parent: { exists: boolean } }, path: string) { this.exists = true; this.fsName = path; this.parent = { exists: true }; }
+      const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+        Time, File,
+        app: {
+          project: { path: "/tmp/p.prproj" },
+          encoder: {
+            launchEncoder: () => true,
+            startBatch: () => true,
+            encodeFile: (...callArgs: unknown[]) => {
+              calls.push(callArgs);
+              if (typeof callArgs[3] !== "boolean" || (callArgs.length > 4 && !(callArgs[4] instanceof Time))) throw new Error("Illegal Parameter type");
+              return "job-1";
+            },
+          },
+        },
+      })));
+      return { result, calls };
+    };
+    const whole = await run({});
+    expect(whole.result).toMatchObject({ success: true, data: { jobId: "job-1", range: "entire" } });
+    expect(whole.calls[0]).toHaveLength(4);
+    const ranged = await run({ in_seconds: 24.4, out_seconds: 34.9 });
+    expect(ranged.result).toMatchObject({ success: true, data: { range: { inSeconds: 24.4, outSeconds: 34.9 } } });
+    expect(ranged.calls[0]).toHaveLength(6);
   });
 });
 
@@ -849,10 +923,8 @@ describe("issue #615 — encode_file passes natively typed arguments", () => {
     expect(script).toContain('var presetFile = new File("/tmp/preset.epr")');
     expect(script).toContain("if (!presetFile.exists) return __error");
     expect(script).toContain("var removeUponCompletion = true;");
-    expect(script).toMatch(
-      /encodeFile\(\s*String\(inputFile\.fsName\),\s*String\(outputFile\.fsName\),\s*String\(presetFile\.fsName\),\s*workArea,\s*removeUponCompletion,\s*srcIn,\s*srcOut\s*\)/,
-    );
-    expect(script).not.toMatch(/workArea,\s*[01],/);
+    expect(script).toContain("String(inputFile.fsName), String(outputFile.fsName), String(presetFile.fsName), removeUponCompletion)");
+    expect(script).not.toMatch(/,\s*workArea,/);
   });
 
   it("emits a false Boolean when remove_on_completion is false, with or without a range", async () => {
@@ -1008,7 +1080,7 @@ describe("QE still frames are addressed by timecode and macOS bundles are resolv
 
     expect(helpers).toContain("function __qeTimecodeForTicks(");
     expect(helpers).toContain("getFormatted(fr, displayFormat)");
-    expect(helpers).toContain("fn.call(qeSeq, at.timecode, basePath)");
+    expect(helpers).toContain("fn.call(qeSeq, at.timecode, qeBase)");
     expect(helpers).not.toContain("fn.call(qeSeq, outputPath, w, h)");
     // The timecode argument alone selects the frame; the editor's playhead is left alone.
     expect(helpers).not.toContain("seq.setPlayerPosition(String(ticks))");
@@ -1043,7 +1115,7 @@ describe("issue #503 — trim_clip partial write rollback prevents clip corrupti
   it("rolls back source metadata when partial write is detected", async () => {
     const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
 
-    expect(script).toContain("if (sourceMetadataChanged)");
+    expect(script).toContain("if (sourceMetadataChanged || timelineMoved)");
     expect(script).toContain("restoredIn.ticks = originalInPointTicks");
     expect(script).toContain("restoredOut.ticks = originalOutPointTicks");
     expect(script).toContain("afterResult.clip.inPoint = restoredIn");
@@ -1071,7 +1143,7 @@ describe("issue #503 — trim_clip partial write rollback prevents clip corrupti
     const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
 
     // Partial write path: sourceMetadataChanged is true
-    expect(script).toContain("if (sourceMetadataChanged)");
+    expect(script).toContain("if (sourceMetadataChanged || timelineMoved)");
     expect(script).toContain("rolled back to its original state");
 
     // No-op path: sourceMetadataChanged is false
@@ -1090,5 +1162,31 @@ describe("issue #503 — trim_clip partial write rollback prevents clip corrupti
     const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
 
     expect(script).toContain("the clip could not be re-found for rollback");
+  });
+});
+
+describe("sequence settings setters verify their readback", () => {
+  const utility = getUtilityTools(bridgeOptions);
+  const run = async (tool: { handler: (args: never) => Promise<unknown> }, args: unknown, accept: boolean) => {
+    const settings: Record<string, number> = { videoFrameWidth: 1920, videoFrameHeight: 1080, videoFieldType: 0, videoDisplayFormat: 1, audioDisplayFormat: 0 };
+    const script = await scriptFor(tool, args);
+    return JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { name: "Seq", getSettings: () => ({ ...settings }), setSettings: (next: Record<string, number>) => { if (accept) Object.assign(settings, next); } } } },
+    })));
+  };
+
+  it("fails when Premiere ignores a frame size, field type or display format", async () => {
+    await expect(run(utility.set_sequence_resolution, { width: 1080, height: 1920 }, true)).resolves.toMatchObject({ success: true, data: { verified: true } });
+    await expect(run(utility.set_sequence_resolution, { width: 1080, height: 1920 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("got 1920x1080") });
+    await expect(run(utility.set_sequence_field_type, { field_type: 1 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("field type") });
+    await expect(run(utility.set_sequence_display_format, { video_display_format: 9 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("video display format") });
+    await expect(run(utility.set_sequence_display_format, { video_display_format: 9, audio_display_format: 1 }, true)).resolves.toMatchObject({ success: true, data: { videoDisplayFormat: 9, audioDisplayFormat: 1, verified: true } });
+  });
+
+  it("rejects out-of-range values before touching the host", async () => {
+    await expect(utility.set_sequence_resolution.handler({ width: 0, height: 1080 })).resolves.toMatchObject({ success: false });
+    await expect(utility.set_sequence_field_type.handler({ field_type: 7 })).resolves.toMatchObject({ success: false });
+    await expect(utility.set_sequence_display_format.handler({})).resolves.toMatchObject({ success: false });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });

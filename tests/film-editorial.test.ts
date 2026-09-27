@@ -186,3 +186,11 @@ describe("film editorial packets", () => {
     } finally { await client.close(); await server.close(); }
   });
 });
+
+describe("occurrence mismatch errors name the failing field", () => {
+  it("says the id must be the evidence's timelineItemId (live: a caller-chosen id was rejected without a reason)", () => {
+    const { document, input } = fixture();
+    const wrongId = { ...input, occurrences: input.occurrences.map((occurrence) => ({ ...occurrence, id: "occ1" })) };
+    expect(() => buildFilmEditorialPacket(document, wrongId)).toThrow("id must be the evidence's timelineItemId (occ)");
+  });
+});

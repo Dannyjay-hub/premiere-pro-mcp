@@ -337,6 +337,17 @@ export function inspectExportPresetFile(presetPath: string) {
   return { path, exists: true as const, regularFile: true as const, sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString() };
 }
 
+/** Audio stream layout via ffprobe, or null when ffprobe or an audio stream is unavailable. */
+async function audioLayout(path: string): Promise<{ channels: number; sampleRate: number } | null> {
+  try {
+    const { stdout } = await promisify(execFile)("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate", "-of", "json", path], { timeout: 15000 });
+    const stream = JSON.parse(stdout).streams?.[0];
+    return stream ? { channels: Number(stream.channels), sampleRate: Number(stream.sample_rate) } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getExportTools(bridgeOptions: BridgeOptions) {
   return {
     validate_export_preset: {
@@ -673,7 +684,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_sequence: {
-      description: "Export the active sequence using Adobe Media Encoder",
+      description:
+        "Export the active sequence directly (Premiere renders it; blocks until done) with an Adobe Media Encoder preset. The output extension must match what the preset writes (an H.264 preset in AME's QuickTime folder writes .mov); a missing extension is added. Refuses an output_path that already exists unless overwrite is true. Fails if Premiere rejects the render, and verifies a non-empty file was written (for an overwrite, that the file changed).",
       parameters: {
         type: "object" as const,
         properties: {
@@ -683,22 +695,43 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           },
           preset_path: {
             type: "string",
-            description: "Path to an AME preset file (.epr). Uses default H.264 if omitted.",
+            description: "Path to an AME preset file (.epr). Uses the default H.264 (MP4) Match Source preset if omitted.",
+          },
+          range: {
+            type: "string",
+            enum: ["entire", "in_to_out", "work_area"],
+            description:
+              "What to render: the entire sequence (default), the sequence in/out range (set_sequence_in_out_points), or the work area. Scripts cannot set the work area on current Premiere builds, so prefer in_to_out for a ranged export.",
           },
           work_area_only: {
             type: "boolean",
-            description: "Export only the work area (default: false, exports entire sequence)",
+            description: "Deprecated alias for range: 'work_area'",
+          },
+          overwrite: {
+            type: "boolean",
+            description: "Replace a file that already exists at output_path (default: false, which refuses the export). The replacement is only reported as written when the file's size or modification time changes.",
+          },
+          timeout_minutes: {
+            type: "number",
+            minimum: 1,
+            maximum: 240,
+            description: "How long to wait for the render (default: 15; long sequences such as full podcast episodes may need more)",
           },
         },
         required: ["output_path"],
       },
-      handler: async (args: { output_path: string; preset_path?: string; work_area_only?: boolean }) => {
+      handler: async (args: { output_path: string; preset_path?: string; range?: "entire" | "in_to_out" | "work_area"; work_area_only?: boolean; overwrite?: boolean; timeout_minutes?: number }) => {
+        const range = args.range ?? (args.work_area_only ? "work_area" : "entire");
         if (args.preset_path) {
           try {
             inspectExportPresetFile(args.preset_path);
           } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) };
           }
+        }
+        const timeoutMinutes = args.timeout_minutes ?? 15;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
+          return { success: false, error: "timeout_minutes must be between 1 and 240" };
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
@@ -712,20 +745,69 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
                if (!presetPath) return __error("Could not locate a default H.264 preset. Pass preset_path explicitly.");`
           }
 
+          var presetExtension = "";
+          try { presetExtension = String(seq.getExportFileExtension(presetPath) || "").replace(/^\\./, "").toLowerCase(); } catch (eExt) {}
+          var slash = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf(String.fromCharCode(92)));
+          var dot = outputPath.lastIndexOf(".");
+          var givenExtension = dot > slash ? outputPath.substring(dot + 1).toLowerCase() : "";
+          if (presetExtension) {
+            if (!givenExtension) {
+              outputPath = outputPath + "." + presetExtension;
+            } else if (givenExtension !== presetExtension && !(givenExtension === "m4v" && presetExtension === "mp4")) {
+              return __error("The preset writes ." + presetExtension + " files but output_path ends in ." + givenExtension + "; nothing was exported. Use ." + presetExtension + " or pick a preset for ." + givenExtension + " (get_encoder_presets lists each preset's extension).");
+            }
+          }
+
+          var rangeStart = 0;
+          var rangeEnd = parseFloat(seq.end) / TICKS_PER_SECOND;
+          ${range === "in_to_out" ? `
+          var markIn = __sequencePointSeconds(seq.getInPoint());
+          var markOut = __sequencePointSeconds(seq.getOutPoint());
+          if (markIn === null || markOut === null || markOut <= markIn || (markIn <= 0 && Math.abs(markOut - rangeEnd) < 0.001)) {
+            return __error("range 'in_to_out' needs sequence in/out points around part of the sequence (set_sequence_in_out_points); nothing was exported.");
+          }
+          rangeStart = markIn; rangeEnd = markOut;` : ""}
+          ${range === "work_area" ? `
+          var workIn = __workAreaSeconds(seq.getWorkAreaInPoint());
+          var workOut = __workAreaSeconds(seq.getWorkAreaOutPoint());
+          if (workIn !== null && workOut !== null && workOut > workIn) { rangeStart = workIn; rangeEnd = workOut; }` : ""}
+
+          // A file already at output_path must not pass the written-file check below.
+          var existing = new File(outputPath);
+          var existedBefore = existing.exists;
+          ${args.overwrite ? "" : `if (existedBefore) return __error("A file already exists at " + outputPath + "; nothing was exported. Choose a new output_path or pass overwrite: true.");`}
+          var sizeBefore = existedBefore ? existing.length : -1;
+          var modifiedBefore = existedBefore && existing.modified ? existing.modified.getTime() : null;
+
           var exportResult = seq.exportAsMediaDirect(
             outputPath,
             presetPath,
-            ${args.work_area_only ? "app.encoder.ENCODE_WORKAREA" : "app.encoder.ENCODE_ENTIRE"}
+            ${range === "in_to_out" ? "app.encoder.ENCODE_IN_TO_OUT" : range === "work_area" ? "app.encoder.ENCODE_WORKAREA" : "app.encoder.ENCODE_ENTIRE"}
           );
           // Premiere documents a boolean; false means the render was rejected.
           // Some hosts throw instead; buildToolScript already maps that to __error.
-          if (exportResult === false) return __error("Premiere rejected the sequence export.");
-          var outputFile = new File(outputPath);
-          if (!outputFile.exists) return __error("Premiere did not write the requested export file.");
+          if (exportResult === false) return __error("Premiere rejected the sequence export; nothing was written to " + outputPath + ".");
+          var written = new File(outputPath);
+          if (!written.exists || written.length <= 0) {
+            return __error("Premiere did not write " + outputPath + (exportResult ? " (" + exportResult + ")" : "") + ".");
+          }
+          if (existedBefore) {
+            var modifiedAfter = written.modified ? written.modified.getTime() : null;
+            if (modifiedAfter === modifiedBefore && written.length === sizeBefore) {
+              return __error("The file already at " + outputPath + " was not replaced (same size and modification time as before the export).");
+            }
+          }
 
-          return __result({ exported: true, verified: true, outputPath: outputPath, presetUsed: presetPath });
+          return __result({
+            exported: true, verified: true, outputPath: outputPath, sizeBytes: written.length,
+            replacedExistingFile: existedBefore,
+            extension: presetExtension || givenExtension, presetUsed: presetPath,
+            range: "${range}",
+            rangeStartSeconds: Math.round(rangeStart * 1000) / 1000,
+            expectedDurationSeconds: Math.round((rangeEnd - rangeStart) * 1000) / 1000
+          });
         `);
-        return sendCommand(script, { ...bridgeOptions, timeoutMs: 120000 }); // 2 min timeout for exports
+        return sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60000 });
       },
     },
 
@@ -1544,22 +1626,16 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           srcIn.seconds = ${inSeconds};
           var srcOut = new Time();
           srcOut.seconds = ${outSeconds};
-          var workArea = ${hasRange ? 1 : 0};
           var removeUponCompletion = ${args.remove_on_completion !== false ? "true" : "false"};
           var presetFile = new File("${escapeForExtendScript(args.preset_path)}");
           if (!presetFile.exists) return __error("AME preset file does not exist: " + presetFile.fsName);
 
-          // Premiere type-checks encodeFile natively: paths must be Strings,
-          // workArea a Number, removeUponCompletion a Boolean, and in/out Time objects.
-          var jobId = app.encoder.encodeFile(
-            String(inputFile.fsName),
-            String(outputFile.fsName),
-            String(presetFile.fsName),
-            workArea,
-            removeUponCompletion,
-            srcIn,
-            srcOut
-          );
+          // Documented signature (live 25.2): encodeFile(input, output, preset,
+          // removeUponCompletion, [startTime, stopTime]) with Time objects. The
+          // previous extra workArea argument made Premiere throw "Illegal Parameter type".
+          var jobId = ${hasRange
+            ? "app.encoder.encodeFile(String(inputFile.fsName), String(outputFile.fsName), String(presetFile.fsName), removeUponCompletion, srcIn, srcOut)"
+            : "app.encoder.encodeFile(String(inputFile.fsName), String(outputFile.fsName), String(presetFile.fsName), removeUponCompletion)"};
           if (!jobId || String(jobId) === "0") return __error("Adobe Media Encoder did not queue the file export.");
           app.encoder.startBatch();
           
@@ -1570,7 +1646,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             jobId: String(jobId),
             inputPath: inputFile.fsName,
             outputPath: outputFile.fsName,
-            workArea: ${hasRange ? "IN_TO_OUT" : "ENTIRE"},
+            range: ${hasRange ? `{ inSeconds: ${inSeconds}, outSeconds: ${outSeconds} }` : `"entire"`},
             verificationScope: "Premiere returned an AME job ID. Queue presence and output-file creation are not verified by this tool."
           });
         `);
@@ -1695,19 +1771,47 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
               ? `var attachPath = "${escapeForExtendScript(args.proxy_path)}";
                  if (!new File(attachPath).exists) return __error("Proxy file does not exist: " + attachPath);
                  var attached = item.attachProxy(attachPath, 0);
-                 if (!attached) return __error("attachProxy() failed for: " + attachPath);
-                 return __result({ action: "attach", item: item.name, proxyPath: attachPath, attached: true });`
+                 if (!attached) {
+                   var mediaPath = "";
+                   try { mediaPath = String(item.getMediaPath()); } catch (eMedia) {}
+                   return __jsonStringify({ success: false, error: "attachProxy() failed for: " + attachPath, data: { proxyPath: attachPath, mediaPath: mediaPath } });
+                 }
+                 var proxyReadback = "";
+                 try { proxyReadback = String(item.getProxyPath()); } catch (eProxyPath) {}
+                 if (!item.hasProxy()) return __error("attachProxy() returned true but the item reports no proxy");
+                 return __result({ action: "attach", item: item.name, proxyPath: proxyReadback || attachPath, attached: true, verified: true });`
               : `return __error("proxy_path is required for attach action");`
             }
           } else if (action === "toggle") {
-            var enabled = !app.project.isProxyEnabled();
-            app.project.setProxyEnabled(enabled);
-            return __result({ action: "toggle", proxiesEnabled: enabled });
+            // Proxy display is an application setting: app.getEnableProxies()/setEnableProxies()
+            // (live 25.2; app.project.isProxyEnabled does not exist).
+            if (typeof app.getEnableProxies !== "function" || typeof app.setEnableProxies !== "function") {
+              return __error("This Premiere build does not expose app.getEnableProxies/setEnableProxies; toggle proxies in the Program Monitor.");
+            }
+            var wasEnabled = Number(app.getEnableProxies()) === 1;
+            app.setEnableProxies(wasEnabled ? 0 : 1);
+            var nowEnabled = Number(app.getEnableProxies()) === 1;
+            if (nowEnabled === wasEnabled) return __error("Premiere did not change the proxy display setting.");
+            return __result({ action: "toggle", proxiesEnabled: nowEnabled, verified: true, scope: "application-wide proxy display" });
           }
 
           return __error("Unknown proxy action: " + action);
         `);
-        return sendCommand(script, bridgeOptions);
+        const result = await sendCommand(script, bridgeOptions);
+        const failure = result as { success: boolean; data?: { proxyPath?: string; mediaPath?: string } };
+        if (!result.success && args.action === "attach" && failure.data?.proxyPath && failure.data.mediaPath) {
+          // Premiere refuses a proxy whose audio channel layout differs from the
+          // original (live 25.2: a stereo 48 kHz proxy for a mono 44.1 kHz clip).
+          const [proxy, original] = await Promise.all([audioLayout(failure.data.proxyPath), audioLayout(failure.data.mediaPath)]);
+          if (proxy && original && proxy.channels !== original.channels) {
+            return {
+              ...result,
+              error: `${result.error}. The proxy has ${proxy.channels} audio channel(s) but the original has ${original.channels}; Premiere only attaches proxies whose audio channels match. Encode the proxy with a preset that keeps the source's channel layout.`,
+              data: { ...failure.data, proxyAudio: proxy, originalAudio: original },
+            };
+          }
+        }
+        return result;
       },
     },
   };

@@ -5,7 +5,7 @@ export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
   return {
     consolidate_and_transfer: {
       description:
-        "Consolidate, copy, or transcode project media using the Project Manager. Reports success only after a new destination folder contains a copied Premiere project.",
+        "Collect (copy) or transcode project media into a new project with Premiere's Project Manager. Premiere writes a Copied_<project> folder inside destination_path (created if missing); success is reported only after that folder holds the copied .prproj, with the copied files listed.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -19,7 +19,7 @@ export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
           },
           copy_to_new_location: {
             type: "boolean",
-            description: "Copy media to a new location (default: true)",
+            description: "Must be true (the default): Premiere's scripted Project Manager always collects media into the destination.",
           },
           exclude_unused: {
             type: "boolean",
@@ -27,7 +27,7 @@ export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
           },
           transcode: {
             type: "boolean",
-            description: "Transcode media during copy (default: false)",
+            description: "Transcode media to match the sequence instead of copying it (default: false)",
           },
           include_preview_files: {
             type: "boolean",
@@ -68,39 +68,74 @@ export function getProjectManagerTools(bridgeOptions: BridgeOptions) {
         if (!destinationPath) {
           return { success: false, error: "destination_path must not be empty" };
         }
+        if (args.copy_to_new_location === false) {
+          return { success: false, error: "copy_to_new_location false is not supported: Premiere's scripted Project Manager always collects media into destination_path." };
+        }
+        const destination = escapeForExtendScript(destinationPath.replace(/\/+$/, ""));
+        // Live 25.2: the settings live on projectManager.options (setting them on
+        // projectManager itself is ignored), the destination must already exist,
+        // process() returns 0 on success, and the copy lands in Copied_<project>.
         const script = buildToolScript(`
           var pm = app.projectManager;
-          if (!pm) return __error("Project Manager not available");
+          if (!pm || !pm.options) return __error("Project Manager not available");
+          var project = app.project;
+          if (!project) return __error("No project is open");
+          ${args.include_all_sequences === false ? `if (!project.activeSequence) return __error("include_all_sequences is false but there is no active sequence");` : ""}
 
-          var destination = new Folder("${escapeForExtendScript(destinationPath)}");
-          if (destination.exists) {
-            return __error("destination_path must be a new, empty folder so the Project Manager output can be verified: ${escapeForExtendScript(destinationPath)}");
+          var destination = new Folder("${destination}");
+          if (destination.exists && !__isDirectory("${destination}")) return __error("destination_path ${destination} is a file, not a folder");
+          if (!destination.exists && !destination.create()) return __error("Could not create destination_path ${destination}");
+          var outputName = "Copied_" + String(project.name).replace(/\\.prproj$/i, "");
+          var output = new Folder("${destination}/" + outputName);
+          if (output.exists) {
+            return __error("${destination}/" + outputName + " already exists; choose another destination_path so the new copy can be verified.");
           }
-          pm.destinationPath = "${escapeForExtendScript(destinationPath)}";
-          pm.includeAllSequences = ${args.include_all_sequences !== false ? 1 : 0};
-          pm.copyToNewLocation = ${args.copy_to_new_location !== false ? 1 : 0};
-          pm.excludeUnused = ${args.exclude_unused !== false ? 1 : 0};
-          pm.transcodeMedia = ${args.transcode ? 1 : 0};
-          pm.includePreviewFiles = ${args.include_preview_files ? 1 : 0};
-          pm.renameMedia = ${args.rename_media ? 1 : 0};
-          pm.convertImageSequences = ${args.convert_image_sequences ? 1 : 0};
-          pm.convertAEComps = ${args.convert_ae_comps ? 1 : 0};
-          pm.convertSyntheticMedia = ${args.convert_synthetic ? 1 : 0};
-          
-          var accepted = pm.process(app.project);
-          if (accepted === false) return __error("Premiere rejected the Project Manager request");
-          if (!destination.exists) {
-            return __error("Premiere accepted the Project Manager request but did not create the destination folder. No successful transfer is reported.");
+
+          var o = pm.options;
+          o.clipTransferOption = ${args.transcode ? "o.CLIP_TRANSFER_TRANSCODE" : "o.CLIP_TRANSFER_COPY"};
+          ${args.transcode ? "o.clipTranscoderOption = o.CLIP_TRANSCODE_MATCH_SEQUENCE;" : ""}
+          o.includeAllSequences = ${args.include_all_sequences !== false};
+          ${args.include_all_sequences === false ? "o.affectedSequences = [project.activeSequence];" : ""}
+          o.excludeUnused = ${args.exclude_unused !== false};
+          o.includePreviews = ${args.include_preview_files === true};
+          o.renameMedia = ${args.rename_media === true};
+          o.convertImageSequencesToClips = ${args.convert_image_sequences === true};
+          o.convertAECompsToClips = ${args.convert_ae_comps === true};
+          o.convertSyntheticsToClips = ${args.convert_synthetic === true};
+          o.destinationPath = "${destination}/";
+
+          var status = pm.process(project);
+          var errors = [];
+          try { for (var e = 0; e < pm.errors.length; e++) errors.push(String(pm.errors[e])); } catch (eErrors) {}
+          if (!output.exists) {
+            return __jsonStringify({ success: false, error: "Project Manager did not create " + outputName + " in the destination (process returned " + status + ").", data: { errors: errors } });
           }
-          var outputFiles = destination.getFiles("*.prproj");
-          if (!outputFiles || outputFiles.length < 1) {
-            return __error("Premiere created the destination folder but no copied .prproj file was found. No successful transfer is reported.");
+          var projects = output.getFiles("*.prproj");
+          if (!projects || projects.length < 1) {
+            return __jsonStringify({ success: false, error: outputName + " was created but holds no copied .prproj (process returned " + status + ").", data: { errors: errors } });
           }
+          var files = [];
+          var totalBytes = 0;
+          var walk = function (folder, prefix) {
+            var entries = folder.getFiles();
+            for (var f = 0; f < entries.length && files.length < 500; f++) {
+              if (entries[f] instanceof Folder) walk(entries[f], prefix + entries[f].name + "/");
+              else { files.push(prefix + decodeURI(entries[f].name)); totalBytes += entries[f].length; }
+            }
+          };
+          walk(output, "");
           return __result({
             completed: true,
             verified: true,
-            destination: "${escapeForExtendScript(destinationPath)}",
-            copiedProjectCount: outputFiles.length
+            destination: "${destination}",
+            outputFolder: output.fsName,
+            copiedProject: projects[0].fsName,
+            scope: ${args.include_all_sequences === false ? "\"active sequence: \" + project.activeSequence.name" : "\"all sequences\""},
+            transferMode: "${args.transcode ? "transcode (match sequence)" : "copy"}",
+            fileCount: files.length,
+            totalBytes: totalBytes,
+            files: files,
+            errors: errors
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: 300000 }); // 5 min timeout

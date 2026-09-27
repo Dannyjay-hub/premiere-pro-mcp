@@ -528,7 +528,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
                 if (comp.displayName !== "Motion" && comp.matchName !== "AE.ADBE Motion") continue;
                 for (var pi = 0; pi < comp.properties.numItems; pi++) {
                   var prop = comp.properties[pi];
-                  if (prop.displayName === "Scale") return prop.getValue();
+                  if (__propertyNameMatches(prop.displayName, "Scale")) return prop.getValue();
                 }
               }
             } catch (e) {}
@@ -596,7 +596,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           var info = {
             name: item.name,
             nodeId: item.nodeId,
-            type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 3 ? "sequence" : "unknown",
+            type: __projectItemKind(item),
             treePath: item.treePath
           };
           try { info.isSequence = item.isSequence(); } catch(e) {}
@@ -659,7 +659,12 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           
           var ticks = __secondsToTicks(${args.start_seconds}).toString();
           item.setStartTime(ticks);
-          return __result({ set: true, item: item.name, startSeconds: ${args.start_seconds} });
+          var observedStart = NaN;
+          try { observedStart = Number(item.startTime().seconds); } catch (startReadError) {}
+          if (!isFinite(observedStart) || Math.abs(observedStart - ${args.start_seconds}) > 0.001) {
+            return __error("Premiere did not apply the start time; read back " + observedStart + " s.");
+          }
+          return __result({ set: true, verified: true, item: item.name, startSeconds: observedStart });
         `);
         return sendCommand(script, bridgeOptions);
       },

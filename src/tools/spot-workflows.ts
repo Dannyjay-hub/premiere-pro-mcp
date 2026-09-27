@@ -401,7 +401,7 @@ function buildApplyScript(plan: SpotWorkflowPlan): string {
       var scaleProperty = null;
       for (var propertyIndex = 0; propertyIndex < motionComponent.properties.numItems; propertyIndex++) {
         var property = motionComponent.properties[propertyIndex];
-        if (property.displayName === "Scale") { scaleProperty = property; break; }
+        if (__propertyNameMatches(property.displayName, "Scale")) { scaleProperty = property; break; }
       }
       if (!scaleProperty) return { applied: false, verified: false, reason: "Motion Scale property was not available on the placed clip" };
       var start = __ticksToSeconds(clip.start.ticks);

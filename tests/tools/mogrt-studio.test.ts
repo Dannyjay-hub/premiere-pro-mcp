@@ -187,6 +187,29 @@ describe("MOGRT studio tools", () => {
     await expect(tools.create_mogrt_batch.handler({ preview_token: "batch-token", confirm_export: true })).rejects.toThrow("already used");
   });
 
+  it("stops the batch when After Effects accepts an export but writes no file (live: batch reported both done, none on disk)", async () => {
+    const written = new Set<string>();
+    const tools = getMogrtStudioTools(bridgeOptions, {
+      directoryExists: () => true,
+      fileExists: (candidate) => candidate.endsWith("pair.json"),
+      readText: () => JSON.stringify([
+        { recipe: "title_card", template_name: "Kept", headline: "One" },
+        { recipe: "title_card", template_name: "Lost", headline: "Two" },
+      ]),
+      tokenFactory: () => "pair-token",
+      artifactStatus: (candidate) => (written.has(candidate) ? artifact : { exists: false, size_bytes: null, zip_header_valid: false }),
+      artifactWaitMs: 0,
+      sendAfterEffects: async () => ({ success: true, data: { exportRequested: true, hostExportReturn: false } }),
+    });
+    const preview = await tools.preview_mogrt_batch.handler({ approved_workspace_path: "D:/Approved", output_directory: "D:/Approved/templates", data_file_path: "D:/Approved/data/pair.json" }) as { data: { plans: Array<{ output_path: string }> } };
+    written.add(preview.data.plans[0].output_path);
+    await expect(tools.create_mogrt_batch.handler({ preview_token: "pair-token", confirm_export: true })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("did not write"),
+      data: { completed: [{ templateName: "Kept" }], failedTemplate: "Lost" },
+    });
+  });
+
   it("parses bounded CSV batches and rejects duplicate output artifacts", async () => {
     const csvTools = getMogrtStudioTools(bridgeOptions, {
       directoryExists: () => true,
@@ -286,6 +309,40 @@ describe("MOGRT studio tools", () => {
       success: false,
       error: expect.stringContaining("No matching composition"),
     });
+  });
+
+  it("reports the queue position of the new render item (live: RenderQueueItem has no index, result was null)", async () => {
+    const vm = await import("node:vm");
+    class CompItem { constructor(public name: string) {} }
+    function File(this: { fsName: string; exists: boolean }, name: string) { this.fsName = name; this.exists = false; }
+    const queue: unknown[] = [{}, {}];
+    const outputModule = { applyTemplate: () => undefined, file: null as unknown };
+    const tools = getMogrtStudioTools(bridgeOptions, {
+      directoryExists: () => true,
+      fileExists: () => false,
+      tokenFactory: () => "queue-token",
+      sendAfterEffects: async (script) => vm.runInNewContext(script, {
+        CompItem, File,
+        __aeResult: (data: unknown) => ({ success: true, data }),
+        __aeError: (error: string) => ({ success: false, error }),
+        app: { project: {
+          file: { fsName: "D:/Approved/project.aep" },
+          numItems: 1,
+          item: () => new CompItem("Launch"),
+          save: () => undefined,
+          renderQueue: {
+            get numItems() { return queue.length; },
+            items: { add: () => { const item = { applyTemplate: () => undefined, outputModule: () => outputModule, remove: () => undefined }; queue.push(item); return item; } },
+          },
+        } },
+      }),
+    });
+    await tools.preview_after_effects_render.handler({
+      approved_workspace_path: "D:/Approved", composition_name: "Launch", output_path: "D:/Approved/renders/Launch.mov",
+      render_settings_template: "Best Settings", output_module_template: "Lossless",
+    });
+    await expect(tools.enqueue_after_effects_render.handler({ preview_token: "queue-token", confirm_enqueue: true }))
+      .resolves.toMatchObject({ success: true, data: { queued: true, queueItemIndex: 3 } });
   });
 
   it("fails closed when a handoff artifact changes or the disposable target is invalid", async () => {

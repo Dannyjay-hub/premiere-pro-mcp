@@ -27,6 +27,7 @@ import { getEffectsTools } from "../../src/tools/effects.js";
 import { getTransitionsTools } from "../../src/tools/transitions.js";
 import { getAudioTools } from "../../src/tools/audio.js";
 import { getTextTools } from "../../src/tools/text.js";
+import { getStockTitleTools } from "../../src/tools/stock-titles.js";
 import { getMarkerTools } from "../../src/tools/markers.js";
 import { getTrackTools } from "../../src/tools/tracks.js";
 import { getPlayheadTools } from "../../src/tools/playhead.js";
@@ -94,6 +95,7 @@ const ALL_MODULES: Array<{
   { name: "transitions", getter: getTransitionsTools, minTools: 3 },
   { name: "audio", getter: getAudioTools, minTools: 2 },
   { name: "text", getter: getTextTools, minTools: 2 },
+  { name: "stock-titles", getter: getStockTitleTools, minTools: 2 },
   { name: "markers", getter: getMarkerTools, minTools: 3 },
   { name: "tracks", getter: getTrackTools, minTools: 3 },
   { name: "playhead", getter: getPlayheadTools, minTools: 4 },
@@ -220,16 +222,16 @@ describe("Tool Module Structure", () => {
 });
 
 describe("Total Tool Count", () => {
-  it("all modules together have 373 tools", () => {
+  it("all modules together have 375 tools", () => {
     let total = 0;
     for (const mod of ALL_MODULES) {
       total += Object.keys(mod.getter(bridgeOptions)).length;
     }
-    expect(total).toBe(373);
+    expect(total).toBe(375);
   });
 
   it("there are 51 directly enumerated modules", () => {
-    expect(ALL_MODULES.length).toBe(51);
+    expect(ALL_MODULES.length).toBe(52);
   });
 });
 
@@ -614,13 +616,11 @@ describe("Tool Handler Behavior", () => {
       expect(mockedSendCommand).not.toHaveBeenCalled();
     });
 
-    it("fails unsupported legacy AAF and multiple-undo requests before mutation", async () => {
+    it("fails unsupported legacy AAF and invalid multiple-undo requests before mutation", async () => {
       const aaf = await (getExportTools(bridgeOptions).export_aaf.handler as any)({ output_path: "/tmp/turnover.aaf" });
       const undoTools = getTrackTargetingTools(bridgeOptions);
-      const undo = await (undoTools.multiple_undo.handler as any)({ count: 2 });
       const invalidUndo = await (undoTools.multiple_undo.handler as any)({ count: 0 });
       expect(aaf).toMatchObject({ success: false, error: expect.stringContaining("No export was attempted") });
-      expect(undo).toMatchObject({ success: false, error: expect.stringContaining("No mutation was attempted") });
       expect(invalidUndo).toMatchObject({ success: false, error: expect.stringContaining("integer from 1 through 100") });
       expect(mockedSendCommand).not.toHaveBeenCalled();
     });
@@ -766,7 +766,7 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain('qeClip.addTransition(transitionQE, targetHead, String(durationFrames), "0", 0.5, false, true)');
       expect(script).not.toContain("qeTrack.addTransition(");
       expect(script).toContain("transitionAtCut");
-      expect(script).toContain("Math.abs(((transitionStart + transitionEnd) / 2) - cutTicks) <= frameTicks / 2");
+      expect(script).toContain("transitionStart - edgeTolerance <= cutTicks && cutTicks <= transitionEnd + edgeTolerance");
       expect(script).toContain("DOM readback did not find it at the requested cut point");
 
       vi.clearAllMocks();
@@ -781,7 +781,7 @@ describe("Tool Handler Behavior", () => {
       expect(clipScript).toContain('qeClip.addTransition(transitionQE, false, String(durationFrames), "0", 0.5, false, true)');
       expect(clipScript).toContain("startVerified");
       expect(clipScript).toContain("endVerified");
-      expect(clipScript).toContain("var verifiedMidpoint = (verifiedStart + verifiedEnd) / 2");
+      expect(clipScript).toContain("verifiedStart - edgeTolerance <= clipStartTicks && clipStartTicks <= verifiedEnd + edgeTolerance");
       expect(clipScript).toContain("the request was partially applied");
 
       vi.clearAllMocks();
@@ -790,7 +790,7 @@ describe("Tool Handler Behavior", () => {
       expect(batchScript).toContain("__findQeClipByDomClip(qeTrack, incomingClip)");
       expect(batchScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
       expect(batchScript).toContain("verifiedCount !== requestedCount");
-      expect(batchScript).toContain("Math.abs(((readStart + readEnd) / 2) - expectedCut) <= frameTicks / 2");
+      expect(batchScript).toContain("readStart - (frameTicks / 2 + 1) <= expectedCut && expectedCut <= readEnd + (frameTicks / 2 + 1)");
       expect(batchScript).toContain("DOM readback did not find a transition at cut");
     });
   });
@@ -905,15 +905,13 @@ describe("Tool Handler Behavior", () => {
   });
 
   describe("project-manager tools", () => {
-    it("consolidate_and_transfer verifies a copied project in a new destination", async () => {
+    it("consolidate_and_transfer configures projectManager.options (see project-manager.test.ts)", async () => {
       const tools = getProjectManagerTools(bridgeOptions);
-      expect(tools.consolidate_and_transfer).toBeDefined();
-      expect(typeof tools.consolidate_and_transfer.handler).toBe("function");
       await (tools.consolidate_and_transfer.handler as any)({ destination_path: "/tmp/transfer" });
       const script = mockedSendCommand.mock.calls[0][0];
-      expect(script).toContain("destination_path must be a new, empty folder");
-      expect(script).toContain('destination.getFiles("*.prproj")');
-      expect(script).toContain("copiedProjectCount");
+      expect(script).toContain("var o = pm.options;");
+      expect(script).toContain('"Copied_"');
+      expect(script).not.toContain("pm.includeAllSequences");
     });
   });
 });

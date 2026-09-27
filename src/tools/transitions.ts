@@ -56,10 +56,10 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           // Resolution path 2: scan getVideoTransitionList (legacy).
           if (!transitionQE) {
             try {
-              var transitions = qe.project.getVideoTransitionList();
+              var transitions = __qeCatalogFrom(qe.project.getVideoTransitionList());
               for (var i = 0; i < transitions.numItems; i++) {
                 if (transitions[i].name === transitionName) {
-                  transitionQE = transitions[i];
+                  transitionQE = __qeTransitionObject("video", transitions[i]);
                   break;
                 }
               }
@@ -113,7 +113,13 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             var placedTransition = domTrack.transitions[t];
             var transitionStart = parseFloat(placedTransition.start.ticks);
             var transitionEnd = parseFloat(placedTransition.end.ticks);
-            if (!isNaN(transitionStart) && !isNaN(transitionEnd) && Math.abs(((transitionStart + transitionEnd) / 2) - cutTicks) <= frameTicks / 2) {
+            // Accept any transition that covers the cut. Premiere cannot center an
+            // odd frame count on a cut (a 25-frame dissolve splits 12/13), so the
+            // midpoint can sit half a frame off; clips without handles can also
+            // push the transition entirely to one side of the cut.
+            var edgeTolerance = frameTicks / 2 + 1;
+            if (!isNaN(transitionStart) && !isNaN(transitionEnd) &&
+                transitionStart - edgeTolerance <= cutTicks && cutTicks <= transitionEnd + edgeTolerance) {
               transitionAtCut = true;
               break;
             }
@@ -181,9 +187,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           try { if (qe.project.getVideoTransitionByName) transitionQE = qe.project.getVideoTransitionByName(transitionName); } catch(e1) {}
           if (!transitionQE) {
             try {
-              var transitions = qe.project.getVideoTransitionList();
+              var transitions = __qeCatalogFrom(qe.project.getVideoTransitionList());
               for (var i = 0; i < transitions.numItems; i++) {
-                if (transitions[i].name === transitionName) { transitionQE = transitions[i]; break; }
+                if (transitions[i].name === transitionName) { transitionQE = __qeTransitionObject("video", transitions[i]); break; }
               }
             } catch(e2) {}
           }
@@ -237,9 +243,11 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             var verifiedStart = parseFloat(verifiedTransition.start.ticks);
             var verifiedEnd = parseFloat(verifiedTransition.end.ticks);
             if (isNaN(verifiedStart) || isNaN(verifiedEnd)) continue;
-            var verifiedMidpoint = (verifiedStart + verifiedEnd) / 2;
-            if (Math.abs(verifiedMidpoint - clipStartTicks) <= frameTicks / 2) startVerified = true;
-            if (Math.abs(verifiedMidpoint - clipEndTicks) <= frameTicks / 2) endVerified = true;
+            // Cover the edge rather than centre on it: Premiere cannot centre an odd
+            // frame count (a 25-frame dissolve splits 12/13) and adds tick drift.
+            var edgeTolerance = frameTicks / 2 + 1;
+            if (verifiedStart - edgeTolerance <= clipStartTicks && clipStartTicks <= verifiedEnd + edgeTolerance) startVerified = true;
+            if (verifiedStart - edgeTolerance <= clipEndTicks && clipEndTicks <= verifiedEnd + edgeTolerance) endVerified = true;
           }
           if (!startVerified || !endVerified) return __error("Premiere added the requested transition count, but DOM readback did not find a transition at each requested clip edge.");
           
@@ -297,9 +305,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           try { if (qe.project.getVideoTransitionByName) transitionQE = qe.project.getVideoTransitionByName(transitionName); } catch(e1) {}
           if (!transitionQE) {
             try {
-              var transitions = qe.project.getVideoTransitionList();
+              var transitions = __qeCatalogFrom(qe.project.getVideoTransitionList());
               for (var i = 0; i < transitions.numItems; i++) {
-                if (transitions[i].name === transitionName) { transitionQE = transitions[i]; break; }
+                if (transitions[i].name === transitionName) { transitionQE = __qeTransitionObject("video", transitions[i]); break; }
               }
             } catch(e2) {}
           }
@@ -315,11 +323,25 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           var requestedCount = 0;
           var failures = [];
           
+          // A cut that already has a transition is left as it is: Premiere will
+          // not stack a second one there, which used to make a batch after a
+          // single add_transition_to_clip report "verified 3 of 4".
+          function cutHasTransition(cutTicks) {
+            for (var ti = 0; ti < track.transitions.numItems; ti++) {
+              var existingStart = parseFloat(track.transitions[ti].start.ticks);
+              var existingEnd = parseFloat(track.transitions[ti].end.ticks);
+              if (!isNaN(existingStart) && !isNaN(existingEnd) && existingStart - (frameTicks / 2 + 1) <= cutTicks && cutTicks <= existingEnd + (frameTicks / 2 + 1)) return true;
+            }
+            return false;
+          }
+          var alreadyPresent = 0;
+
           // Add transition at each cut point (between consecutive clips)
           for (var c = 0; c < track.clips.numItems - 1; c++) {
             var outgoingClip = track.clips[c];
             var incomingClip = track.clips[c + 1];
             if (Math.abs(parseFloat(outgoingClip.end.ticks) - parseFloat(incomingClip.start.ticks)) >= 1) continue;
+            if (cutHasTransition(parseFloat(incomingClip.start.ticks))) { alreadyPresent++; continue; }
             requestedCount++;
             var qeClip = __findQeClipByDomClip(qeTrack, incomingClip);
             if (!qeClip || typeof qeClip.addTransition !== "function") {
@@ -333,7 +355,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
 
           var transitionCountAfter = track.transitions.numItems;
           var verifiedCount = transitionCountAfter - transitionCountBefore;
-          if (requestedCount === 0) return __error("No adjacent video clips were found, so no transitions were attempted.");
+          if (requestedCount === 0 && alreadyPresent === 0) return __error("No adjacent video clips were found, so no transitions were attempted.");
           if (verifiedCount !== requestedCount) {
             return __error("QE clip addTransition verified " + verifiedCount + " of " + requestedCount + " requested transitions" + (failures.length ? ": " + failures.join("; ") : "."));
           }
@@ -347,13 +369,16 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
               var readTransition = track.transitions[transitionIndex];
               var readStart = parseFloat(readTransition.start.ticks);
               var readEnd = parseFloat(readTransition.end.ticks);
-              if (!isNaN(readStart) && !isNaN(readEnd) && Math.abs(((readStart + readEnd) / 2) - expectedCut) <= frameTicks / 2) { foundAtCut = true; break; }
+              // Cover the cut rather than centre on it: Premiere cannot centre an odd
+              // frame count (a 25-frame dissolve splits 12/13) and adds tick drift.
+              if (!isNaN(readStart) && !isNaN(readEnd) && readStart - (frameTicks / 2 + 1) <= expectedCut && expectedCut <= readEnd + (frameTicks / 2 + 1)) { foundAtCut = true; break; }
             }
             if (!foundAtCut) return __error("Premiere added the requested transition count, but DOM readback did not find a transition at cut " + cutIndex + ".");
           }
           
           return __result({
             added: verifiedCount,
+            alreadyPresent: alreadyPresent,
             verified: true,
             transition: transitionName,
             trackIndex: ${trackIndex},
@@ -372,7 +397,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           app.enableQE();
           var list = [];
           try {
-            var transitions = qe.project.getVideoTransitionList();
+            var transitions = __qeCatalogFrom(qe.project.getVideoTransitionList());
             for (var i = 0; i < transitions.numItems; i++) {
               list.push({ name: transitions[i].name, index: i });
             }
@@ -404,7 +429,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           app.enableQE();
           var transitions = null;
-          try { transitions = qe.project.getAudioTransitionList(); } catch (catalogError) {
+          try { transitions = __qeCatalogFrom(qe.project.getAudioTransitionList()); } catch (catalogError) {
             return __error("Premiere did not expose an audio-transition catalog through QE: " + catalogError.toString());
           }
           if (!transitions || typeof transitions.numItems !== "number") {

@@ -3,6 +3,51 @@ import {
   escapeForExtendScript,
 } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
+import { applyScratchDisks } from "./scratch-disks.js";
+import { readScratchDisks } from "./project-file.js";
+
+// Shared set-up for lift/extract: resolve the sequence in/out range, refuse a
+// range that spans the whole sequence (Premiere reports cleared marks as
+// 0..end), and note whether any unlocked clip overlaps the range.
+const IN_OUT_EDIT_PREAMBLE = `
+          app.enableQE();
+          var seq = app.project.activeSequence;
+          if (!seq) return __error("No active sequence");
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return __error("QE could not resolve the active sequence");
+          var inSeconds = __sequencePointSeconds(seq.getInPoint());
+          var outSeconds = __sequencePointSeconds(seq.getOutPoint());
+          var seqEndTicks = parseFloat(seq.end);
+          var halfFrame = (seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24) / 2;
+          if (inSeconds === null) inSeconds = 0;
+          if (outSeconds === null) outSeconds = seqEndTicks / TICKS_PER_SECOND;
+          var inTicks = inSeconds * TICKS_PER_SECOND;
+          var outTicks = outSeconds * TICKS_PER_SECOND;
+          if (outTicks - inTicks < halfFrame) return __error("Set sequence in/out points around the range first (set_sequence_in_out_points). No clips were changed.");
+          if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
+            return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");
+          }
+          var __inOutUndoIndex = function () {
+            try { var v = Number(qe.project.undoStackIndex()); return isFinite(v) ? v : null; } catch (eIdx) { return null; }
+          };
+          var beforeIndex = __inOutUndoIndex();
+          var rangeHadClips = false;
+          var anyLocked = false;
+          var survey = function (tracks) {
+            for (var t = 0; t < tracks.numTracks; t++) {
+              var locked = false;
+              try { locked = !!tracks[t].isLocked(); } catch (eLock) {}
+              if (locked) { anyLocked = true; continue; }
+              for (var c = 0; c < tracks[t].clips.numItems; c++) {
+                var clip = tracks[t].clips[c];
+                if (parseFloat(clip.start.ticks) < outTicks - halfFrame && parseFloat(clip.end.ticks) > inTicks + halfFrame) rangeHadClips = true;
+              }
+            }
+          };
+          survey(seq.videoTracks);
+          survey(seq.audioTracks);
+          if (!rangeHadClips) return __error("Nothing to remove: no clips on unlocked tracks overlap the in/out range. No clips were changed.");
+`;
 
 const MEDIA_REPORT_DEFAULT_LIMIT = 100;
 const MEDIA_REPORT_MAX_LIMIT = 500;
@@ -88,6 +133,13 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           } else if (sequence) {
             var accepted = app.project.deleteSequence(sequence);
             if (accepted === false) return __error("Premiere rejected deletion of sequence: " + name);
+          } else if (item.type === 1 || item.type === 4) {
+            var usage = __projectItemUsage(item);
+            if (usage.clips > 0) {
+              return __error(name + " is used by " + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, so nothing was deleted. Remove the clips first.");
+            }
+            var removal = __deleteProjectItemViaBin(item);
+            if (!removal.ok) return __error(removal.error + " Nothing is reported as deleted.");
           } else {
             return __error(
               "Legacy CEP cannot safely delete this project item type through a documented API. " +
@@ -138,10 +190,16 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
               } catch (e) {}
             }
             if (item.type !== 2 && !sequence) {
-              return __error(
-                "Legacy CEP cannot safely delete project item: " + item.name + ". " +
-                "No project items were deleted; use organize_project_items_uxp with action 'remove' for generic project-item deletion."
-              );
+              if (item.type !== 1 && item.type !== 4) {
+                return __error(
+                  "Legacy CEP cannot safely delete project item: " + item.name + ". " +
+                  "No project items were deleted; use organize_project_items_uxp with action 'remove' for generic project-item deletion."
+                );
+              }
+              var itemUsage = __projectItemUsage(item);
+              if (itemUsage.clips > 0) {
+                return __error(item.name + " is used by " + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too. No project items were deleted.");
+              }
             }
             planned.push({ nodeId: String(item.nodeId), name: item.name, item: item, sequence: sequence });
           }
@@ -152,9 +210,12 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             if (!__findProjectItem(target.nodeId)) continue;
             if (target.item.type === 2) {
               target.item.deleteBin();
-            } else {
+            } else if (target.sequence) {
               var accepted = app.project.deleteSequence(target.sequence);
               if (accepted === false) return __error("Premiere rejected deletion of sequence: " + target.name);
+            } else {
+              var viaBin = __deleteProjectItemViaBin(target.item);
+              if (!viaBin.ok) return __error(viaBin.error + " Deleted before this item: " + p + ".");
             }
           }
           var deleted = [];
@@ -425,6 +486,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         required: ["width", "height"],
       },
       handler: async (args: { width: number; height: number }) => {
+        if (![args.width, args.height].every((v) => Number.isInteger(v) && v >= 16 && v <= 16384)) {
+          return { success: false, error: "width and height must be integers from 16 to 16384 pixels" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -436,7 +500,12 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           settings.videoFrameHeight = ${args.height};
           seq.setSettings(settings);
 
-          return __result({ width: ${args.width}, height: ${args.height}, sequence: seq.name });
+          var applied = seq.getSettings();
+          if (!applied || Number(applied.videoFrameWidth) !== ${args.width} || Number(applied.videoFrameHeight) !== ${args.height}) {
+            return __error("Premiere did not apply the requested frame size: got " +
+              (applied ? applied.videoFrameWidth + "x" + applied.videoFrameHeight : "no settings"));
+          }
+          return __result({ width: ${args.width}, height: ${args.height}, sequence: seq.name, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -565,6 +634,17 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             return __error("This Premiere host does not expose a writable sequence pixel-aspect-ratio setting. No sequence settings were changed.");
           }
 
+          // Premiere reports the ratio as "num:den" (for example "1:1"); compare numerically
+          // so a request that already matches succeeds even where the setting is read-only.
+          var currentText = String(currentRatio);
+          var ratioParts = currentText.split(":");
+          var currentValue = ratioParts.length === 2
+            ? parseFloat(ratioParts[0]) / parseFloat(ratioParts[1])
+            : parseFloat(currentText);
+          if (isFinite(currentValue) && Math.abs(currentValue - parseFloat(requestedRatio)) < 0.0001) {
+            return __result({ ratio: requestedRatio, hostRatio: currentText, sequence: seq.name, alreadySet: true, verified: true });
+          }
+
           try {
             settings.videoPixelAspectRatio = requestedRatio;
           } catch (eAssign) {
@@ -628,6 +708,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         required: ["field_type"],
       },
       handler: async (args: { field_type: number }) => {
+        if (![0, 1, 2].includes(args.field_type)) {
+          return { success: false, error: "field_type must be 0 (progressive), 1 (upper field first) or 2 (lower field first)" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -638,7 +721,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           settings.videoFieldType = ${args.field_type};
           seq.setSettings(settings);
 
-          return __result({ fieldType: ${args.field_type}, sequence: seq.name });
+          var applied = seq.getSettings();
+          if (!applied || Number(applied.videoFieldType) !== ${args.field_type}) {
+            return __error("Premiere did not apply the requested field type: got " + (applied ? applied.videoFieldType : "no settings"));
+          }
+          return __result({ fieldType: ${args.field_type}, sequence: seq.name, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -862,21 +949,50 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "Lift (remove without closing gap) the content between sequence in/out points or selected clips.",
+        "Lift (remove without closing the gap) the content between the sequence in/out points on every unlocked track, then verify the range is empty. Requires sequence in/out marks that do not span the whole sequence.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          app.enableQE();
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-
+          ${IN_OUT_EDIT_PREAMBLE}
+          var liftName = qeSeq.lift ? "lift" : (qeSeq.left ? "left" : null);
+          if (!liftName) return __error("This Premiere host exposes no QE lift command. No clips were changed.");
           try {
-            var qeSeq = qe.project.getActiveSequence();
-            qeSeq.lift();
-            return __result({ lifted: true });
-          } catch(e) {
-            return __error("Lift failed: " + e.message);
+            qeSeq[liftName]();
+          } catch (eLift) {
+            return __error("Lift failed: " + eLift.toString());
           }
+          var afterIndex = __inOutUndoIndex();
+          var leftovers = [];
+          var scan = function (tracks, kind) {
+            for (var t = 0; t < tracks.numTracks; t++) {
+              var track = tracks[t];
+              var locked = false;
+              try { locked = !!track.isLocked(); } catch (eLock) {}
+              if (locked) continue;
+              for (var c = 0; c < track.clips.numItems; c++) {
+                var clip = track.clips[c];
+                var cs = parseFloat(clip.start.ticks), ce = parseFloat(clip.end.ticks);
+                if (cs < outTicks - halfFrame && ce > inTicks + halfFrame) {
+                  leftovers.push({ track: kind + (t + 1), name: clip.name, startSeconds: __ticksToSeconds(String(cs)), endSeconds: __ticksToSeconds(String(ce)) });
+                }
+              }
+            }
+          };
+          scan(seq.videoTracks, "V");
+          scan(seq.audioTracks, "A");
+          if (leftovers.length) {
+            return __jsonStringify({ success: false, error: "Premiere's lift left clips inside the in/out range.", data: { leftovers: leftovers } });
+          }
+          return __result({
+            lifted: true,
+            inSeconds: inSeconds,
+            outSeconds: outSeconds,
+            gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            sequenceEndSeconds: __ticksToSeconds(seq.end),
+            undoStackIndexBefore: beforeIndex,
+            undoStackIndexAfter: afterIndex,
+            verified: true
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -884,21 +1000,38 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "Extract (remove and close gap) the content between sequence in/out points.",
+        "Extract (remove and close the gap) the content between the sequence in/out points on every unlocked track, then verify the sequence shortened by the range. Requires sequence in/out marks that do not span the whole sequence.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          app.enableQE();
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-
+          ${IN_OUT_EDIT_PREAMBLE}
+          var endBefore = parseFloat(seq.end);
           try {
-            var qeSeq = qe.project.getActiveSequence();
             qeSeq.extract();
-            return __result({ extracted: true });
-          } catch(e) {
-            return __error("Extract failed: " + e.message);
+          } catch (eExtract) {
+            return __error("Extract failed: " + eExtract.toString());
           }
+          var endAfter = parseFloat(seq.end);
+          var afterIndex = __inOutUndoIndex();
+          var removed = Math.min(outTicks, endBefore) - inTicks;
+          var shortenedBy = endBefore - endAfter;
+          var expectFullRipple = !anyLocked;
+          if (expectFullRipple ? Math.abs(shortenedBy - removed) > halfFrame : shortenedBy < -halfFrame) {
+            return __jsonStringify({ success: false, error: "Premiere's extract did not close the in/out range as expected.", data: {
+              sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)), sequenceEndAfterSeconds: __ticksToSeconds(String(endAfter)),
+              expectedShortenSeconds: __ticksToSeconds(String(removed)), undoStackIndexBefore: beforeIndex, undoStackIndexAfter: afterIndex } });
+          }
+          return __result({
+            extracted: true,
+            inSeconds: inSeconds,
+            outSeconds: outSeconds,
+            removedSeconds: __ticksToSeconds(String(shortenedBy)),
+            sequenceEndSeconds: __ticksToSeconds(String(endAfter)),
+            lockedTracksKept: anyLocked,
+            undoStackIndexBefore: beforeIndex,
+            undoStackIndexAfter: afterIndex,
+            verified: true
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1167,6 +1300,15 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         video_display_format?: number;
         audio_display_format?: number;
       }) => {
+        if (args.video_display_format === undefined && args.audio_display_format === undefined) {
+          return { success: false, error: "Provide video_display_format and/or audio_display_format." };
+        }
+        if (args.video_display_format !== undefined && !(Number.isInteger(args.video_display_format) && args.video_display_format >= 0 && args.video_display_format <= 11)) {
+          return { success: false, error: "video_display_format must be an integer from 0 to 11" };
+        }
+        if (args.audio_display_format !== undefined && ![0, 1].includes(args.audio_display_format)) {
+          return { success: false, error: "audio_display_format must be 0 (audio samples) or 1 (milliseconds)" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1178,7 +1320,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           ${args.audio_display_format !== undefined ? `settings.audioDisplayFormat = ${args.audio_display_format};` : ""}
           seq.setSettings(settings);
 
-          return __result({ sequence: seq.name, videoDisplayFormat: settings.videoDisplayFormat, audioDisplayFormat: settings.audioDisplayFormat });
+          var applied = seq.getSettings();
+          if (!applied) return __error("Premiere did not return sequence settings after the display-format update");
+          ${args.video_display_format !== undefined ? `if (Number(applied.videoDisplayFormat) !== ${args.video_display_format}) return __error("Premiere did not apply the requested video display format: got " + applied.videoDisplayFormat);` : ""}
+          ${args.audio_display_format !== undefined ? `if (Number(applied.audioDisplayFormat) !== ${args.audio_display_format}) return __error("Premiere did not apply the requested audio display format: got " + applied.audioDisplayFormat);` : ""}
+          return __result({ sequence: seq.name, videoDisplayFormat: applied.videoDisplayFormat, audioDisplayFormat: applied.audioDisplayFormat, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1223,7 +1369,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
                     startSeconds: __ticksToSeconds(clip.start.ticks),
                     endSeconds: __ticksToSeconds(clip.end.ticks)
                   };
-                  try { ci.enabled = !clip.isDisabled(); } catch(e) { ci.enabled = true; }
+                  try { ci.enabled = !__isClipDisabled(clip); } catch(e) { ci.enabled = true; }
                   clips.push(ci);
                 }
               }
@@ -1379,7 +1525,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     set_project_scratch_disk: {
       description:
-        "Set the project's scratch disk paths for captured video, audio, and previews.",
+        "Set the project's scratch disks for captured video, captured audio, video previews and audio previews in one call. Each path must be an existing folder or \"SameAsProject\"; any rejected path fails the call.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1399,6 +1545,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Path for audio previews",
           },
+          save_and_verify: {
+            type: "boolean",
+            description:
+              "Save the project afterwards and confirm the saved scratch-disk settings (default: false). Premiere has no scratch-disk getter, so without this the result is unverified.",
+          },
         },
       },
       handler: async (args: {
@@ -1406,60 +1557,47 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         captured_audio?: string;
         video_previews?: string;
         audio_previews?: string;
+        save_and_verify?: boolean;
       }) => {
-        const script = buildToolScript(`
-          var project = app.project;
-          if (!project) return __error("No project open");
-
-          var set = {};
-          ${
-            args.captured_video
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.captured_video)}", 0); set.capturedVideo = "${escapeForExtendScript(args.captured_video)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.captured_audio
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.captured_audio)}", 1); set.capturedAudio = "${escapeForExtendScript(args.captured_audio)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.video_previews
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.video_previews)}", 2); set.videoPreviews = "${escapeForExtendScript(args.video_previews)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.audio_previews
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.audio_previews)}", 3); set.audioPreviews = "${escapeForExtendScript(args.audio_previews)}"; } catch(e) {}`
-              : ""
-          }
-
-          return __result(set);
-        `);
-        return sendCommand(script, bridgeOptions);
+        const writes = ([
+          ["capturedVideo", args.captured_video],
+          ["capturedAudio", args.captured_audio],
+          ["videoPreviews", args.video_previews],
+          ["audioPreviews", args.audio_previews],
+        ] as Array<[string, string | undefined]>)
+          .filter(([, path]) => path !== undefined)
+          .map(([key, path]) => ({ key, path: path as string }));
+        return applyScratchDisks(bridgeOptions, writes, args.save_and_verify === true);
       },
     },
 
     get_project_scratch_disks: {
-      description: "Get the current scratch disk paths for the project.",
+      description:
+        "Get the project's scratch disk locations (captured media, previews, auto-save, Motion Graphics template media, and more). Premiere's scripting API has no scratch-disk getter, so the settings are read from the saved .prproj file; unsaved changes are not reflected. 'SameAsProject' resolves to the project's folder.",
       parameters: {},
       handler: async () => {
+        // project.getScratchDiskPath does not exist (verified on Premiere 25.2;
+        // only app.setScratchDiskPath is scriptable), so ask Premiere only for
+        // the project path and read the saved settings from the file.
         const script = buildToolScript(`
           var project = app.project;
-          if (!project) return __error("No project open");
-
-          var disks = {};
-          try { disks.capturedVideo = project.getScratchDiskPath(0); } catch(e) {}
-          try { disks.capturedAudio = project.getScratchDiskPath(1); } catch(e) {}
-          try { disks.videoPreviews = project.getScratchDiskPath(2); } catch(e) {}
-          try { disks.audioPreviews = project.getScratchDiskPath(3); } catch(e) {}
-
-          return __result(disks);
+          if (!project || !project.path) return __error("No saved project is open");
+          return __result({ projectPath: String(project.path) });
         `);
-        return sendCommand(script, bridgeOptions);
+        const result = await sendCommand(script, bridgeOptions);
+        if (!result.success) return result;
+        const projectPath = String((result.data as { projectPath?: unknown } | undefined)?.projectPath ?? "");
+        try {
+          return {
+            success: true,
+            data: { source: "saved_project_file", projectPath, disks: readScratchDisks(projectPath) },
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: `Could not read scratch disk settings from the saved project: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
       },
     },
 

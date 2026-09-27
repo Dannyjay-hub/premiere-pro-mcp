@@ -14,6 +14,7 @@ import { getEffectsTools } from "./tools/effects.js";
 import { getTransitionsTools } from "./tools/transitions.js";
 import { getAudioTools } from "./tools/audio.js";
 import { getTextTools } from "./tools/text.js";
+import { getStockTitleTools } from "./tools/stock-titles.js";
 import { getMarkerTools } from "./tools/markers.js";
 import { getTrackTools } from "./tools/tracks.js";
 import { getPlayheadTools } from "./tools/playhead.js";
@@ -141,7 +142,7 @@ const toolResultOutputSchema = fromJsonSchema({
       description: "The registered MCP tool name.",
     },
     data: {
-      description: "Tool-specific result data when ok is true.",
+      description: "Tool-specific result data when ok is true; on failure, diagnostic detail when the tool provides it.",
     },
     error: {
       type: "string",
@@ -158,6 +159,40 @@ function debugLog(message: string): void {
   if (debugEnabled) {
     console.error(`[premiere-pro-mcp] ${message}`);
   }
+}
+
+/**
+ * AJV reports an unknown argument only as "must NOT have additional
+ * properties". Name the offending keys and the accepted ones so a caller can
+ * fix a misspelling instead of guessing.
+ */
+function namingUnknownArguments(
+  schema: StandardSchemaWithJSON<unknown, unknown>,
+  allowed: string[] | null,
+): StandardSchemaWithJSON<unknown, unknown> {
+  if (!allowed) return schema;
+  const standard = schema["~standard"];
+  const allowedSet = new Set(allowed);
+  return {
+    "~standard": {
+      ...standard,
+      validate: async (value: unknown) => {
+        const result = await standard.validate(value);
+        if (!("issues" in result) || !result.issues || !value || typeof value !== "object" || Array.isArray(value)) {
+          return result;
+        }
+        const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
+        if (unknown.length === 0) return result;
+        const message = `unknown argument${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; this tool accepts: ${allowed.join(", ") || "no arguments"}`;
+        return {
+          issues: [
+            { message },
+            ...result.issues.filter((issue) => !/additional properties/.test(issue.message)),
+          ],
+        };
+      },
+    },
+  } as StandardSchemaWithJSON<unknown, unknown>;
 }
 
 /**
@@ -181,10 +216,20 @@ function jsonSchemaToInputSchema(
     return contentCached;
   }
 
-  const sourceSchema = params.$schema === undefined
+  const withDraft = params.$schema === undefined
     ? { $schema: JSON_SCHEMA_DRAFT_2020_12, ...params }
     : params;
-  const schema = fromJsonSchema(sourceSchema as JsonSchemaType);
+  // A misspelled argument (time_seconds for start_seconds) used to be dropped
+  // silently and the tool ran with its default instead. Reject unknown
+  // top-level arguments whenever a tool declares its properties.
+  const sourceSchema = withDraft.properties !== undefined && withDraft.additionalProperties === undefined
+    && withDraft.patternProperties === undefined
+    ? { ...withDraft, additionalProperties: false }
+    : withDraft;
+  const schema = namingUnknownArguments(
+    fromJsonSchema(sourceSchema as JsonSchemaType),
+    sourceSchema.additionalProperties === false ? Object.keys((sourceSchema.properties ?? {}) as object) : null,
+  );
   inputSchemaCache.set(params, schema);
   inputSchemaContentCache.set(cacheKey, schema);
   return schema;
@@ -214,6 +259,7 @@ function collectStaticTools(
     ...getTransitionsTools(bridgeOptions),
     ...getAudioTools(bridgeOptions),
     ...getTextTools(bridgeOptions),
+    ...getStockTitleTools(bridgeOptions),
     ...getMogrtAuthoringTools(bridgeOptions),
     ...getMogrtStudioTools(bridgeOptions),
     ...getRenderHandoffTools(bridgeOptions),
@@ -306,6 +352,28 @@ export interface ServerOptions {
   toolPacks?: string;
 }
 
+/**
+ * Local planners snap times to frames and default frame_rate to 30. On 24, 25,
+ * or 60 fps material that silently shifts every frame number, so surface a
+ * warning whenever a caller relies on that default.
+ */
+function withFrameRateDefaultWarning<TArgs, TResult>(tool: { parameters?: unknown; handler: (args: TArgs) => Promise<TResult> }) {
+  const frameRate = (tool.parameters as { properties?: Record<string, { description?: string }> } | undefined)?.properties?.frame_rate;
+  if (!frameRate || !/defaults to 30\b/.test(frameRate.description ?? "")) return tool.handler;
+  return async (args: TArgs): Promise<TResult> => {
+    const result = await tool.handler(args);
+    const input = args as Record<string, unknown> | undefined;
+    const outcome = result as { success?: boolean; data?: unknown };
+    if (input?.frame_rate !== undefined || !outcome?.success || !outcome.data || typeof outcome.data !== "object" || Array.isArray(outcome.data)) {
+      return result;
+    }
+    const data = outcome.data as Record<string, unknown>;
+    const warning = "frame_rate was not given, so frame numbers assume 30 fps. Pass the sequence frame rate (get_sequence_settings) for 24, 25, or 60 fps material.";
+    const warnings = Array.isArray(data.warnings) ? [...data.warnings, warning] : [warning];
+    return { ...(result as object), data: { ...data, warnings } } as TResult;
+  };
+}
+
 export function createServer(
   bridgeOptions: BridgeOptions,
   serverOptions: ServerOptions = {},
@@ -384,7 +452,7 @@ export function createServer(
     }
 
     const inputSchema = jsonSchemaToInputSchema(tool.parameters);
-    const guardedHandler = guardToolHandler(name, tool.handler, capabilities);
+    const guardedHandler = guardToolHandler(name, withFrameRateDefaultWarning(tool), capabilities);
 
     const annotations = annotationsForTool(name);
     server.registerTool(
@@ -440,17 +508,20 @@ export function createServer(
               ],
             };
           } else {
+            const failureData = (result as { data?: unknown }).data;
             return {
               structuredContent: structuredToolResult(
                 name,
                 false,
-                undefined,
+                failureData,
                 result.error,
               ),
               content: [
                 {
                   type: "text" as const,
-                  text: `Error: ${result.error}`,
+                  text: failureData === undefined || failureData === null
+                    ? `Error: ${result.error}`
+                    : `Error: ${result.error}\nDetails: ${JSON.stringify(failureData, null, 2)}`,
                 },
               ],
               isError: true,

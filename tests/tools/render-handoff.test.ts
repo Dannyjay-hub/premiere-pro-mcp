@@ -9,12 +9,14 @@ import { resolveCapabilities, capabilitiesForToolInvocation } from "../../src/se
 const folders: string[] = [];
 afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
 
-function fixture() {
+function fixture(options: { premiereOutsideWorkspace?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "render-handoff-")));
   folders.push(root);
+  const projectsFolder = options.premiereOutsideWorkspace ? realpathSync(mkdtempSync(path.join(os.tmpdir(), "premiere-projects-"))) : root;
+  if (projectsFolder !== root) folders.push(projectsFolder);
   const output = path.join(root, "render.mov");
   const aePath = path.join(root, "source.aep");
-  const ppPath = path.join(root, "edit.prproj");
+  const ppPath = path.join(projectsFolder, "edit.prproj");
   for (const name of [output, aePath, ppPath]) writeFileSync(name, "fixture");
   const args = { approved_workspace_path: root, output_path: output, ae_project_path: aePath, premiere_project_path: ppPath, queue_item_index: 1, target_bin_id: "bin-1" };
   const state = { status: "DONE", output, projectPath: ppPath, projectId: "project-1", binName: "Renders", compId: 5, imports: 0, aeCalls: 0, noReadback: false, timeout: false, clock: 100, modules: 1, binId: "bin-1" };
@@ -53,6 +55,12 @@ describe("completed AE render handoff", () => {
     expect(f.state.imports).toBe(1);
     await expect(f.apply(token)).rejects.toThrow("already used");
     await expect(f.preview()).rejects.toThrow("already in the target bin");
+  });
+
+  it("accepts a Premiere project that lives outside the workspace (live: the user's project could never be named)", async () => {
+    const f = fixture({ premiereOutsideWorkspace: true });
+    const token = await f.preview();
+    expect(await f.apply(token)).toMatchObject({ success: true, data: { importVerified: true } });
   });
 
   it.each(["QUEUED", "RENDERING", "ERR_STOPPED", "USER_STOPPED"])("rejects AE status %s without importing", async (status) => {

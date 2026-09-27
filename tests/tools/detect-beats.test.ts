@@ -91,4 +91,12 @@ describe("detect_beats analysis", () => {
     await expect(tools.detect_beats.handler({ media_path: mediaPath }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("invalid stream") });
   });
+
+  it("reports a decoded file with no steady pulse as no beat, not as a decode failure (live: quiet ambient bed)", async () => {
+    const mediaPath = createMediaFixture();
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: sampleBuffer(new Int16Array(200 * 12)), stderr: Buffer.alloc(0) });
+    const result = await tools.detect_beats.handler({ media_path: mediaPath }) as { success: boolean; error?: string };
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("No steady beat found") });
+    expect(result.error).not.toContain("could not decode");
+  });
 });

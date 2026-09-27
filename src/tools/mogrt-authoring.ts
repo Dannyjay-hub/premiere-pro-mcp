@@ -74,6 +74,8 @@ export interface MogrtAuthoringDependencies {
   send?: (script: string, options: BridgeOptions) => Promise<CommandResult>;
   directoryExists?: (candidate: string) => boolean;
   artifactStatus?: (candidate: string) => MogrtArtifactStatus;
+  /** How long to wait for AE to finish writing the .mogrt (tests pass 0). */
+  artifactWaitMs?: number;
   now?: () => number;
   tokenFactory?: () => string;
   operationIdFactory?: () => string;
@@ -86,6 +88,12 @@ export interface MogrtArtifactStatus {
 }
 
 const MAX_TEXT = 160;
+/**
+ * A MOGRT export blocks After Effects and, live, sometimes finished writing the
+ * file 10+ s after the call returned (and took over 30 s under load), so allow
+ * minutes for the command and a minute for the file.
+ */
+export const MOGRT_EXPORT_TIMEOUT_MS = 300000;
 const MAX_PATH = 4096;
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const FRAME_RATES = new Set([23.976, 24, 25, 29.97, 30, 50, 59.94, 60]);
@@ -163,7 +171,12 @@ export function validateMogrtBrandKit(value: unknown, workspacePath: string): Mo
     ...(logoPath ? { logo_path: logoPath } : {}),
     ...(input.accent_color === undefined ? {} : { accent_color: color(input.accent_color, "brand_kit.accent_color", "#2563EB") }),
     ...(input.text_color === undefined ? {} : { text_color: color(input.text_color, "brand_kit.text_color", "#FFFFFF") }),
-    safe_margin_percent: finiteNumber(input.safe_margin_percent, "brand_kit.safe_margin_percent", 0.1, 0.02, 0.25),
+    // Named "percent" but stored as a fraction of the frame: accept 5 (percent) as 0.05.
+    safe_margin_percent: finiteNumber(
+      typeof input.safe_margin_percent === "number" && input.safe_margin_percent > 1 && input.safe_margin_percent <= 25
+        ? input.safe_margin_percent / 100
+        : input.safe_margin_percent,
+      "brand_kit.safe_margin_percent (2-25 percent, or 0.02-0.25)", 0.1, 0.02, 0.25),
   };
 }
 
@@ -500,13 +513,67 @@ export function buildMogrtRecipeScript(plan: MogrtPlan): string {
           try { controllerNames.push(String(comp.getMotionGraphicsTemplateControllerName(controllerIndex))); } catch (controllerReadError) { controllerNames.push("<unreadable controller>"); }
         }
       }
+      // Exporting a template whose text uses a font that is not from Adobe Fonts makes
+      // After Effects stop on a modal warning (live: "Metropolis Bold ... not synced
+      // from Adobe"); suppressing that dialog cancels the export instead. So check the
+      // fonts first (AE 24+ app.fonts) and fail with the Adobe Fonts families on hand.
+      var fontsUsed = [];
+      var nonAdobeFonts = [];
+      for (var fontLayerIndex = 1; fontLayerIndex <= comp.numLayers; fontLayerIndex++) {
+        var textGroup = comp.layer(fontLayerIndex).property("ADBE Text Properties");
+        if (!textGroup) continue;
+        var fontName = String(textGroup.property("ADBE Text Document").value.font);
+        var seenFont = false;
+        for (var knownIndex = 0; knownIndex < fontsUsed.length; knownIndex++) if (fontsUsed[knownIndex] === fontName) seenFont = true;
+        if (seenFont) continue;
+        fontsUsed.push(fontName);
+        if (app.fonts && typeof app.fonts.getFontsByPostScriptName === "function") {
+          var matches = app.fonts.getFontsByPostScriptName(fontName);
+          if (!matches || !matches.length || matches[0].isFromAdobeFonts !== true) nonAdobeFonts.push(fontName);
+        }
+      }
+      if (nonAdobeFonts.length) {
+        var adobeFamilies = [];
+        try {
+          for (var familyIndex = 0; familyIndex < app.fonts.allFonts.length && adobeFamilies.length < 12; familyIndex++) {
+            var family = app.fonts.allFonts[familyIndex];
+            if (!family.length || family[0].isFromAdobeFonts !== true) continue;
+            // Text layers take PostScript names; suggest a Bold or Regular face.
+            var face = family[0];
+            for (var faceIndex = 0; faceIndex < family.length; faceIndex++) {
+              if (/^(Bold|Regular)$/i.test(String(family[faceIndex].styleName))) { face = family[faceIndex]; break; }
+            }
+            adobeFamilies.push(String(face.postScriptName));
+          }
+        } catch (familyError) {}
+        var compName = comp.name;
+        comp.remove();
+        return __aeError("The template's text uses " + nonAdobeFonts.join(", ") + ", which is not from Adobe Fonts. After Effects would stop the export on a warning dialog (and cancels it when dialogs are suppressed), so nothing was exported and the " + compName + " composition was removed. Set brand_kit.font_family to the PostScript name of an Adobe Fonts face" + (adobeFamilies.length ? " (available here: " + adobeFamilies.join(", ") + ")" : "") + ", or activate the font from Adobe Fonts.");
+      }
       project.save(project.file);
-      var hostExportReturn = comp.exportAsMotionGraphicsTemplate(false, outputDirectory);
+      // AE 25.1 writes the .mogrt but can leave the export call's scripting objects
+      // invalid (live: "Object is invalid" right after a successful export). Read
+      // everything needed first, catch the export error, and never touch comp after
+      // it; the server decides success from the file itself.
+      var compositionName = String(comp.name);
+      var hostExportReturn = false;
+      var hostExportError = null;
+      app.beginSuppressDialogs();
+      try {
+        hostExportReturn = comp.exportAsMotionGraphicsTemplate(false, outputDirectory);
+      } catch (exportError) {
+        try { hostExportError = String(exportError); } catch (describeError) { hostExportError = "export raised an error"; }
+      } finally {
+        app.endSuppressDialogs(false);
+      }
       return __aeResult({
         exportRequested: true,
         hostExportReturn: hostExportReturn === true,
         artifactExistsAtHostReturn: new File(outputPath).exists,
         outputPath: outputPath,
+        compositionName: compositionName,
+        hostExportError: hostExportError,
+        fontsUsed: fontsUsed,
         recipe: "${plan.recipe}",
         textControls: "${plan.text_controls}",
         projectMutated: true,
@@ -544,6 +611,20 @@ export function inspectMogrtArtifact(candidate: string): MogrtArtifactStatus {
   }
 }
 
+/**
+ * AE can finish writing the .mogrt shortly after exportAsMotionGraphicsTemplate
+ * returns, so give the file a few seconds before calling the export failed.
+ */
+async function awaitMogrtArtifact(candidate: string, check: (path: string) => MogrtArtifactStatus, timeoutMs: number): Promise<MogrtArtifactStatus> {
+  const deadline = Date.now() + timeoutMs;
+  let status = check(candidate);
+  while ((!status.exists || !status.zip_header_valid) && Date.now() < deadline) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    status = check(candidate);
+  }
+  return status;
+}
+
 function expectedArtifact(value: unknown): { workspace: string; artifact: string } {
   const input = asObject(value, "arguments");
   assertOnlyKeys(input, ["approved_workspace_path", "mogrt_path"], "arguments");
@@ -570,6 +651,7 @@ export function getMogrtAuthoringTools(
     try { return statSync(candidate).isDirectory(); } catch { return false; }
   });
   const artifactStatus = dependencies.artifactStatus ?? inspectMogrtArtifact;
+  const artifactWaitMs = dependencies.artifactWaitMs ?? 60000;
   const now = dependencies.now ?? Date.now;
   const tokenFactory = dependencies.tokenFactory ?? randomUUID;
   const nextOperationId = dependencies.operationIdFactory ?? createOperationId;
@@ -636,11 +718,11 @@ export function getMogrtAuthoringTools(
             properties: {
               name: { type: "string" },
               name_prefix: { type: "string" },
-              font_family: { type: "string" },
+              font_family: { type: "string", description: "PostScript font name for the template text (for example Halogen-Bold). Use a font from Adobe Fonts: After Effects will not export a template with other fonts unattended." },
               logo_path: { type: "string" },
               accent_color: { type: "string" },
               text_color: { type: "string" },
-              safe_margin_percent: { type: "number" },
+              safe_margin_percent: { type: "number", description: "Title-safe margin: 2-25 (percent) or 0.02-0.25 (fraction of the frame); default 10%." },
             },
             required: ["name"],
           },
@@ -695,19 +777,20 @@ export function getMogrtAuthoringTools(
         assertOnlyKeys(input, ["preview_token", "confirm_export"], "arguments");
         if (input.confirm_export !== true) throw new Error("confirm_export must be true to create the MOGRT");
         const plan = takePlan(input.preview_token);
-        const result = await send(buildMogrtRecipeScript(plan), bridgeOptions);
+        const result = await send(buildMogrtRecipeScript(plan), { ...bridgeOptions, timeoutMs: MOGRT_EXPORT_TIMEOUT_MS });
         if (!result.success) {
           return { ...result, error: `${result.error ?? "MOGRT authoring failed"} (operation ${operationId})` };
         }
-        return {
-          ...result,
-          data: {
-            ...(result.data as object),
-            operationId,
-            artifact: artifactStatus(plan.output_path),
-            artifactPath: plan.output_path,
-          },
-        };
+        const artifact = await awaitMogrtArtifact(plan.output_path, artifactStatus, artifactWaitMs);
+        const data = { ...(result.data as object), operationId, artifact, artifactPath: plan.output_path };
+        if (!artifact.exists || !artifact.zip_header_valid) {
+          return {
+            success: false,
+            error: `After Effects built the composition but no valid .mogrt was written to ${plan.output_path} (exportAsMotionGraphicsTemplate returned ${String((result.data as { hostExportReturn?: unknown })?.hostExportReturn)}). The composition stays in the AE project. (operation ${operationId})`,
+            data,
+          };
+        }
+        return { ...result, data };
       },
     },
     verify_mogrt_artifact: {

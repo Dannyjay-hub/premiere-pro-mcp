@@ -138,11 +138,16 @@ function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, med
 }
 
 function __ticksToTimecode(ticks, fps) {
-  var totalSeconds = __ticksToSeconds(ticks);
-  var hours = Math.floor(totalSeconds / 3600);
-  var minutes = Math.floor((totalSeconds % 3600) / 60);
-  var secs = Math.floor(totalSeconds % 60);
-  var frames = Math.floor((totalSeconds % 1) * fps);
+  // Count whole frames from ticks first. Deriving frames from fractional
+  // seconds floors float error: 121.6 s at 25 fps gave frame 14 instead of 15.
+  var totalFrames = Math.floor(parseFloat(ticks) * fps / TICKS_PER_SECOND + 1e-6);
+  var framesPerHour = fps * 3600;
+  var hours = Math.floor(totalFrames / framesPerHour);
+  var remainder = totalFrames - hours * framesPerHour;
+  var minutes = Math.floor(remainder / (fps * 60));
+  remainder -= minutes * fps * 60;
+  var secs = Math.floor(remainder / fps);
+  var frames = remainder - secs * fps;
   return __pad(hours) + ":" + __pad(minutes) + ":" + __pad(secs) + ":" + __pad(frames);
 }
 
@@ -185,9 +190,148 @@ function __getCurrentActiveSequence() {
   return __isCurrentProjectSequence(sequence) ? sequence : null;
 }
 
+// Sequence.getInPoint/getOutPoint/getWorkArea*Point return SECONDS (as a
+// string), not ticks, and -400000 when the point is unset (verified on
+// Premiere Pro 25.2). Returns null for unset or unreadable points.
+function __sequencePointSeconds(value) {
+  var seconds = Number(value);
+  if (!isFinite(seconds) || seconds <= -399999) return null;
+  return seconds;
+}
+
+// Premiere reports sample rates as a Time holding one sample period. Returns
+// the rate in Hz (e.g. 48000), or null when it cannot be derived.
+function __sampleRateHz(value) {
+  if (value === null || value === undefined) return null;
+  var ticks = NaN;
+  try { if (value.ticks !== undefined) ticks = parseFloat(value.ticks); } catch (eTicks) {}
+  if (isFinite(ticks) && ticks > 0) return Math.round(TICKS_PER_SECOND / ticks);
+  var numeric = Number(value);
+  if (isFinite(numeric) && numeric > 1) return Math.round(numeric);
+  return null;
+}
+
+function __sequenceFrameSize(seq) {
+  var width = NaN, height = NaN;
+  try { width = Number(seq.frameSizeHorizontal); height = Number(seq.frameSizeVertical); } catch (eSize) {}
+  if (!(width > 0 && height > 0)) {
+    try { var settings = seq.getSettings(); width = Number(settings.videoFrameWidth); height = Number(settings.videoFrameHeight); } catch (eSettings) {}
+  }
+  return { width: width, height: height };
+}
+
+// Anchor Point is relative to the clip's own source frame.
+function __clipSourceFrameSize(clip, seq) {
+  try {
+    var info = /VideoInfo>\s*([0-9]+)\s*x\s*([0-9]+)/.exec(String(clip.projectItem.getProjectMetadata()));
+    if (info) return { width: Number(info[1]), height: Number(info[2]) };
+  } catch (eInfo) {}
+  return __sequenceFrameSize(seq);
+}
+
+// Premiere's scripting API stores Motion Position and Anchor Point normalized
+// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools take pixels,
+// so scale before writing. Writing pixels directly threw clips ~1000 frame
+// widths off screen. The current value is not used to guess the space: a clip
+// already damaged that way reads back in the thousands.
+function __motionPointScale(prop, frame) {
+  if (!(frame.width > 0 && frame.height > 0)) return null;
+  return { x: 1 / frame.width, y: 1 / frame.height, normalized: true };
+}
+
+// Premiere renames Motion "Scale" to "Scale Height" once a clip has been set
+// to non-uniform scale, and keeps that name after uniform scale is turned
+// back on (verified on 25.2). Both names refer to the same parameter.
+function __propertyNameMatches(actual, wanted) {
+  actual = String(actual);
+  wanted = String(wanted);
+  if (actual === wanted) return true;
+  return (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
+}
+
+// TrackItem.isDisabled() does not exist on Premiere 25.2; the state is the
+// boolean "disabled" property. Callers wrapped isDisabled() in try/catch, so
+// every disabled clip was silently reported as enabled.
+function __isClipDisabled(clip) {
+  try {
+    if (typeof clip.disabled === "boolean") return clip.disabled;
+    if (clip.disabled === 1 || clip.disabled === 0) return clip.disabled === 1;
+  } catch (eDisabled) {}
+  try { if (typeof clip.isDisabled === "function") return !!clip.isDisabled(); } catch (eIsDisabled) {}
+  return false;
+}
+
+// How many timeline clips, in every sequence, use this project item.
+function __projectItemUsage(item) {
+  var wanted = String(item.nodeId);
+  var usage = { clips: 0, sequences: [] };
+  for (var sq = 0; sq < app.project.sequences.numSequences; sq++) {
+    var sequenceInUse = app.project.sequences[sq];
+    var hit = false;
+    var groups = [sequenceInUse.videoTracks, sequenceInUse.audioTracks];
+    for (var g = 0; g < groups.length; g++) {
+      for (var t = 0; t < groups[g].numTracks; t++) {
+        var trackClips = groups[g][t].clips;
+        for (var c = 0; c < trackClips.numItems; c++) {
+          try {
+            if (trackClips[c].projectItem && String(trackClips[c].projectItem.nodeId) === wanted) { usage.clips++; hit = true; }
+          } catch (eUse) {}
+        }
+      }
+    }
+    if (hit) usage.sequences.push(String(sequenceInUse.name));
+  }
+  return usage;
+}
+
+// Premiere has no documented delete for a clip/file project item, but deleting
+// a bin deletes what it contains. Move the item into a fresh temporary bin and
+// delete that bin; restore on failure. Callers must refuse items still used on
+// a timeline, because deleting the item also removes those timeline clips.
+function __deleteProjectItemViaBin(item) {
+  var holder = null;
+  try { holder = app.project.rootItem.createBin("mcp-delete-" + new Date().getTime()); } catch (eCreate) {}
+  if (!holder) return { ok: false, error: "Premiere could not create a temporary bin for the deletion." };
+  var originalParent = null;
+  try { originalParent = item.getBin ? item.getBin() : null; } catch (eParent) {}
+  try { item.moveBin(holder); } catch (eMove) {
+    try { holder.deleteBin(); } catch (eCleanup) {}
+    return { ok: false, error: "Premiere could not move the item into a temporary bin: " + eMove.toString() };
+  }
+  try { holder.deleteBin(); } catch (eDelete) {
+    try { if (originalParent) item.moveBin(originalParent); } catch (eRestore) {}
+    return { ok: false, error: "Premiere could not delete the temporary bin: " + eDelete.toString() };
+  }
+  return { ok: true };
+}
+
 function __isBinItem(item) {
   if (!item) return false;
   try { return item.type === 2; } catch (e) { return false; }
+}
+
+// ProjectItemType names: CLIP=1, BIN=2, ROOT=3, FILE=4. Written as if/else on
+// purpose: ExtendScript parses chained ternaries (a ? b : c ? d : e) left to
+// right, so "item.type === 1 ? 'clip' : item.type === 2 ? ..." yields the wrong
+// name in Premiere even though it is correct in Node.
+function __projectItemTypeName(item) {
+  var type = null;
+  try { type = item.type; } catch (e) { return "unknown"; }
+  if (type === 1) return "clip";
+  if (type === 2) return "bin";
+  if (type === 3) return "root";
+  if (type === 4) return "file";
+  return "unknown";
+}
+
+// Like __projectItemTypeName, but reports sequences (CLIP items whose
+// isSequence() is true) as "sequence".
+function __projectItemKind(item) {
+  var name = __projectItemTypeName(item);
+  if (name === "clip") {
+    try { if (item.isSequence && item.isSequence()) return "sequence"; } catch (e) {}
+  }
+  return name;
 }
 
 // Some bin-typed project items (search bins, items mid-refresh) expose no
@@ -393,6 +537,48 @@ function __findQeClipByDomClip(qeTrack, domClip) {
 // empty catalog, so distinguish that host limitation from a misspelled effect
 // name. Calling addVideoEffect/addAudioEffect without a catalog entry is not a
 // safe fallback; an available UXP bridge has its own documented effect workflow.
+// QE catalogs come in two shapes: legacy collections ({ numItems, [i]: { name } })
+// and, on Premiere 25.2, plain arrays of name strings. Normalize both to the
+// legacy shape; string entries become { name, __qeStub: true } and must be
+// resolved with __qeEffectObject / __qeTransitionObject before use.
+function __qeCatalogFrom(list) {
+  var out = { numItems: 0 };
+  if (!list) return out;
+  var count = NaN;
+  try { if (typeof list.numItems !== "undefined") count = Number(list.numItems); } catch (eCount) {}
+  if (isNaN(count)) { try { count = Number(list.length); } catch (eLength) {} }
+  if (isNaN(count) || count < 0) return out;
+  for (var i = 0; i < count; i++) {
+    var entry = null;
+    try { entry = list[i]; } catch (eEntry) {}
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry === "string") entry = { name: entry, __qeStub: true };
+    out[out.numItems] = entry;
+    out.numItems++;
+  }
+  return out;
+}
+
+function __qeEffectObject(kind, entry) {
+  if (!entry) return null;
+  if (!entry.__qeStub) return entry;
+  try {
+    return kind === "audio" ? qe.project.getAudioEffectByName(entry.name) : qe.project.getVideoEffectByName(entry.name);
+  } catch (eByName) {
+    return null;
+  }
+}
+
+function __qeTransitionObject(kind, entry) {
+  if (!entry) return null;
+  if (!entry.__qeStub) return entry;
+  try {
+    return kind === "audio" ? qe.project.getAudioTransitionByName(entry.name) : qe.project.getVideoTransitionByName(entry.name);
+  } catch (eByName) {
+    return null;
+  }
+}
+
 function __getQeEffectCatalog(kind) {
   var label = kind === "audio" ? "audio" : "video";
   if (typeof app === "undefined" || typeof app.enableQE !== "function") {
@@ -421,8 +607,9 @@ function __getQeEffectCatalog(kind) {
     return { ok: false, error: "Premiere could not read its QE " + label + " effect catalog: " + eList.toString() };
   }
 
-  var count = effects && typeof effects.numItems !== "undefined" ? Number(effects.numItems) : NaN;
-  if (isNaN(count) || count < 1) {
+  effects = __qeCatalogFrom(effects);
+  var count = effects.numItems;
+  if (count < 1) {
     return {
       ok: false,
       error: "Premiere returned an empty legacy QE " + label + " effect catalog; no effect was applied. If the authenticated Premiere UXP bridge is connected, use manage_clip_effects_uxp with action 'catalog' and then 'add' instead. Existing clip components can still be inspected or edited."
@@ -587,10 +774,18 @@ function __findH264Preset() {
   }
   if (!candidates.length) return "";
 
-  for (var j = 0; j < candidates.length; j++) {
-    if (candidates[j].name.toLowerCase().indexOf("match source - high") !== -1) return candidates[j].path;
+  // Prefer AME's H.264 exporter folder ("..._48323634", hex "H264"), which writes
+  // MP4. Presets named "H264 ..." also live in the QuickTime folder
+  // ("..._4D6F6F56", "MooV") and write MOV (live 25.2).
+  var ranked = [];
+  for (var k = 0; k < candidates.length; k++) {
+    var mp4 = /_48323634$/i.test(candidates[k].format);
+    var high = candidates[k].name.toLowerCase().indexOf("match source - high") !== -1;
+    ranked.push({ path: candidates[k].path, score: (mp4 ? 2 : 0) + (high ? 1 : 0) });
   }
-  return candidates[0].path;
+  var best = ranked[0];
+  for (var j = 1; j < ranked.length; j++) if (ranked[j].score > best.score) best = ranked[j];
+  return best.path;
 }
 
 // Candidate presets for manage_proxies auto-discovery, in preference order:
@@ -722,7 +917,10 @@ function __exportStillFrame(outputPath, ticks) {
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
-  var qePath = basePath + (wantJpeg ? ".jpg" : ".png");
+  // QE cuts its output name at the first dot ("shot-12.5s" became "shot-12.png"),
+  // so hand it a dot-free temporary name in the same folder and rename after.
+  var qeBase = outputPath.substring(0, slash + 1) + "mcp-frame-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000);
+  var qePath = qeBase + (wantJpeg ? ".jpg" : ".png");
 
   // Clear any stale file (under either name) so that a file existing afterwards proves we wrote it.
   var stale = new File(outputPath);
@@ -746,7 +944,7 @@ function __exportStillFrame(outputPath, ticks) {
           notes.push("QE: exportFrame" + (wantJpeg ? "JPEG" : "PNG") + " unavailable on this build");
         } else {
           at = __qeTimecodeForTicks(seq, atTicks);
-          notes.push("QE " + qeSeq.name + " @ " + at.timecode + " (frame " + at.frame + ") returned " + fn.call(qeSeq, at.timecode, basePath));
+          notes.push("QE " + qeSeq.name + " @ " + at.timecode + " (frame " + at.frame + ") returned " + fn.call(qeSeq, at.timecode, qeBase));
         }
       }
     } catch (eQE) {
@@ -754,13 +952,16 @@ function __exportStillFrame(outputPath, ticks) {
     }
   }
 
-  // QE always names the file base + ".png"/".jpg"; give the caller the name they asked for.
+  // Give the caller the name they asked for, and never leave the temporary file behind.
   var produced = new File(qePath);
-  if (qePath !== outputPath && produced.exists && produced.length > 0) {
-    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) {}
+  if (produced.exists && produced.length > 0) {
+    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) { notes.push("QE: could not rename " + qePath + ": " + e.toString()); }
   }
+  var leftover = new File(qePath);
+  if (leftover.exists) { try { leftover.remove(); } catch (e) {} }
 
-  var written = __firstWrittenFile(outputPath);
+  var exactFile = new File(outputPath);
+  var written = exactFile.exists && exactFile.length > 0 ? exactFile.fsName : "";
   if (written) {
     return { ok: true, method: "qe", path: written, notes: notes, timecode: at ? at.timecode : null, frame: at ? at.frame : null };
   }
@@ -839,6 +1040,191 @@ function __exportStillFrame(outputPath, ticks) {
 // tracks. Premiere's UI insert also razors and shifts every sync-locked track;
 // the public DOM Track object has no isSyncLocked. QE exposes it. Default
 // scope "sync_locked" matches the UI; "target_tracks" is an explicit desync.
+// QE razor() splits each track independently, and on Premiere 25.2 the new
+// right-hand pieces of linked video/audio come out unlinked (the left pieces
+// keep the link). Unlinked pieces then drift out of sync on later edits.
+// Capture link groups that span the cut before razoring, then relink the
+// matching right-hand pieces and restore the user's selection.
+// Result helpers for per-clip edit functions that run once for a clip and once
+// for each of its linked partners.
+function __editOk(data) { return { ok: true, data: data }; }
+function __editFail(message) { return { ok: false, error: String(message) }; }
+
+// Colour parameters report getValue() as a packed 64-bit integer (live 25.2:
+// 0xff0014002800a0c8 for ARGB 255,20,40,160), which a JS double cannot hold
+// exactly. Read them with getColorValue() instead, as [alpha, red, green, blue].
+// getColorValue() has no time argument, so an animated colour is flagged.
+function __readableParamValue(prop, value) {
+  if (typeof value !== "number" || value < 4294967296) return { value: value };
+  var color = null;
+  try { if (typeof prop.getColorValue === "function") color = prop.getColorValue(); } catch (eColor) {}
+  if (!color || color.length !== 4) return { value: value };
+  var animated = false;
+  try { animated = !!prop.isTimeVarying(); } catch (eVarying) {}
+  var out = { value: [Number(color[0]), Number(color[1]), Number(color[2]), Number(color[3])], valueType: "color_argb" };
+  if (animated) out.note = "Animated colour: getColorValue() reports the current value, not the value at the requested time.";
+  return out;
+}
+
+// new Folder(path).exists is also true when path is a FILE (live 25.2); calling
+// Folder(path) without new returns a File object for a file, so test the type.
+function __isDirectory(path) {
+  var entry = Folder(path);
+  return entry instanceof Folder && entry.exists;
+}
+
+// Open projects (Premiere keeps several open; app.project is the active one).
+// Paths compare case-insensitively with forward slashes.
+function __normProjectPath(path) {
+  return String(path || "").split(String.fromCharCode(92)).join("/").toLowerCase();
+}
+function __openProjects() {
+  var list = [];
+  try {
+    for (var i = 0; i < app.projects.numProjects; i++) list.push(app.projects[i]);
+  } catch (eProjects) {
+    if (app.project) list.push(app.project);
+  }
+  return list;
+}
+function __openProjectPaths() {
+  var paths = [];
+  var list = __openProjects();
+  for (var i = 0; i < list.length; i++) paths.push(String(list[i].path));
+  return paths;
+}
+function __findOpenProject(path) {
+  var list = __openProjects();
+  for (var i = 0; i < list.length; i++) if (__normProjectPath(list[i].path) === __normProjectPath(path)) return list[i];
+  return null;
+}
+
+// Remove a timeline clip (a __findClip result) without rippling, plus its
+// linked audio/video partners when includeLinked is true (Premiere's Clear on
+// a linked clip), then verify every removed clip is gone.
+function __removeClipAndPartners(result, includeLinked) {
+  var targets = [result.clip];
+  if (includeLinked) {
+    var partners = __linkedPartnerClips(result);
+    for (var p = 0; p < partners.length; p++) targets.push(partners[p].clip);
+  }
+  var ids = [];
+  var names = [];
+  for (var t = 0; t < targets.length; t++) {
+    ids.push(String(targets[t].nodeId));
+    names.push(targets[t].name);
+  }
+  for (var r = 0; r < targets.length; r++) {
+    try {
+      targets[r].remove(false, false);
+    } catch (eRemove) {
+      return __editFail("Could not remove " + names[r] + ": " + eRemove.toString());
+    }
+  }
+  var left = [];
+  for (var v = 0; v < ids.length; v++) if (__findClip(ids[v])) left.push(names[v]);
+  if (left.length) return __editFail("Premiere did not remove: " + left.join(", "));
+  return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
+}
+
+// Linked partners of a clip on other tracks (its synced audio for a video
+// clip, and vice versa). getLinkedItems() returns null for unlinked clips.
+function __linkedPartnerClips(result) {
+  var partners = [];
+  var linked = null;
+  try { linked = result.clip.getLinkedItems(); } catch (eLinked) {}
+  for (var i = 0; linked && i < linked.numItems; i++) {
+    var id = String(linked[i].nodeId);
+    if (id === String(result.clip.nodeId)) continue;
+    var located = __findClip(id);
+    if (!located) continue;
+    if (located.trackType === result.trackType && located.trackIndex === result.trackIndex) continue;
+    partners.push(located);
+  }
+  return partners;
+}
+
+function __captureLinkGroupsAt(seq, cutTicks, onlyTracks) {
+  var cut = parseFloat(cutTicks);
+  var groups = [];
+  var seen = {};
+  var kinds = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
+  for (var k = 0; k < kinds.length; k++) {
+    var tracks = kinds[k][1];
+    for (var t = 0; t < tracks.numTracks; t++) {
+      for (var c = 0; c < tracks[t].clips.numItems; c++) {
+        var clip = tracks[t].clips[c];
+        if (!(parseFloat(clip.start.ticks) < cut - 1 && parseFloat(clip.end.ticks) > cut + 1)) continue;
+        var linked = null;
+        try { linked = clip.getLinkedItems(); } catch (eLinked) {}
+        if (!linked || !(linked.numItems > 1)) continue;
+        var members = [];
+        var ids = [];
+        for (var li = 0; li < linked.numItems; li++) {
+          var member = __findClip(String(linked[li].nodeId));
+          if (!member) continue;
+          var ms = parseFloat(member.clip.start.ticks);
+          var me = parseFloat(member.clip.end.ticks);
+          if (!(ms < cut - 1 && me > cut + 1)) continue;
+          if (onlyTracks && !onlyTracks[member.trackType + ":" + member.trackIndex]) { members = []; break; }
+          members.push({ trackType: member.trackType, trackIndex: member.trackIndex });
+          ids.push(String(linked[li].nodeId));
+        }
+        ids.sort();
+        var key = ids.join("|");
+        if (members.length > 1 && !seen[key]) { seen[key] = true; groups.push(members); }
+      }
+    }
+  }
+  return groups;
+}
+
+function __relinkRazoredPieces(seq, cutTicks, groups) {
+  var outcome = { relinked: 0, failures: [] };
+  if (!groups.length) return outcome;
+  var cut = parseFloat(cutTicks);
+  var tolerance = seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24;
+  var previous = [];
+  try {
+    var selection = seq.getSelection();
+    for (var p = 0; selection && p < selection.length; p++) previous.push(String(selection[p].nodeId));
+  } catch (eSelection) {}
+  function clearSelection() {
+    try {
+      var current = seq.getSelection();
+      for (var q = 0; current && q < current.length; q++) current[q].setSelected(false, true);
+    } catch (eClear) {}
+  }
+  for (var g = 0; g < groups.length; g++) {
+    var pieces = [];
+    for (var m = 0; m < groups[g].length; m++) {
+      var info = groups[g][m];
+      var track = info.trackType === "video" ? seq.videoTracks[info.trackIndex] : seq.audioTracks[info.trackIndex];
+      for (var c = 0; track && c < track.clips.numItems; c++) {
+        if (Math.abs(parseFloat(track.clips[c].start.ticks) - cut) <= tolerance) { pieces.push(track.clips[c]); break; }
+      }
+    }
+    if (pieces.length < 2) { outcome.failures.push("could not find the right-hand pieces to relink"); continue; }
+    clearSelection();
+    try {
+      for (var s = 0; s < pieces.length; s++) pieces[s].setSelected(true, true);
+      seq.linkSelection();
+    } catch (eLink) {
+      outcome.failures.push(eLink.toString());
+    }
+    var relinked = null;
+    try { relinked = pieces[0].getLinkedItems(); } catch (eCheck) {}
+    if (relinked && relinked.numItems >= pieces.length) outcome.relinked++;
+    else outcome.failures.push("Premiere did not relink the pieces after the cut");
+  }
+  clearSelection();
+  for (var r = 0; r < previous.length; r++) {
+    var again = __findClip(previous[r]);
+    if (again) { try { again.clip.setSelected(true, true); } catch (eRestore) {} }
+  }
+  return outcome;
+}
+
 function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, audioTrackIndex, scope) {
   if (!seq) return { ok: false, error: "No active sequence" };
   if (!item) return { ok: false, error: "No clip to insert" };
@@ -886,6 +1272,20 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     return { ok: false, error: "The source clip has no positive in/out duration, so an insert cannot be verified." };
   }
 
+  // insertClip only ripples a target track that actually receives part of the
+  // item: an audio-only item leaves the video target in place, and a still or
+  // silent video leaves the audio target in place. Such a target must be
+  // treated like any other track (shifted only if sync-locked), or it ends up
+  // out of sync with everything that moved. getIn/OutPoint(1) is video media,
+  // (2) audio; an unreadable span keeps the target assumption.
+  function mediaSpan(mediaType) {
+    try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (eSpan) { return null; }
+  }
+  var videoSpan = mediaSpan(1);
+  var audioSpan = mediaSpan(2);
+  var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+  var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+
   function domTrackFor(type, idx) {
     return type === "video" ? seq.videoTracks[idx] : seq.audioTracks[idx];
   }
@@ -918,15 +1318,15 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     parts.push({ type: type, index: idx, domTrack: dt, isTarget: isTarget });
   }
 
-  addPart("video", vTrackIndex, true);
-  addPart("audio", aTrackIndex, true);
+  if (videoReceives) addPart("video", vTrackIndex, true);
+  if (audioReceives) addPart("audio", aTrackIndex, true);
 
   if (!targetOnly) {
     var vN = seq.videoTracks.numTracks;
     var aN = seq.audioTracks.numTracks;
     var ti;
     for (ti = 0; ti < vN; ti++) {
-      if (ti === vTrackIndex) continue;
+      if (ti === vTrackIndex && videoReceives) continue;
       var slv = null;
       try {
         var qv = qeTrackFor("video", ti);
@@ -938,7 +1338,7 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
       if (slv) addPart("video", ti, false);
     }
     for (ti = 0; ti < aN; ti++) {
-      if (ti === aTrackIndex) continue;
+      if (ti === aTrackIndex && audioReceives) continue;
       var sla = null;
       try {
         var qa = qeTrackFor("audio", ti);
@@ -1013,6 +1413,11 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
         return { ok: false, error: "Insert refused; nothing was changed. Sync-locked " + shiftPlan[pi].type + " track " + shiftPlan[pi].index + " has a clip spanning the insert point and QE razor is unavailable, so those tracks cannot be rippled without slicing through them. Razor them first or pass scope 'target_tracks' (which will desync other tracks)." };
       }
     }
+    var razoredTracks = {};
+    for (pi = 0; pi < shiftPlan.length; pi++) {
+      if (shiftPlan[pi].straddlers.length) razoredTracks[shiftPlan[pi].type + ":" + shiftPlan[pi].index] = true;
+    }
+    var insertLinkGroups = __captureLinkGroupsAt(seq, insertTicks, razoredTracks);
     var razored = [];
     for (pi = 0; pi < shiftPlan.length; pi++) {
       if (!shiftPlan[pi].straddlers.length) continue;
@@ -1036,6 +1441,10 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
       if (stillSpan) {
         return { ok: false, error: "QE razor did not split a spanning clip on " + shiftPlan[pi].type + " track " + shiftPlan[pi].index + ", so the timeline is partially changed. Razor that track at the insert point or pass scope 'target_tracks' (which will desync other tracks)." };
       }
+    }
+    var insertRelink = __relinkRazoredPieces(seq, insertTicks, insertLinkGroups);
+    if (insertRelink.failures.length) {
+      return { ok: false, error: "QE razored the sync-locked tracks but did not keep " + insertRelink.failures.length + " linked video/audio group(s) linked (" + insertRelink.failures.join("; ") + "), so the timeline is partially changed. Relink them with link_selection or use Undo." };
     }
   }
 
@@ -1180,19 +1589,37 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
   return { ok: true, data: data };
 }
 
+function __jsonEscapeString(value) {
+  return '"' + value
+    .replace(/\\\\/g, "\\\\\\\\")
+    .replace(/"/g, '\\\\"')
+    .replace(/\\n/g, "\\\\n")
+    .replace(/\\r/g, "\\\\r")
+    .replace(/\\t/g, "\\\\t")
+    .replace(/[\\u0000-\\u001f\\u2028\\u2029]/g, function (ch) {
+      var hex = ch.charCodeAt(0).toString(16);
+      while (hex.length < 4) hex = "0" + hex;
+      return "\\\\u" + hex;
+    }) + '"';
+}
+
 function __jsonStringify(obj) {
   // ES3-compatible JSON stringify. Never delegate to JSON.stringify here: the
   // global JSON polyfill above is a wrapper around THIS function, so delegating
   // creates infinite mutual recursion ("InternalError: Stack overrun") that took
   // down every __result call in the shared engine.
-  if (obj === null) return "null";
-  if (obj === undefined) return "undefined";
-  if (typeof obj === "string") return '"' + obj.replace(/\\\\/g, "\\\\\\\\").replace(/"/g, '\\\\"').replace(/\\n/g, "\\\\n") + '"';
-  if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
+  // Output must always be valid JSON: one NaN, undefined, or raw control
+  // character would otherwise make the whole tool response unparseable.
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "string") return __jsonEscapeString(obj);
+  if (typeof obj === "number") return isFinite(obj) ? String(obj) : "null";
+  if (typeof obj === "boolean") return String(obj);
+  if (typeof obj === "function") return "null";
   if (obj instanceof Array) {
     var arr = [];
     for (var i = 0; i < obj.length; i++) {
-      arr.push(__jsonStringify(obj[i]));
+      var item = obj[i];
+      arr.push(item === undefined || typeof item === "function" ? "null" : __jsonStringify(item));
     }
     return "[" + arr.join(",") + "]";
   }
@@ -1200,12 +1627,14 @@ function __jsonStringify(obj) {
     var parts = [];
     for (var k in obj) {
       if (obj.hasOwnProperty(k)) {
-        parts.push(__jsonStringify(k) + ":" + __jsonStringify(obj[k]));
+        var member = obj[k];
+        if (member === undefined || typeof member === "function") continue;
+        parts.push(__jsonEscapeString(String(k)) + ":" + __jsonStringify(member));
       }
     }
     return "{" + parts.join(",") + "}";
   }
-  return String(obj);
+  return __jsonEscapeString(String(obj));
 }
 
 function __result(data) {

@@ -48,7 +48,11 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             };
             try { info.isTimeVarying = prop.isTimeVarying(); } catch(e) {}
             try { info.keyframesSupported = prop.areKeyframesSupported(); } catch(e) {}
-            try { info.value = prop.getValue(0, 0); } catch(e) {}
+            try {
+              var readable = __readableParamValue(prop, prop.getValue(0, 0));
+              info.value = readable.value;
+              if (readable.valueType) info.valueType = readable.valueType;
+            } catch(e) {}
             props.push(info);
           }
           
@@ -127,7 +131,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -221,7 +225,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -312,7 +316,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -399,7 +403,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -472,7 +476,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -551,7 +555,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -613,7 +617,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (comp.properties[p].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
               prop = comp.properties[p];
               break;
             }
@@ -622,13 +626,16 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var time = new Time();
           time.ticks = __secondsToTicks(${args.time_seconds}).toString();
-          var value = prop.getValueAtTime(time);
+          var readableValue = __readableParamValue(prop, prop.getValueAtTime(time));
+          var value = readableValue.value;
           
           return __result({
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
             time: ${args.time_seconds},
-            value: value
+            value: value,
+            valueType: readableValue.valueType || null,
+            note: readableValue.note || undefined
           });
         `);
         return sendCommand(script, bridgeOptions);

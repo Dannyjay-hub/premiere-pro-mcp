@@ -94,10 +94,19 @@ function rippleHost(options: {
   omitSyncLocked?: boolean;
   omitIsLocked?: boolean;
   lockedVideo?: number[];
+  /** Give the target synced audio on A1: "linked" links it, "unlinked" does not. */
+  targetAudio?: "linked" | "unlinked";
 } = {}) {
-  const v1 = makeTrack([makeClip("v1-target", 0, 4), makeClip("v1-later", 4, 10)], true, false);
+  const target = makeClip("v1-target", 0, 4);
+  const v1 = makeTrack([target, makeClip("v1-later", 4, 10)], true, false);
   const v2 = makeTrack([makeClip("v2-later", 4, 8)], true, (options.lockedVideo ?? []).includes(1));
-  const a1 = makeTrack([makeClip("a1-later", 4, 10)], true, false);
+  const targetAudio = makeClip("a1-target", 0, 4);
+  const a1 = makeTrack([...(options.targetAudio ? [targetAudio] : []), makeClip("a1-later", 4, 10)], true, false);
+  if (options.targetAudio === "linked") {
+    const group = { numItems: 2, 0: target, 1: targetAudio };
+    (target as unknown as { getLinkedItems: () => unknown }).getLinkedItems = () => group;
+    (targetAudio as unknown as { getLinkedItems: () => unknown }).getLinkedItems = () => group;
+  }
   const videoTracks = {
     0: v1,
     1: v2,
@@ -224,5 +233,26 @@ describe("ripple_delete fail-closes when QE cannot report sync lock", () => {
     expect(result).toMatchObject({ success: true, data: { rippled: true, verified: true, scope: "own_track" } });
     expect(rangesOf(v1)).toEqual([[0, 6]]);
     expect(rangesOf(v2)).toEqual([[4, 8]]);
+  });
+});
+
+describe("ripple_delete removes the clip's own linked audio", () => {
+  it("ripples a linked A/V shot without range_content, as Premiere does", async () => {
+    const script = await scriptFor({ node_id: "v1-target" });
+    const { sandbox, v1, a1 } = rippleHost({ targetAudio: "linked" });
+    const result = runScript(script, sandbox);
+    expect(result).toMatchObject({ success: true, data: { rippled: true, verified: true } });
+    expect(rangesOf(v1)).toEqual([[0, 6]]);
+    expect(rangesOf(a1)).toEqual([[0, 6]]);
+  });
+
+  it("still refuses when an unrelated clip sits inside the range", async () => {
+    const script = await scriptFor({ node_id: "v1-target" });
+    const { sandbox, v1, a1 } = rippleHost({ targetAudio: "unlinked" });
+    const result = runScript(script, sandbox);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/sits inside the range being closed/);
+    expect(rangesOf(v1)).toEqual([[0, 4], [4, 10]]);
+    expect(rangesOf(a1)).toEqual([[0, 4], [4, 10]]);
   });
 });

@@ -79,7 +79,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
               return __error("Could not add ${args.track_type} track(s): " + publicFailure + ". QE addTracks is unavailable on this Premiere build.");
             }
             try {
-              qeSeq.addTracks(${isVideo ? count : 0}, ${isVideo ? 0 : count}, 0, 0);
+              // addTracks(videoCount, videoInsertIndex, audioCount, audioType, audioInsertIndex, submixCount, submixType); append stereo audio.
+              qeSeq.addTracks(${isVideo ? count : 0}, seq.videoTracks.numTracks, ${isVideo ? 0 : count}, 1, seq.audioTracks.numTracks, 0, 0);
             } catch (qeError) {
               return __error("Could not add ${args.track_type} track(s): public DOM failed (" + publicFailure + ") and QE addTracks failed (" + qeError.toString() + ").");
             }
@@ -103,7 +104,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
     },
 
     delete_track: {
-      description: "Delete a video or audio track from the active sequence",
+      description:
+        "Delete a video or audio track from the active sequence through QE and verify the track count dropped. Refuses a track that still holds clips unless force is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -116,22 +118,37 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Index of the track to delete (0-based)",
           },
+          force: {
+            type: "boolean",
+            description: "Also delete a track that holds clips, removing those clips (default: false)",
+          },
         },
         required: ["track_type", "track_index"],
       },
-      handler: async (args: { track_type: string; track_index: number }) => {
+      handler: async (args: { track_type: string; track_index: number; force?: boolean }) => {
+        if (!Number.isInteger(args.track_index) || args.track_index < 0) {
+          return { success: false, error: "track_index must be a non-negative integer" };
+        }
+        const video = args.track_type === "video";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          
-          ${args.track_type === "video"
-            ? `if (${args.track_index} >= seq.videoTracks.numTracks) return __error("Track index out of range");
-               seq.deleteVideoTrackAt(${args.track_index});`
-            : `if (${args.track_index} >= seq.audioTracks.numTracks) return __error("Track index out of range");
-               seq.deleteAudioTrackAt(${args.track_index});`
+          var tracks = ${video ? "seq.videoTracks" : "seq.audioTracks"};
+          var before = tracks.numTracks;
+          if (${args.track_index} >= before) return __error("Track index out of range");
+          if (before <= 1) return __error("A sequence keeps at least one ${args.track_type} track");
+          var clipCount = tracks[${args.track_index}].clips.numItems;
+          if (clipCount > 0 && ${args.force === true ? "false" : "true"}) {
+            return __error("${video ? "V" : "A"}${args.track_index + 1} holds " + clipCount + " clip(s); pass force: true to delete the track and those clips.");
           }
-          
-          return __result({ deleted: true, trackType: "${args.track_type}", trackIndex: ${args.track_index} });
+          // Sequence.deleteVideoTrackAt does not exist (live 25.2); QE removes tracks.
+          app.enableQE();
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return __error("QE could not resolve the active sequence");
+          qeSeq.${video ? "removeVideoTrack" : "removeAudioTrack"}(${args.track_index});
+          var after = (${video ? "seq.videoTracks" : "seq.audioTracks"}).numTracks;
+          if (after !== before - 1) return __error("Premiere did not remove the track (" + before + " -> " + after + " ${args.track_type} tracks)");
+          return __result({ deleted: true, verified: true, trackType: "${args.track_type}", trackIndex: ${args.track_index}, clipsRemoved: clipCount, remainingTracks: after });
         `);
         return sendCommand(script, bridgeOptions);
       },

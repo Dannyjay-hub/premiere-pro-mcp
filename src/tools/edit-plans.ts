@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { BridgeOptions, sendCommand } from "../bridge/file-bridge.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
+import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 import {
   AuditSink,
   CapabilityConfig,
@@ -19,7 +20,12 @@ type InsertClip = {
   audio_track_index?: number;
 };
 
-type RemoveClip = { type: "remove_clip"; node_id: string; ripple?: boolean };
+type RemoveClip = { type: "remove_clip"; node_id: string; ripple?: boolean; include_linked?: boolean };
+
+const OPERATION_KEYS: Record<EditPlanOperation["type"], string[]> = {
+  insert_clip: ["type", "item_id", "start_seconds", "video_track_index", "audio_track_index"],
+  remove_clip: ["type", "node_id", "ripple", "include_linked"],
+};
 export type EditPlanOperation = InsertClip | RemoveClip;
 export interface EditPlan { sequence_id?: string; operations: EditPlanOperation[] }
 
@@ -45,8 +51,16 @@ export function validateEditPlan(value: unknown): EditPlan {
   }
   if (plan.operations.length > 100) throw new Error("edit plans are limited to 100 operations");
 
+  for (const key of Object.keys(plan)) {
+    if (key !== "sequence_id" && key !== "operations") throw new Error(`plan has unknown key ${key}; plans accept sequence_id and operations`);
+  }
   for (const [index, operation] of plan.operations.entries()) {
     if (!operation || typeof operation !== "object") throw new Error(`operation ${index} must be an object`);
+    const allowed = OPERATION_KEYS[operation.type as EditPlanOperation["type"]];
+    if (allowed) {
+      const unknown = Object.keys(operation).filter((key) => !allowed.includes(key));
+      if (unknown.length) throw new Error(`operation ${index} has unknown key(s) ${unknown.join(", ")}; ${operation.type} accepts ${allowed.join(", ")}`);
+    }
     if (operation.type === "insert_clip") {
       if (!operation.item_id) throw new Error(`operation ${index} requires item_id`);
       if (!Number.isFinite(operation.start_seconds) || operation.start_seconds < 0) {
@@ -58,6 +72,9 @@ export function validateEditPlan(value: unknown): EditPlan {
       }
     } else if (operation.type === "remove_clip") {
       if (!operation.node_id) throw new Error(`operation ${index} requires node_id`);
+      for (const key of ["ripple", "include_linked"] as const) {
+        if (operation[key] !== undefined && typeof operation[key] !== "boolean") throw new Error(`operation ${index} ${key} must be a boolean`);
+      }
     } else {
       throw new Error(`operation ${index} has unsupported type`);
     }
@@ -75,8 +92,14 @@ function describe(plan: EditPlan) {
 }
 
 function buildApplyScript(plan: EditPlan): string {
+  // Removals go through __findClip and the ripple-delete script, which work on
+  // the active sequence, so a named target sequence is activated first.
   const sequence = plan.sequence_id
-    ? `var seq = __findSequence("${escapeForExtendScript(plan.sequence_id)}"); if (!seq) return __error("Sequence not found");`
+    ? `var seq = __findSequence("${escapeForExtendScript(plan.sequence_id)}"); if (!seq) return __error("Sequence not found");
+       if (!app.project.activeSequence || String(app.project.activeSequence.sequenceID) !== String(seq.sequenceID)) {
+         app.project.activeSequence = seq;
+         if (!app.project.activeSequence || String(app.project.activeSequence.sequenceID) !== String(seq.sequenceID)) return __error("Could not activate the plan's sequence; nothing was changed");
+       }`
     : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
   const validation: string[] = [];
   const mutations: string[] = [];
@@ -95,18 +118,34 @@ function buildApplyScript(plan: EditPlan): string {
       return null;
     }
   ` : "";
+  // A failure part-way through leaves earlier operations applied; report which
+  // ones so the caller knows the timeline changed.
+  const failure = `
+    function __planFail(index, message) {
+      return __jsonStringify({ success: false,
+        error: "Operation " + index + " failed: " + message + (results.length ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back." : " Nothing was changed."),
+        data: { appliedOperations: results } });
+    }
+  `;
 
   plan.operations.forEach((operation, index) => {
     if (operation.type === "insert_clip") {
       validation.push(`var item${index} = __findProjectItem("${escapeForExtendScript(operation.item_id)}"); if (!item${index}) return __error("Project item not found for operation ${index}");`);
-      mutations.push(`var outcome${index} = __insertClipHonoringSyncLock(seq, item${index}, __secondsToTicks(${operation.start_seconds}).toString(), ${operation.video_track_index ?? 0}, ${operation.audio_track_index ?? 0}, "sync_locked"); if (!outcome${index}.ok) return __error("Insert operation ${index}: " + outcome${index}.error); results.push({index:${index}, type:"insert_clip", applied:true, verified:true, syncLockHonored: outcome${index}.data.syncLockHonored});`);
+      mutations.push(`var outcome${index} = __insertClipHonoringSyncLock(seq, item${index}, __secondsToTicks(${operation.start_seconds}).toString(), ${operation.video_track_index ?? 0}, ${operation.audio_track_index ?? 0}, "sync_locked"); if (!outcome${index}.ok) return __planFail(${index}, outcome${index}.error); results.push({index:${index}, type:"insert_clip", applied:true, verified:true, syncLockHonored: outcome${index}.data.syncLockHonored});`);
     } else {
-      validation.push(`var found${index} = __planFindClip(seq, "${escapeForExtendScript(operation.node_id)}"); if (!found${index}) return __error("Clip not found for operation ${index}");`);
-      mutations.push(`found${index}.remove(${operation.ripple === true ? "true" : "false"}, true); results.push({index:${index}, type:"remove_clip", applied:true});`);
+      const nodeId = escapeForExtendScript(operation.node_id);
+      validation.push(`if (!__planFindClip(seq, "${nodeId}")) return __error("Clip not found for operation ${index}");`);
+      if (operation.ripple === true) {
+        const body = rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false });
+        // __result/__error are shadowed so the body hands back a plain object.
+        mutations.push(`var ripple${index} = (function () { var __result = function (d) { return { success: true, data: d }; }; var __error = function (m) { return { success: false, error: String(m) }; }; ${body} })(); if (!ripple${index}.success) return __planFail(${index}, ripple${index}.error); results.push({index:${index}, type:"remove_clip", ripple:true, applied:true, verified:true, gapClosedSeconds: ripple${index}.data.gapClosedSeconds, clipsShifted: ripple${index}.data.clipsShifted});`);
+      } else {
+        mutations.push(`var found${index} = __findClip("${nodeId}"); if (!found${index}) return __planFail(${index}, "clip ${nodeId} is no longer on the timeline"); var removed${index} = __removeClipAndPartners(found${index}, ${operation.include_linked !== false}); if (!removed${index}.ok) return __planFail(${index}, removed${index}.error); results.push({index:${index}, type:"remove_clip", ripple:false, applied:true, verified:true, linkedPartnersRemoved: removed${index}.data.linkedPartnersRemoved});`);
+      }
     }
   });
 
-  return buildToolScript(`${sequence}\n${clipLookup}\n${validation.join("\n")}\nvar results = [];\n${mutations.join("\n")}\nreturn __result({applied:true, operations:results});`);
+  return buildToolScript(`${sequence}\n${clipLookup}\n${validation.join("\n")}\nvar results = [];\n${failure}\n${mutations.join("\n")}\nreturn __result({applied:true, sequence: seq.name, operations:results});`);
 }
 
 export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: EditPlanDependencies = {}) {
@@ -115,7 +154,31 @@ export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: Edi
   const nextId = dependencies.operationIdFactory ?? createOperationId;
   const planParameter = {
     type: "object",
-    description: "An edit plan containing insert_clip and remove_clip operations (maximum 100)",
+    description:
+      "An edit plan: { sequence_id?, operations: [...] } with up to 100 insert_clip and remove_clip operations. Operations run in order, and each one's times refer to the timeline as the operations before it left it.",
+    properties: {
+      sequence_id: { type: "string", description: "Sequence name or ID to edit (activated first); defaults to the active sequence" },
+      operations: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["insert_clip", "remove_clip"] },
+            item_id: { type: "string", description: "insert_clip: project item node ID or name" },
+            start_seconds: { type: "number", minimum: 0, description: "insert_clip: timeline insert time in seconds (insert edit, sync-locked tracks shift)" },
+            video_track_index: { type: "integer", minimum: 0, description: "insert_clip: video track (default 0)" },
+            audio_track_index: { type: "integer", minimum: 0, description: "insert_clip: audio track (default 0)" },
+            node_id: { type: "string", description: "remove_clip: timeline clip node ID" },
+            ripple: { type: "boolean", description: "remove_clip: close the gap with a verified sync-locked ripple delete (always takes linked partners)" },
+            include_linked: { type: "boolean", description: "remove_clip without ripple: also remove linked audio/video partners (default true)" },
+          },
+          required: ["type"],
+        },
+      },
+    },
+    required: ["operations"],
   };
 
   return {

@@ -5,6 +5,7 @@ import {
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { compareMogrtText, extractMogrtText, summarizeMogrtText, validateMogrtTextMap } from "./mogrt-text.js";
 import { SPEED_UNAVAILABLE_DESCRIPTION, SPEED_UNAVAILABLE_ERROR } from "./timeline.js";
+import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 
 export function getAdvancedTools(bridgeOptions: BridgeOptions) {
   return {
@@ -28,7 +29,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             type: "string",
             enum: ["refuse", "delete"],
             description:
-              "What to do about clips on OTHER participating tracks that sit entirely inside the time range being closed (the usual case in a multicam-style sequence with aligned clips). 'refuse' (default) changes nothing and reports them; 'delete' also removes them, i.e. lifts that whole time segment out of every participating track and closes up. 'delete' is destructive across tracks -- the removed clips are listed in the result.",
+              "What to do about other clips on participating tracks that sit entirely inside the time range being closed (the usual case in a multicam-style sequence with aligned clips). The clip's own linked audio/video partners are always removed with it, as in Premiere. 'refuse' (default) changes nothing and reports them; 'delete' also removes them, i.e. lifts that whole time segment out of every participating track and closes up. 'delete' is destructive across tracks -- the removed clips are listed in the result.",
           },
           dry_run: {
             type: "boolean",
@@ -48,277 +49,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
         const scope = args.scope === "own_track" ? "own_track" : "sync_locked";
         const rangeDelete = args.range_content === "delete";
         const dryRun = args.dry_run === true;
-        const script = buildToolScript(`
-          var result = __findClip("${nodeId}");
-          if (!result) return __error("Clip not found: ${nodeId}");
-
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var tol = frameTicks;
-
-          var target = result.clip;
-          var targetName = target.name;
-          var gapStartT = parseFloat(target.start.ticks);
-          var gapEndT = parseFloat(target.end.ticks);
-          var shiftT = gapEndT - gapStartT;
-          if (!(shiftT > 0)) return __error("The target clip has no positive duration; nothing to ripple.");
-
-          // Sync-lock state is only exposed through QE, not the public DOM.
-          app.enableQE();
-          var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active sequence (QE); cannot read sync-lock state, so the set of tracks to shift cannot be determined safely.");
-
-          function qeTrackFor(type, idx) {
-            return type === "video" ? qeSeq.getVideoTrackAt(idx) : qeSeq.getAudioTrackAt(idx);
-          }
-          function domTrackFor(type, idx) {
-            return type === "video" ? seq.videoTracks[idx] : seq.audioTracks[idx];
-          }
-
-          var parts = [];
-          function addPart(type, idx, isTarget) {
-            var dt = domTrackFor(type, idx);
-            if (!dt) return;
-            parts.push({ type: type, index: idx, domTrack: dt, isTarget: isTarget });
-          }
-
-          addPart(result.trackType, result.trackIndex, true);
-          ${
-            scope === "sync_locked"
-              ? `
-          var vN = seq.videoTracks.numTracks;
-          var aN = seq.audioTracks.numTracks;
-          var ti;
-          for (ti = 0; ti < vN; ti++) {
-            if (result.trackType === "video" && ti === result.trackIndex) continue;
-            var slv = null;
-            try {
-              var qv = qeTrackFor("video", ti);
-              if (qv && typeof qv.isSyncLocked === "function") slv = !!qv.isSyncLocked();
-            } catch (e1) { slv = null; }
-            if (slv === null) {
-              return __error("Ripple delete refused; nothing was changed. Could not read isSyncLocked() on video track " + ti + ". Pass scope 'own_track' to shift only the clip's track (this will desync other tracks).");
-            }
-            if (slv) addPart("video", ti, false);
-          }
-          for (ti = 0; ti < aN; ti++) {
-            if (result.trackType === "audio" && ti === result.trackIndex) continue;
-            var sla = null;
-            try {
-              var qa = qeTrackFor("audio", ti);
-              if (qa && typeof qa.isSyncLocked === "function") sla = !!qa.isSyncLocked();
-            } catch (e2) { sla = null; }
-            if (sla === null) {
-              return __error("Ripple delete refused; nothing was changed. Could not read isSyncLocked() on audio track " + ti + ". Pass scope 'own_track' to shift only the clip's track (this will desync other tracks).");
-            }
-            if (sla) addPart("audio", ti, false);
-          }
-          `
-              : ""
-          }
-
-          // A locked participating track cannot be edited; shifting the others
-          // without it would silently desync, so refuse rather than half-ripple.
-          // Unreadable lock state is the same risk as an unread sync lock.
-          var lockedList = [];
-          var pi;
-          for (pi = 0; pi < parts.length; pi++) {
-            var lk = null;
-            try {
-              if (typeof parts[pi].domTrack.isLocked === "function") lk = !!parts[pi].domTrack.isLocked();
-            } catch (eDomLock) { lk = null; }
-            if (lk === null) {
-              try {
-                var ql = qeTrackFor(parts[pi].type, parts[pi].index);
-                if (ql && typeof ql.isLocked === "function") lk = !!ql.isLocked();
-              } catch (e3) { lk = null; }
-            }
-            if (lk === null) {
-              return __error("Ripple delete refused; nothing was changed. Could not read isLocked() on " + parts[pi].type + " track " + parts[pi].index + ". Unlock them or use scope 'own_track' (which will desync other tracks).");
-            }
-            if (lk) lockedList.push(parts[pi].type + " track " + parts[pi].index);
-          }
-          if (lockedList.length) {
-            return __error("Ripple delete refused; nothing was changed. These tracks must shift but are locked: " + lockedList.join(", ") + ". Unlock them or use scope 'own_track' (which will desync other tracks).");
-          }
-
-          // Pre-flight every participating track BEFORE mutating anything.
-          var plan = [];
-          var problems = [];
-          var insiders = [];
-          for (pi = 0; pi < parts.length; pi++) {
-            var t = parts[pi];
-            var movers = [];
-            for (var ci = 0; ci < t.domTrack.clips.numItems; ci++) {
-              var c = t.domTrack.clips[ci];
-              var cs = parseFloat(c.start.ticks);
-              var ce = parseFloat(c.end.ticks);
-              if (t.isTarget && String(c.nodeId) === "${nodeId}") continue;
-
-              // Straddles the ripple point: shifting would slice through it.
-              if (cs < gapEndT - tol && ce > gapEndT + tol) {
-                problems.push("a clip on " + t.type + " track " + t.index + " (" + __ticksToSeconds(cs) + "-" + __ticksToSeconds(ce) + "s) spans the ripple point at " + __ticksToSeconds(gapEndT) + "s");
-                continue;
-              }
-              // Overlaps the range being closed: later clips would land on top of it.
-              if (ce > gapStartT + tol && cs < gapEndT - tol) {
-                var fullyInside = (cs >= gapStartT - tol) && (ce <= gapEndT + tol);
-                if (!fullyInside) {
-                  // Crosses only one edge of the range -- closing the gap would
-                  // require trimming it, which this tool will not do implicitly.
-                  problems.push("a clip on " + t.type + " track " + t.index + " (" + __ticksToSeconds(cs) + "-" + __ticksToSeconds(ce) + "s) only partially overlaps the range being closed, so it would have to be trimmed rather than removed");
-                } else if (${rangeDelete ? "true" : "false"}) {
-                  insiders.push({ domTrack: t.domTrack, nodeId: String(c.nodeId), label: t.type + " " + t.index, startSeconds: __ticksToSeconds(cs), endSeconds: __ticksToSeconds(ce), name: c.name });
-                } else {
-                  problems.push("a clip on " + t.type + " track " + t.index + " (" + __ticksToSeconds(cs) + "-" + __ticksToSeconds(ce) + "s) sits inside the range being closed, so shifting later clips earlier would overlap it (pass range_content 'delete' to remove it as part of the ripple; this is the normal case for a linked audio clip)");
-                }
-                continue;
-              }
-              if (cs >= gapEndT - tol) movers.push({ nodeId: String(c.nodeId), start: cs, end: ce });
-            }
-            movers.sort(function (x, y) { return x.start - y.start; });
-            plan.push({ type: t.type, index: t.index, domTrack: t.domTrack, movers: movers });
-          }
-
-          if (problems.length) {
-            return __error("Ripple delete refused; nothing was changed. " + problems.join("; ") + ". Trim or move the offending clip(s) first, use range_content 'delete' to also remove clips that sit entirely inside the range, or use scope 'own_track' if desyncing other tracks is acceptable.");
-          }
-
-          var planSummary = [];
-          for (pi = 0; pi < plan.length; pi++) {
-            planSummary.push({ track: plan[pi].type + " " + plan[pi].index, clipsToShift: plan[pi].movers.length });
-          }
-
-          // Reportable view of the in-range clips: the entries themselves hold a
-          // live track reference, which must not be serialised back to the caller.
-          var insidersReport = [];
-          for (var iri = 0; iri < insiders.length; iri++) {
-            var ii = insiders[iri];
-            insidersReport.push({ track: ii.label, name: ii.name, startSeconds: ii.startSeconds, endSeconds: ii.endSeconds });
-          }
-
-          ${
-            dryRun
-              ? `
-          return __result({
-            dryRun: true,
-            rippled: false,
-            clipName: targetName,
-            gapStartSeconds: __ticksToSeconds(gapStartT),
-            gapSeconds: __ticksToSeconds(shiftT),
-            tracksAffected: planSummary,
-            alsoRemoves: insidersReport,
-            note: "Validation passed. Re-run without dry_run to remove the clip and close the gap." + (insiders.length ? " NOTE: " + insiders.length + " clip(s) on other tracks sit inside the range and WILL ALSO BE REMOVED (range_content: delete)." : "")
-          });
-          `
-              : `
-          var failuresEarly = [];
-          try {
-            target.remove(false, false);
-          } catch (removeErr) {
-            return __error("Could not remove the target clip, so nothing was shifted: " + removeErr.toString());
-          }
-          if (__findClip("${nodeId}")) {
-            return __error("Premiere did not remove the target clip, so nothing was shifted; the timeline is unchanged.");
-          }
-
-          // Remove clips that sit inside the range on other participating tracks
-          // (range_content: delete). Without this the shifted clips would land
-          // on top of them.
-          var removedInRange = [];
-          for (var ri = 0; ri < insiders.length; ri++) {
-            var ins = insiders[ri];
-            var victim = null;
-            for (var xi = 0; xi < ins.domTrack.clips.numItems; xi++) {
-              if (String(ins.domTrack.clips[xi].nodeId) === ins.nodeId) { victim = ins.domTrack.clips[xi]; break; }
-            }
-            if (!victim) {
-              // Premiere may already have taken the clip out with the target
-              // (linked audio). The range is being lifted either way, so an
-              // insider that is already gone is the intended end state.
-              removedInRange.push({ track: ins.label, name: ins.name, startSeconds: ins.startSeconds, endSeconds: ins.endSeconds, removedWithTarget: true });
-              continue;
-            }
-            try {
-              victim.remove(false, false);
-              removedInRange.push({ track: ins.label, name: ins.name, startSeconds: ins.startSeconds, endSeconds: ins.endSeconds });
-            } catch (delErr) {
-              failuresEarly.push(ins.label + ": could not remove " + ins.nodeId + " -- " + delErr.toString());
-            }
-          }
-          if (failuresEarly.length) {
-            return __error("The target clip was removed but the in-range clips on other tracks could not all be removed, so nothing was shifted and the timeline is partially changed: " + failuresEarly.join("; ") + ".");
-          }
-
-          // Shift in ascending start order so a moved clip never lands on its
-          // left neighbour. Moving earlier means writing start before end, which
-          // keeps start < end at every step (Premiere rejects a start write that
-          // would push start past the clip's current end).
-          var moved = 0;
-          var failures = [];
-
-          for (pi = 0; pi < plan.length; pi++) {
-            var tp = plan[pi];
-            for (var mi = 0; mi < tp.movers.length; mi++) {
-              var want = tp.movers[mi];
-              var found = null;
-              for (var fi = 0; fi < tp.domTrack.clips.numItems; fi++) {
-                if (String(tp.domTrack.clips[fi].nodeId) === want.nodeId) { found = tp.domTrack.clips[fi]; break; }
-              }
-              if (!found) { failures.push(tp.type + " " + tp.index + ": clip " + want.nodeId + " vanished before it could be shifted"); continue; }
-              try {
-                found.start = (want.start - shiftT).toString();
-                found.end = (want.end - shiftT).toString();
-                moved++;
-              } catch (shiftErr) {
-                failures.push(tp.type + " " + tp.index + ": " + want.nodeId + " -> " + shiftErr.toString());
-              }
-            }
-          }
-
-          // Verify every shifted clip landed where intended with its duration intact.
-          var verifyProblems = [];
-          for (pi = 0; pi < plan.length; pi++) {
-            var tv = plan[pi];
-            for (var vi = 0; vi < tv.movers.length; vi++) {
-              var w = tv.movers[vi];
-              var got = null;
-              for (var gi = 0; gi < tv.domTrack.clips.numItems; gi++) {
-                if (String(tv.domTrack.clips[gi].nodeId) === w.nodeId) { got = tv.domTrack.clips[gi]; break; }
-              }
-              if (!got) { verifyProblems.push(tv.type + " " + tv.index + ": " + w.nodeId + " not found after shifting"); continue; }
-              var gs = parseFloat(got.start.ticks);
-              var gd = parseFloat(got.end.ticks) - gs;
-              if (Math.abs(gs - (w.start - shiftT)) > tol) {
-                verifyProblems.push(tv.type + " " + tv.index + ": expected start " + __ticksToSeconds(w.start - shiftT) + "s, got " + __ticksToSeconds(gs) + "s");
-              }
-              if (Math.abs(gd - (w.end - w.start)) > tol) {
-                verifyProblems.push(tv.type + " " + tv.index + ": duration changed from " + __ticksToSeconds(w.end - w.start) + "s to " + __ticksToSeconds(gd) + "s");
-              }
-            }
-          }
-
-          if (failures.length || verifyProblems.length) {
-            return __error("The clip was removed but the gap was not closed cleanly, so the timeline is now in a partially-rippled state and needs checking. " + failures.concat(verifyProblems).join("; ") + ".");
-          }
-
-          return __result({
-            rippled: true,
-            verified: true,
-            clipName: targetName,
-            gapStartSeconds: __ticksToSeconds(gapStartT),
-            gapClosedSeconds: __ticksToSeconds(shiftT),
-            clipsShifted: moved,
-            tracksAffected: planSummary,
-            alsoRemoved: removedInRange,
-            scope: "${scope}",
-            rangeContent: "${rangeDelete ? "delete" : "refuse"}"
-          });
-          `
-          }
-        `);
+        const script = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun }));
         return sendCommand(script, bridgeOptions);
       },
     },
@@ -338,73 +69,95 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             description:
               "Offset in seconds (positive = roll right, negative = roll left)",
           },
+          include_linked: {
+            type: "boolean",
+            description: "Also apply the edit to the clip's linked audio/video partners so picture and sound stay in sync (default: true).",
+          },
         },
         required: ["node_id", "offset_seconds"],
       },
-      handler: async (args: { node_id: string; offset_seconds: number }) => {
+      handler: async (args: { node_id: string; offset_seconds: number; include_linked?: boolean }) => {
         if (!Number.isFinite(args.offset_seconds) || args.offset_seconds === 0) {
           return { success: false, error: "offset_seconds must be a finite, non-zero number" };
         }
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          var track = result.trackType === "video"
-            ? app.project.activeSequence.videoTracks[result.trackIndex]
-            : app.project.activeSequence.audioTracks[result.trackIndex];
-          var outgoing = track.clips[result.clipIndex + 1];
-          if (!outgoing) return __error("A roll edit requires the selected clip to have an outgoing adjacent clip on the same track.");
-          var beforeStart = String(result.clip.start.ticks);
-          var beforeEnd = String(result.clip.end.ticks);
-          if (String(outgoing.start.ticks) !== beforeEnd) return __error("A roll edit requires two contiguous clips with no gap at the outgoing cut.");
-          var newCutTicks = parseFloat(beforeEnd) + __secondsToTicks(${args.offset_seconds});
-          if (newCutTicks <= parseFloat(result.clip.start.ticks) || newCutTicks >= parseFloat(outgoing.end.ticks)) {
-            return __error("The requested roll offset would create a zero- or negative-duration clip.");
-          }
-          // A roll moves the shared cut, so the source in/out points must move with
-          // the visible edges. Writing only start/end leaves inPoint/outPoint stale
-          // and inconsistent with what the timeline shows.
-          var offsetTicks = Math.round(__secondsToTicks(${args.offset_seconds}));
-          var beforeOut = String(result.clip.outPoint.ticks);
-          var beforeIncomingIn = String(outgoing.inPoint.ticks);
-          var expectedOut = String(Math.round(parseFloat(beforeOut) + offsetTicks));
-          var expectedIncomingIn = String(Math.round(parseFloat(beforeIncomingIn) + offsetTicks));
+          function __editOne(result, nodeId) {
+            var track = result.trackType === "video"
+              ? app.project.activeSequence.videoTracks[result.trackIndex]
+              : app.project.activeSequence.audioTracks[result.trackIndex];
+            var outgoing = track.clips[result.clipIndex + 1];
+            if (!outgoing) return __editFail("A roll edit requires the selected clip to have an outgoing adjacent clip on the same track.");
+            var beforeStart = String(result.clip.start.ticks);
+            var beforeEnd = String(result.clip.end.ticks);
+            if (String(outgoing.start.ticks) !== beforeEnd) return __editFail("A roll edit requires two contiguous clips with no gap at the outgoing cut.");
+            var newCutTicks = parseFloat(beforeEnd) + __secondsToTicks(${args.offset_seconds});
+            if (newCutTicks <= parseFloat(result.clip.start.ticks) || newCutTicks >= parseFloat(outgoing.end.ticks)) {
+              return __editFail("The requested roll offset would create a zero- or negative-duration clip.");
+            }
+            // A roll moves the shared cut, so the source in/out points must move with
+            // the visible edges. Writing only start/end leaves inPoint/outPoint stale
+            // and inconsistent with what the timeline shows.
+            var offsetTicks = Math.round(__secondsToTicks(${args.offset_seconds}));
+            var beforeOut = String(result.clip.outPoint.ticks);
+            var beforeIncomingIn = String(outgoing.inPoint.ticks);
+            var expectedOut = String(Math.round(parseFloat(beforeOut) + offsetTicks));
+            var expectedIncomingIn = String(Math.round(parseFloat(beforeIncomingIn) + offsetTicks));
 
-          var newCut = new Time();
-          newCut.ticks = String(Math.round(newCutTicks));
-          result.clip.end = newCut;
-          outgoing.start = newCut;
-          try {
-            result.clip.outPoint = expectedOut;
-            outgoing.inPoint = expectedIncomingIn;
-          } catch (sourceRangeError) {
-            return __error("Premiere moved the visible cut but rejected the matching source in/out change, so the clips' in/out metadata no longer matches the timeline: " + sourceRangeError.toString());
-          }
+            var newCut = new Time();
+            newCut.ticks = String(Math.round(newCutTicks));
+            result.clip.end = newCut;
+            outgoing.start = newCut;
+            try {
+              result.clip.outPoint = expectedOut;
+              outgoing.inPoint = expectedIncomingIn;
+            } catch (sourceRangeError) {
+              return __editFail("Premiere moved the visible cut but rejected the matching source in/out change, so the clips' in/out metadata no longer matches the timeline: " + sourceRangeError.toString());
+            }
 
-          var after = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!after) return __error("Clip could not be found after the roll edit");
-          if (String(after.clip.start.ticks) === beforeStart && String(after.clip.end.ticks) === beforeEnd) {
-            return __error("The roll edit returned without an observable timeline change; no successful edit is reported.");
+            var after = __findClip(nodeId);
+            if (!after) return __editFail("Clip could not be found after the roll edit");
+            if (String(after.clip.start.ticks) === beforeStart && String(after.clip.end.ticks) === beforeEnd) {
+              return __editFail("The roll edit returned without an observable timeline change; no successful edit is reported.");
+            }
+            if (String(after.clip.end.ticks) !== String(outgoing.start.ticks)) return __editFail("The roll edit left a gap or overlap at the edited cut.");
+            var afterOut = String(after.clip.outPoint.ticks);
+            var afterIncomingIn = String(outgoing.inPoint.ticks);
+            if (afterOut !== expectedOut || afterIncomingIn !== expectedIncomingIn) {
+              return __editFail("Premiere moved the visible cut but the source in/out metadata did not follow: outgoing outPoint is " + afterOut + " (expected " + expectedOut + ") and the incoming clip's inPoint is " + afterIncomingIn + " (expected " + expectedIncomingIn + "). The timeline is now inconsistent with the clips' in/out points; undo this edit in Premiere before continuing.");
+            }
+            return __editOk({
+              rolled: true,
+              verified: true,
+              clipName: after.clip.name,
+              offsetSeconds: ${args.offset_seconds},
+              before: { startTicks: beforeStart, endTicks: beforeEnd, outPointTicks: beforeOut, incomingInPointTicks: beforeIncomingIn },
+              after: {
+                startTicks: String(after.clip.start.ticks),
+                endTicks: String(after.clip.end.ticks),
+                outPointTicks: afterOut,
+                incomingInPointTicks: afterIncomingIn
+              },
+              verification: "timeline_edge_and_source_in_out_readback"
+            });
           }
-          if (String(after.clip.end.ticks) !== String(outgoing.start.ticks)) return __error("The roll edit left a gap or overlap at the edited cut.");
-          var afterOut = String(after.clip.outPoint.ticks);
-          var afterIncomingIn = String(outgoing.inPoint.ticks);
-          if (afterOut !== expectedOut || afterIncomingIn !== expectedIncomingIn) {
-            return __error("Premiere moved the visible cut but the source in/out metadata did not follow: outgoing outPoint is " + afterOut + " (expected " + expectedOut + ") and the incoming clip's inPoint is " + afterIncomingIn + " (expected " + expectedIncomingIn + "). The timeline is now inconsistent with the clips' in/out points; undo this edit in Premiere before continuing.");
+          var target = __findClip("${escapeForExtendScript(args.node_id)}");
+          if (!target) return __error("Clip not found");
+          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
+          var main;
+          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
+          if (!main.ok) return __error(main.error);
+          var linkedEdited = [];
+          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
+            var partner = partners[partnerIndex];
+            var partnerResult;
+            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
+            if (!partnerResult.ok) {
+              return __error("The roll was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
+            }
+            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
           }
-          return __result({
-            rolled: true,
-            verified: true,
-            clipName: after.clip.name,
-            offsetSeconds: ${args.offset_seconds},
-            before: { startTicks: beforeStart, endTicks: beforeEnd, outPointTicks: beforeOut, incomingInPointTicks: beforeIncomingIn },
-            after: {
-              startTicks: String(after.clip.start.ticks),
-              endTicks: String(after.clip.end.ticks),
-              outPointTicks: afterOut,
-              incomingInPointTicks: afterIncomingIn
-            },
-            verification: "timeline_edge_and_source_in_out_readback"
-          });
+          main.data.linkedPartnersEdited = linkedEdited;
+          return __result(main.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -425,57 +178,118 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             description:
               "Offset in seconds (positive = slide right, negative = slide left)",
           },
+          include_linked: {
+            type: "boolean",
+            description: "Also apply the edit to the clip's linked audio/video partners so picture and sound stay in sync (default: true).",
+          },
         },
         required: ["node_id", "offset_seconds"],
       },
-      handler: async (args: { node_id: string; offset_seconds: number }) => {
+      handler: async (args: { node_id: string; offset_seconds: number; include_linked?: boolean }) => {
         if (!Number.isFinite(args.offset_seconds) || args.offset_seconds === 0) {
           return { success: false, error: "offset_seconds must be a finite, non-zero number" };
         }
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          var track = result.trackType === "video"
-            ? app.project.activeSequence.videoTracks[result.trackIndex]
-            : app.project.activeSequence.audioTracks[result.trackIndex];
-          var previous = track.clips[result.clipIndex - 1];
-          var following = track.clips[result.clipIndex + 1];
-          if (!previous || !following) return __error("A slide edit requires contiguous clips before and after the selected clip on the same track.");
-          var beforeStart = String(result.clip.start.ticks);
-          var beforeEnd = String(result.clip.end.ticks);
-          if (String(previous.end.ticks) !== beforeStart || String(following.start.ticks) !== beforeEnd) {
-            return __error("A slide edit requires no gaps at either adjacent cut.");
+          // Everything a slide needs, checked without changing the timeline, so the
+          // clip and all its linked partners are validated before any of them move
+          // (live: the video slid, then its audio partner was refused at a gap).
+          function __slideCheck(result) {
+            var track = result.trackType === "video"
+              ? app.project.activeSequence.videoTracks[result.trackIndex]
+              : app.project.activeSequence.audioTracks[result.trackIndex];
+            var previous = track.clips[result.clipIndex - 1];
+            var following = track.clips[result.clipIndex + 1];
+            if (!previous || !following) return __editFail("A slide edit requires contiguous clips before and after the selected clip on the same track.");
+            var beforeStart = String(result.clip.start.ticks);
+            var beforeEnd = String(result.clip.end.ticks);
+            if (String(previous.end.ticks) !== beforeStart || String(following.start.ticks) !== beforeEnd) {
+              return __editFail("A slide edit requires no gaps at either adjacent cut.");
+            }
+            var deltaTicks = __secondsToTicks(${args.offset_seconds});
+            var newStartTicks = parseFloat(beforeStart) + deltaTicks;
+            var newEndTicks = parseFloat(beforeEnd) + deltaTicks;
+            if (newStartTicks <= parseFloat(previous.start.ticks) || newEndTicks >= parseFloat(following.end.ticks)) {
+              return __editFail("The requested slide offset would create a zero- or negative-duration adjacent clip.");
+            }
+            return __editOk({ previous: previous, following: following, beforeStart: beforeStart, beforeEnd: beforeEnd, deltaTicks: deltaTicks, newStartTicks: newStartTicks, newEndTicks: newEndTicks });
           }
-          var deltaTicks = __secondsToTicks(${args.offset_seconds});
-          var newStartTicks = parseFloat(beforeStart) + deltaTicks;
-          var newEndTicks = parseFloat(beforeEnd) + deltaTicks;
-          if (newStartTicks <= parseFloat(previous.start.ticks) || newEndTicks >= parseFloat(following.end.ticks)) {
-            return __error("The requested slide offset would create a zero- or negative-duration adjacent clip.");
+          function __editOne(result, nodeId) {
+            var checked = __slideCheck(result);
+            if (!checked.ok) return checked;
+            var previous = checked.data.previous;
+            var following = checked.data.following;
+            var beforeStart = checked.data.beforeStart;
+            var beforeEnd = checked.data.beforeEnd;
+            var deltaTicks = checked.data.deltaTicks;
+            var newStartTicks = checked.data.newStartTicks;
+            var newEndTicks = checked.data.newEndTicks;
+            var newStart = new Time();
+            newStart.ticks = String(Math.round(newStartTicks));
+            var newEnd = new Time();
+            newEnd.ticks = String(Math.round(newEndTicks));
+            // A slide trims the neighbours: the previous clip's out point and the
+            // following clip's in point move with their edges. Moving only the
+            // edges kept the following clip's old in point, which shifted its
+            // picture by the slide amount (a hidden slip; verified on 25.2).
+            var slideTicks = Math.round(deltaTicks);
+            var expectedPreviousOut = String(Math.round(parseFloat(previous.outPoint.ticks) + slideTicks));
+            var expectedFollowingIn = String(Math.round(parseFloat(following.inPoint.ticks) + slideTicks));
+            previous.end = newStart;
+            result.clip.start = newStart;
+            result.clip.end = newEnd;
+            following.start = newEnd;
+            try {
+              previous.outPoint = expectedPreviousOut;
+              following.inPoint = expectedFollowingIn;
+            } catch (sourceRangeError) {
+              return __editFail("Premiere moved the clip but rejected the neighbours' matching source change: " + sourceRangeError.toString() + ". Undo this edit before continuing.");
+            }
+            if (String(previous.outPoint.ticks) !== expectedPreviousOut || String(following.inPoint.ticks) !== expectedFollowingIn) {
+              return __editFail("Premiere moved the clip but the neighbours' source points did not follow (previous out " + previous.outPoint.ticks + ", expected " + expectedPreviousOut + "; following in " + following.inPoint.ticks + ", expected " + expectedFollowingIn + "). Undo this edit before continuing.");
+            }
+            var after = __findClip(nodeId);
+            if (!after) return __editFail("Clip could not be found after the slide edit");
+            if (String(after.clip.start.ticks) === beforeStart && String(after.clip.end.ticks) === beforeEnd) {
+              return __editFail("The slide edit returned without an observable timeline change; no successful edit is reported.");
+            }
+            if (String(previous.end.ticks) !== String(after.clip.start.ticks) || String(after.clip.end.ticks) !== String(following.start.ticks)) {
+              return __editFail("The slide edit left a gap or overlap at an adjacent cut.");
+            }
+            return __editOk({
+              slid: true,
+              verified: true,
+              clipName: after.clip.name,
+              offsetSeconds: ${args.offset_seconds},
+              before: { startTicks: beforeStart, endTicks: beforeEnd },
+              after: { startTicks: String(after.clip.start.ticks), endTicks: String(after.clip.end.ticks) }
+            });
           }
-          var newStart = new Time();
-          newStart.ticks = String(Math.round(newStartTicks));
-          var newEnd = new Time();
-          newEnd.ticks = String(Math.round(newEndTicks));
-          previous.end = newStart;
-          result.clip.start = newStart;
-          result.clip.end = newEnd;
-          following.start = newEnd;
-          var after = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!after) return __error("Clip could not be found after the slide edit");
-          if (String(after.clip.start.ticks) === beforeStart && String(after.clip.end.ticks) === beforeEnd) {
-            return __error("The slide edit returned without an observable timeline change; no successful edit is reported.");
+          var target = __findClip("${escapeForExtendScript(args.node_id)}");
+          if (!target) return __error("Clip not found");
+          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
+          var preflight = __slideCheck(target);
+          if (!preflight.ok) return __error(preflight.error + " Nothing was changed.");
+          for (var checkIndex = 0; checkIndex < partners.length; checkIndex++) {
+            var partnerCheck = __slideCheck(partners[checkIndex]);
+            if (!partnerCheck.ok) {
+              return __error("The linked " + partners[checkIndex].trackType + " clip on track " + (partners[checkIndex].trackIndex + 1) + " cannot slide: " + partnerCheck.error + " Nothing was changed; fix that track or pass include_linked false (this desyncs picture and sound).");
+            }
           }
-          if (String(previous.end.ticks) !== String(after.clip.start.ticks) || String(after.clip.end.ticks) !== String(following.start.ticks)) {
-            return __error("The slide edit left a gap or overlap at an adjacent cut.");
+          var main;
+          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
+          if (!main.ok) return __error(main.error);
+          var linkedEdited = [];
+          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
+            var partner = partners[partnerIndex];
+            var partnerResult;
+            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
+            if (!partnerResult.ok) {
+              return __error("The slide was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
+            }
+            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
           }
-          return __result({
-            slid: true,
-            verified: true,
-            clipName: after.clip.name,
-            offsetSeconds: ${args.offset_seconds},
-            before: { startTicks: beforeStart, endTicks: beforeEnd },
-            after: { startTicks: String(after.clip.start.ticks), endTicks: String(after.clip.end.ticks) }
-          });
+          main.data.linkedPartnersEdited = linkedEdited;
+          return __result(main.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -496,46 +310,68 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             description:
               "Offset in seconds (positive = slip forward in source, negative = slip backward)",
           },
+          include_linked: {
+            type: "boolean",
+            description: "Also apply the edit to the clip's linked audio/video partners so picture and sound stay in sync (default: true).",
+          },
         },
         required: ["node_id", "offset_seconds"],
       },
-      handler: async (args: { node_id: string; offset_seconds: number }) => {
+      handler: async (args: { node_id: string; offset_seconds: number; include_linked?: boolean }) => {
         if (!Number.isFinite(args.offset_seconds) || args.offset_seconds === 0) {
           return { success: false, error: "offset_seconds must be a finite, non-zero number" };
         }
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          var beforeStart = String(result.clip.start.ticks);
-          var beforeEnd = String(result.clip.end.ticks);
-          var beforeIn = String(result.clip.inPoint.ticks);
-          var beforeOut = String(result.clip.outPoint.ticks);
-          var deltaTicks = __secondsToTicks(${args.offset_seconds});
-          var newInTicks = parseFloat(beforeIn) + deltaTicks;
-          var newOutTicks = parseFloat(beforeOut) + deltaTicks;
-          if (newInTicks < 0 || newOutTicks <= newInTicks) return __error("The requested slip offset would create an invalid source range.");
-          var newIn = new Time();
-          newIn.ticks = String(Math.round(newInTicks));
-          var newOut = new Time();
-          newOut.ticks = String(Math.round(newOutTicks));
-          result.clip.inPoint = newIn;
-          result.clip.outPoint = newOut;
-          var after = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!after) return __error("Clip could not be found after the slip edit");
-          if (String(after.clip.start.ticks) !== beforeStart || String(after.clip.end.ticks) !== beforeEnd) {
-            return __error("The slip edit changed the timeline placement instead of only source in/out points.");
+          function __editOne(result, nodeId) {
+            var beforeStart = String(result.clip.start.ticks);
+            var beforeEnd = String(result.clip.end.ticks);
+            var beforeIn = String(result.clip.inPoint.ticks);
+            var beforeOut = String(result.clip.outPoint.ticks);
+            var deltaTicks = __secondsToTicks(${args.offset_seconds});
+            var newInTicks = parseFloat(beforeIn) + deltaTicks;
+            var newOutTicks = parseFloat(beforeOut) + deltaTicks;
+            if (newInTicks < 0 || newOutTicks <= newInTicks) return __editFail("The requested slip offset would create an invalid source range.");
+            var newIn = new Time();
+            newIn.ticks = String(Math.round(newInTicks));
+            var newOut = new Time();
+            newOut.ticks = String(Math.round(newOutTicks));
+            result.clip.inPoint = newIn;
+            result.clip.outPoint = newOut;
+            var after = __findClip(nodeId);
+            if (!after) return __editFail("Clip could not be found after the slip edit");
+            if (String(after.clip.start.ticks) !== beforeStart || String(after.clip.end.ticks) !== beforeEnd) {
+              return __editFail("The slip edit changed the timeline placement instead of only source in/out points.");
+            }
+            if (String(after.clip.inPoint.ticks) === beforeIn && String(after.clip.outPoint.ticks) === beforeOut) {
+              return __editFail("The slip edit returned without an observable source in/out change; no successful edit is reported.");
+            }
+            return __editOk({
+              slipped: true,
+              verified: true,
+              clipName: after.clip.name,
+              offsetSeconds: ${args.offset_seconds},
+              before: { inTicks: beforeIn, outTicks: beforeOut },
+              after: { inTicks: String(after.clip.inPoint.ticks), outTicks: String(after.clip.outPoint.ticks) }
+            });
           }
-          if (String(after.clip.inPoint.ticks) === beforeIn && String(after.clip.outPoint.ticks) === beforeOut) {
-            return __error("The slip edit returned without an observable source in/out change; no successful edit is reported.");
+          var target = __findClip("${escapeForExtendScript(args.node_id)}");
+          if (!target) return __error("Clip not found");
+          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
+          var main;
+          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
+          if (!main.ok) return __error(main.error);
+          var linkedEdited = [];
+          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
+            var partner = partners[partnerIndex];
+            var partnerResult;
+            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
+            if (!partnerResult.ok) {
+              return __error("The slip was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
+            }
+            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
           }
-          return __result({
-            slipped: true,
-            verified: true,
-            clipName: after.clip.name,
-            offsetSeconds: ${args.offset_seconds},
-            before: { inTicks: beforeIn, outTicks: beforeOut },
-            after: { inTicks: String(after.clip.inPoint.ticks), outTicks: String(after.clip.outPoint.ticks) }
-          });
+          main.data.linkedPartnersEdited = linkedEdited;
+          return __result(main.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -916,7 +752,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
     },
 
     rename_clip: {
-      description: "Rename a clip on the timeline. Uses QE DOM.",
+      description: "Rename a clip on the timeline and verify the new name.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -933,24 +769,15 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
       },
       handler: async (args: { node_id: string; new_name: string }) => {
         const script = buildToolScript(`
-          app.enableQE();
-          var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active sequence (QE)");
-          
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
-          
-          var qeTrack = result.trackType === "video"
-            ? qeSeq.getVideoTrackAt(result.trackIndex)
-            : qeSeq.getAudioTrackAt(result.trackIndex);
-          if (!qeTrack) return __error("QE track not found; nothing was changed.");
-          // QE track items include gaps, so the DOM clip index is not a QE index.
-          var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
-          if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
-
-          var oldName = result.clip.name;
-          qeClip.setName("${escapeForExtendScript(args.new_name)}");
-          return __result({ renamed: true, oldName: oldName, newName: "${escapeForExtendScript(args.new_name)}" });
+          // TrackItem.name is writable. The previous QE route looked the clip up by
+          // index, but QE counts empty gaps as items, so after a gap it renamed the
+          // gap and Premiere threw "Unknown error exception" (live 25.2).
+          var oldName = String(result.clip.name);
+          result.clip.name = "${escapeForExtendScript(args.new_name)}";
+          if (String(result.clip.name) !== "${escapeForExtendScript(args.new_name)}") return __error("Premiere did not rename the clip");
+          return __result({ renamed: true, verified: true, oldName: oldName, newName: String(result.clip.name) });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1304,7 +1131,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
 
     scene_edit_detection: {
       description:
-        "Perform scene edit detection on the selected clips in the active sequence. Defaults to creating markers rather than cutting.",
+        "Perform Premiere's scene edit detection on the selected clips in the active sequence (it analyses the footage and can take minutes on long clips). CreateMarkers (default) puts Segmentation markers on the selected clips' source project items (shared by every sequence that uses them), removes duplicates from earlier runs, and reports each detected cut in source and timeline seconds. ApplyCuts razors the selected clips and verifies the clip count grew.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1337,21 +1164,130 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           if (!seq) return __error("No active sequence");
           var selected = seq.getSelection();
           if (!selected || selected.length === 0) return __error("Select at least one clip before scene edit detection.");
+
+          var round3 = function (v) { return Math.round(v * 1000) / 1000; };
+          var countClips = function () {
+            var n = 0;
+            for (var v = 0; v < seq.videoTracks.numTracks; v++) n += seq.videoTracks[v].clips.numItems;
+            for (var a = 0; a < seq.audioTracks.numTracks; a++) n += seq.audioTracks[a].clips.numItems;
+            return n;
+          };
+          // Distinct source items behind the selected video clips, with the timeline
+          // windows each one fills so detected source times can be mapped back.
+          var items = [];
+          var itemIndex = {};
+          for (var i = 0; i < selected.length; i++) {
+            var clip = selected[i];
+            var isVideo = false;
+            try { isVideo = clip.mediaType === "Video"; } catch (eType) {}
+            var projectItem = null;
+            try { projectItem = clip.projectItem; } catch (eItem) {}
+            if (!isVideo || !projectItem) continue;
+            var key = String(projectItem.nodeId);
+            if (itemIndex[key] === undefined) {
+              itemIndex[key] = items.length;
+              items.push({ item: projectItem, windows: [] });
+            }
+            items[itemIndex[key]].windows.push({
+              start: clip.start.seconds, inPoint: clip.inPoint.seconds, outPoint: clip.outPoint.seconds
+            });
+          }
+          var segmentationTimes = function (projectItem) {
+            var times = [];
+            var markers = projectItem.getMarkers();
+            if (!markers) return times;
+            var m = markers.getFirstMarker();
+            while (m) {
+              if (String(m.type) === "Segmentation") times.push(m.start.seconds);
+              m = markers.getNextMarker(m);
+            }
+            return times;
+          };
+          var before = [];
+          for (var b = 0; b < items.length; b++) before.push(segmentationTimes(items[b].item).length);
+          var clipsBefore = countClips();
+
           var detected = seq.performSceneEditDetectionOnSelection(
             "${action}",
             ${applyCutsToLinkedAudio},
             "${sensitivity}"
           );
           if (!detected) return __error("Premiere did not complete scene edit detection for the selected clips.");
-          return __result({
+
+          var summary = {
             sceneDetection: true,
             selectedClipCount: selected.length,
             action: "${action}",
             applyCutsToLinkedAudio: ${applyCutsToLinkedAudio},
             sensitivity: "${sensitivity}"
-          });
+          };
+
+          if ("${action}" === "ApplyCuts") {
+            var clipsAfter = countClips();
+            summary.clipsBefore = clipsBefore;
+            summary.clipsAfter = clipsAfter;
+            summary.cutsApplied = clipsAfter - clipsBefore;
+            if (clipsAfter <= clipsBefore) {
+              return __jsonStringify({ success: false, error: "Premiere reported scene detection but no cuts were applied to the selected clips.", data: summary });
+            }
+            summary.verified = true;
+            return __result(summary);
+          }
+
+          var reports = [];
+          var timelineCuts = [];
+          var totalAdded = 0;
+          for (var r = 0; r < items.length; r++) {
+            var entry = items[r];
+            var markers = entry.item.getMarkers();
+            // Keep one Segmentation marker per time; earlier runs leave identical copies.
+            var seen = {};
+            var duplicates = [];
+            var unique = [];
+            var mk = markers ? markers.getFirstMarker() : null;
+            while (mk) {
+              if (String(mk.type) === "Segmentation") {
+                var stamp = String(mk.start.ticks);
+                if (seen[stamp]) duplicates.push(mk); else { seen[stamp] = true; unique.push(mk.start.seconds); }
+              }
+              mk = markers.getNextMarker(mk);
+            }
+            for (var d = 0; d < duplicates.length; d++) markers.deleteMarker(duplicates[d]);
+            unique.sort(function (x, y) { return x - y; });
+            var added = unique.length - before[r];
+            if (added < 0) added = 0;
+            totalAdded += added;
+            var sourceCuts = [];
+            for (var u = 0; u < unique.length; u++) {
+              sourceCuts.push(round3(unique[u]));
+              for (var w = 0; w < entry.windows.length; w++) {
+                var win = entry.windows[w];
+                if (unique[u] > win.inPoint && unique[u] < win.outPoint) {
+                  timelineCuts.push(round3(win.start + unique[u] - win.inPoint));
+                }
+              }
+            }
+            reports.push({
+              itemId: String(entry.item.nodeId),
+              item: entry.item.name,
+              markersBefore: before[r],
+              markersAdded: added,
+              duplicatesRemoved: duplicates.length,
+              sourceCutSeconds: sourceCuts
+            });
+          }
+          timelineCuts.sort(function (x, y) { return x - y; });
+          summary.markerLocation = "Segmentation markers on the source project items (clip markers shared by every sequence that uses them), not sequence markers";
+          summary.items = reports;
+          summary.markersAdded = totalAdded;
+          summary.timelineCutSeconds = timelineCuts;
+          summary.verified = true;
+          return __result(summary);
         `);
-        return sendCommand(script, bridgeOptions);
+        // Detection is a synchronous analysis that blocks Premiere (and its connector's
+        // heartbeat) for minutes on long clips; live, a 121 s clip overran the default
+        // 30 s wait. Allow up to 15 minutes.
+        return sendCommand(script, { ...bridgeOptions, timeoutMs: 900000 });
       },
     },
 
@@ -1489,8 +1425,16 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           if (!qeSeq) return __error("No active sequence (QE)");
           if (typeof qeSeq.addTracks !== "function") return __error("QE addTracks is unavailable on this Premiere build.");
 
+          // QE signature (verified on Premiere 25.2): addTracks(videoCount,
+          // videoInsertIndex, audioCount, audioType, audioInsertIndex,
+          // submixCount, submixType), audio types 0 mono / 1 stereo / 2 5.1.
+          // The old 4-argument call passed the audio count as the video insert
+          // index, so audio tracks were never added. Append after the existing
+          // tracks, one call per audio type.
           try {
-            qeSeq.addTracks(${v}, ${a}, ${aMono}, ${a51});
+            if (${v} > 0 || ${a} > 0) qeSeq.addTracks(${v}, seq.videoTracks.numTracks, ${a}, 1, seq.audioTracks.numTracks, 0, 0);
+            if (${aMono} > 0) qeSeq.addTracks(0, seq.videoTracks.numTracks, ${aMono}, 0, seq.audioTracks.numTracks, 0, 0);
+            if (${a51} > 0) qeSeq.addTracks(0, seq.videoTracks.numTracks, ${a51}, 2, seq.audioTracks.numTracks, 0, 0);
           } catch (addTracksError) {
             return __error("QE addTracks failed: " + addTracksError.toString());
           }
@@ -1585,6 +1529,9 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
         green: number;
         blue: number;
       }) => {
+        if (![args.alpha, args.red, args.green, args.blue].every((v) => Number.isInteger(v) && v >= 0 && v <= 255)) {
+          return { success: false, error: "alpha, red, green and blue must be integers from 0 to 255" };
+        }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -1602,17 +1549,28 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           
           var targetProp = null;
           for (var j = 0; j < targetComp.properties.numItems; j++) {
-            if (targetComp.properties[j].displayName === "${escapeForExtendScript(args.property_name)}") {
+            if (__propertyNameMatches(targetComp.properties[j].displayName, "${escapeForExtendScript(args.property_name)}")) {
               targetProp = targetComp.properties[j];
               break;
             }
           }
           if (!targetProp) return __error("Property not found");
           
+          if (typeof targetProp.setColorValue !== "function") return __error("That property is not a colour parameter");
           targetProp.setColorValue(${args.alpha}, ${args.red}, ${args.green}, ${args.blue}, true);
+          var applied = null;
+          try { applied = targetProp.getColorValue(); } catch (eRead) {}
+          if (!applied || applied.length !== 4) return __error("Premiere did not report the colour back");
+          var want = [${args.alpha}, ${args.red}, ${args.green}, ${args.blue}];
+          for (var c = 0; c < 4; c++) {
+            if (Math.abs(Number(applied[c]) - want[c]) > 1) {
+              return __error("Premiere applied ARGB " + applied.join(",") + " instead of " + want.join(","));
+            }
+          }
           return __result({
             set: true,
-            color: { alpha: ${args.alpha}, red: ${args.red}, green: ${args.green}, blue: ${args.blue} }
+            verified: true,
+            color: { alpha: Number(applied[0]), red: Number(applied[1]), green: Number(applied[2]), blue: Number(applied[3]) }
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -1708,7 +1666,21 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           if (!result) return __error("Clip not found");
           
           var mgtComp = result.clip.getMGTComponent();
-          if (!mgtComp) return __error("Not a MOGRT clip or no MGT component found");
+          if (!mgtComp) {
+            var isGraphic = false;
+            try { isGraphic = typeof result.clip.isMGT === "function" && !!result.clip.isMGT(); } catch (eMgt) {}
+            if (!isGraphic) return __error("Not a MOGRT clip or no MGT component found");
+            // Premiere-authored graphics (e.g. Essential Graphics "Basic Lower Third")
+            // report isMGT() but no MGT component, and their Source Text reads back as
+            // a single opaque character (live 25.2), so the text cannot be read here.
+            var graphicComponents = [];
+            for (var gc = 0; gc < result.clip.components.numItems; gc++) {
+              graphicComponents.push(result.clip.components[gc].displayName);
+            }
+            return __jsonStringify({ success: false,
+              error: "This is a Premiere-authored graphic: it has no MOGRT parameter component, and Premiere does not expose its Source Text to scripts, so its text cannot be read. Edit it in the Essential Graphics panel, or use a template authored in After Effects.",
+              data: { isGraphic: true, components: graphicComponents } });
+          }
           
           var params = [];
           for (var i = 0; i < mgtComp.properties.numItems; i++) {

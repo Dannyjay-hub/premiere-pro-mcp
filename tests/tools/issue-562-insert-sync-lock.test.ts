@@ -138,12 +138,18 @@ function issue562Host(options: {
   emptyTargets?: boolean;
   overlaySeconds?: [number, number];
   sourceDurationSeconds?: number;
+  mediaKind?: "audio_only" | "video_only";
 } = {}) {
+  // Premiere's getIn/OutPoint(mediaType): 1 = video, 2 = audio, 4 = any. A missing
+  // stream reads back as a zero-length span.
+  const missingType = options.mediaKind === "audio_only" ? 1 : options.mediaKind === "video_only" ? 2 : 0;
   const source = {
     nodeId: "src",
     name: "src",
     getInPoint() { return { ticks: ticksOf(0) }; },
-    getOutPoint() { return { ticks: ticksOf(options.sourceDurationSeconds ?? 2) }; },
+    getOutPoint(mediaType?: number) {
+      return { ticks: ticksOf(mediaType !== undefined && mediaType === missingType ? 0 : options.sourceDurationSeconds ?? 2) };
+    },
   };
   const overlay = options.overlaySeconds ?? [6, 10];
   const v1 = makeTrack(options.emptyTargets ? [] : [
@@ -182,8 +188,9 @@ function issue562Host(options: {
     getPlayerPosition() { return { ticks: ticksOf(options.playheadSeconds ?? 8) }; },
     insertClip(item: typeof source, time: string | number, vTrack: number, aTrack: number) {
       if (options.insertNoop) return;
-      insertOnTrack(videoTracks[vTrack as 0 | 1 | 2], item, time, `ins-v-${vTrack}`);
-      insertOnTrack(audioTracks[aTrack as 0 | 1 | 2], item, time, `ins-a-${aTrack}`);
+      // Like Premiere, only a track that receives part of the item is rippled.
+      if (options.mediaKind !== "audio_only") insertOnTrack(videoTracks[vTrack as 0 | 1 | 2], item, time, `ins-v-${vTrack}`);
+      if (options.mediaKind !== "video_only") insertOnTrack(audioTracks[aTrack as 0 | 1 | 2], item, time, `ins-a-${aTrack}`);
     },
   };
 
@@ -500,5 +507,35 @@ describe("issue #562 — other Sequence.insertClip callers use the same helper",
     expect(result).toMatchObject({ success: true, data: { applied: true } });
     expect(rangesOf(seq.videoTracks[1])).toEqual([[0.4, 2]]);
     expect(rangesOf(seq.videoTracks[0])[0]).toEqual([0, 5]);
+  });
+});
+
+describe("insert of an item with only audio or only video keeps the target pair in sync", () => {
+  it("ripples the sync-locked video target when inserting audio-only media (live Premiere 25.2 desync)", () => {
+    const { sandbox, seq, source } = issue562Host({ mediaKind: "audio_only" });
+    const result = runHelper(sandbox, seq, source, 8);
+    expect(result.ok).toBe(true);
+    const s = seq as unknown as { videoTracks: Record<number, ReturnType<typeof makeTrack>>; audioTracks: Record<number, ReturnType<typeof makeTrack>> };
+    // No clip was added to V1, but V1 moved with A1, so each picture keeps its sound.
+    expect(rangesOf(s.videoTracks[0])).toEqual([[0, 4], [4, 8], [10, 14], [14, 20]]);
+    expect(rangesOf(s.audioTracks[0])).toEqual([[0, 4], [4, 8], [8, 10], [10, 14], [14, 20]]);
+    expect(rangesOf(s.videoTracks[1])).toEqual([[6, 8], [10, 12]]);
+  });
+
+  it("leaves a video target alone when it is not sync-locked", () => {
+    const { sandbox, seq, source } = issue562Host({ mediaKind: "audio_only", unlockedVideo: [0] });
+    const result = runHelper(sandbox, seq, source, 8);
+    expect(result.ok).toBe(true);
+    const s = seq as unknown as { videoTracks: Record<number, ReturnType<typeof makeTrack>> };
+    expect(rangesOf(s.videoTracks[0])).toEqual([[0, 4], [4, 8], [8, 12], [12, 18]]);
+  });
+
+  it("ripples the sync-locked audio target when inserting video-only media such as a still", () => {
+    const { sandbox, seq, source } = issue562Host({ mediaKind: "video_only" });
+    const result = runHelper(sandbox, seq, source, 8);
+    expect(result.ok).toBe(true);
+    const s = seq as unknown as { videoTracks: Record<number, ReturnType<typeof makeTrack>>; audioTracks: Record<number, ReturnType<typeof makeTrack>> };
+    expect(rangesOf(s.videoTracks[0])).toEqual([[0, 4], [4, 8], [8, 10], [10, 14], [14, 20]]);
+    expect(rangesOf(s.audioTracks[0])).toEqual([[0, 4], [4, 8], [10, 14], [14, 20]]);
   });
 });

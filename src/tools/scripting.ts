@@ -311,7 +311,7 @@ Examples:
                 mediaType: clip.mediaType,
                 enabled: true
               };
-              try { clipInfo.enabled = !clip.isDisabled(); } catch(e) {}
+              try { clipInfo.enabled = !__isClipDisabled(clip); } catch(e) {}
               try { clipInfo.speed = clip.getSpeed(); } catch(e) {}
               clips.push(clipInfo);
             }

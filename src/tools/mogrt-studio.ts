@@ -21,6 +21,7 @@ import {
   type MogrtBrandKit,
   type MogrtPlan,
   validateMogrtBrandKit,
+  MOGRT_EXPORT_TIMEOUT_MS,
 } from "./mogrt-authoring.js";
 import { type CapabilityConfig, createOperationId, requireCapability, resolveCapabilities } from "../security/index.js";
 
@@ -77,6 +78,8 @@ export interface MogrtStudioDependencies {
   makeDirectory?: (candidate: string) => void;
   listDirectory?: (candidate: string) => string[];
   artifactStatus?: (candidate: string) => MogrtArtifactStatus;
+  /** How long to wait for AE to finish writing each .mogrt (tests pass 0). */
+  artifactWaitMs?: number;
   now?: () => number;
   tokenFactory?: () => string;
   operationIdFactory?: () => string;
@@ -290,6 +293,7 @@ export function getMogrtStudioTools(bridgeOptions: BridgeOptions, dependencies: 
   const makeDirectory = dependencies.makeDirectory ?? ((candidate) => mkdirSync(candidate, { recursive: true }));
   const listDirectory = dependencies.listDirectory ?? ((candidate) => readdirSync(candidate));
   const artifactStatus = dependencies.artifactStatus ?? inspectMogrtArtifact;
+  const artifactWaitMs = dependencies.artifactWaitMs ?? 60000;
   const now = dependencies.now ?? Date.now;
   const tokenFactory = dependencies.tokenFactory ?? randomUUID;
   const nextOperationId = dependencies.operationIdFactory ?? createOperationId;
@@ -321,7 +325,7 @@ export function getMogrtStudioTools(bridgeOptions: BridgeOptions, dependencies: 
         type: "object" as const, additionalProperties: false,
         properties: {
           approved_workspace_path: { type: "string", description: "Absolute operator-approved workspace root." },
-          brand_kit: { type: "object", description: "Approved brand-kit values to validate before recipe use.", additionalProperties: false, properties: { name: { type: "string" }, name_prefix: { type: "string" }, font_family: { type: "string" }, logo_path: { type: "string" }, accent_color: { type: "string" }, text_color: { type: "string" }, safe_margin_percent: { type: "number" } }, required: ["name"] },
+          brand_kit: { type: "object", description: "Approved brand-kit values to validate before recipe use.", additionalProperties: false, properties: { name: { type: "string" }, name_prefix: { type: "string" }, font_family: { type: "string", description: "PostScript font name for the template text (for example Halogen-Bold). Use a font from Adobe Fonts: After Effects will not export a template with other fonts unattended." }, logo_path: { type: "string" }, accent_color: { type: "string" }, text_color: { type: "string" }, safe_margin_percent: { type: "number", description: "Title-safe margin: 2-25 (percent) or 0.02-0.25 (fraction of the frame); default 10%." } }, required: ["name"] },
         }, required: ["approved_workspace_path", "brand_kit"],
       },
       handler: async (args: unknown) => {
@@ -341,7 +345,7 @@ export function getMogrtStudioTools(bridgeOptions: BridgeOptions, dependencies: 
         type: "object" as const, additionalProperties: false,
         properties: {
           approved_workspace_path: { type: "string", description: "Absolute operator-approved workspace root." }, output_directory: { type: "string", description: "Existing workspace-contained directory for every batch artifact." }, data_file_path: { type: "string", description: "Existing workspace-contained .json or .csv file with recipe rows." },
-          brand_kit: { type: "object", description: "Optional validated brand-kit values applied to every batch recipe.", additionalProperties: false, properties: { name: { type: "string" }, name_prefix: { type: "string" }, font_family: { type: "string" }, logo_path: { type: "string" }, accent_color: { type: "string" }, text_color: { type: "string" }, safe_margin_percent: { type: "number" } }, required: ["name"] },
+          brand_kit: { type: "object", description: "Optional validated brand-kit values applied to every batch recipe.", additionalProperties: false, properties: { name: { type: "string" }, name_prefix: { type: "string" }, font_family: { type: "string", description: "PostScript font name for the template text (for example Halogen-Bold). Use a font from Adobe Fonts: After Effects will not export a template with other fonts unattended." }, logo_path: { type: "string" }, accent_color: { type: "string" }, text_color: { type: "string" }, safe_margin_percent: { type: "number", description: "Title-safe margin: 2-25 (percent) or 0.02-0.25 (fraction of the frame); default 10%." } }, required: ["name"] },
         }, required: ["approved_workspace_path", "output_directory", "data_file_path"],
       },
       handler: async (args: unknown) => {
@@ -382,11 +386,20 @@ export function getMogrtStudioTools(bridgeOptions: BridgeOptions, dependencies: 
         const batch = take(batchPlans, input.preview_token, "preview_token");
         const completed: Array<Record<string, unknown>> = [];
         for (const plan of batch.plans) {
-          const result = await sendAfterEffects(buildMogrtRecipeScript(plan), bridgeOptions);
+          const result = await sendAfterEffects(buildMogrtRecipeScript(plan), { ...bridgeOptions, timeoutMs: MOGRT_EXPORT_TIMEOUT_MS });
           if (!result.success) {
             return { success: false, error: `${result.error ?? "MOGRT batch creation failed"} (operation ${operationId})`, data: { operationId, completed, failedTemplate: plan.template_name, batchAtomic: false } };
           }
-          completed.push({ templateName: plan.template_name, artifactPath: plan.output_path, artifact: artifactStatus(plan.output_path) });
+          // AE can finish writing the file just after the export call returns.
+          let artifact = artifactStatus(plan.output_path);
+          for (let waited = 0; (!artifact.exists || !artifact.zip_header_valid) && waited < artifactWaitMs; waited += 250) {
+            await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+            artifact = artifactStatus(plan.output_path);
+          }
+          if (!artifact.exists || !artifact.zip_header_valid) {
+            return { success: false, error: `After Effects did not write ${plan.output_path}; the batch stopped there. (operation ${operationId})`, data: { operationId, completed, failedTemplate: plan.template_name, hostResult: result.data, batchAtomic: false } };
+          }
+          completed.push({ templateName: plan.template_name, artifactPath: plan.output_path, artifact });
         }
         return { success: true, data: { operationId, completed, batchAtomic: false, visualVerified: false, verificationScope: "After Effects accepted each serial export request. Verify every artifact and use the Premiere handoff workflow before delivery." } };
       },
@@ -547,12 +560,14 @@ export function getMogrtStudioTools(bridgeOptions: BridgeOptions, dependencies: 
           for (var i = 1; i <= project.numItems; i++) if (project.item(i) instanceof CompItem && String(project.item(i).name) === "${escapeForAfterEffects(plan.compositionName)}") { comp = project.item(i); break; }
           if (!comp) return __aeError("The previewed composition does not exist in the open project");
           var item = project.renderQueue.items.add(comp);
+          // RenderQueueItem has no index property (live: queueItemIndex came back null); a new item is last.
+          var queueItemIndex = project.renderQueue.numItems;
           try { item.applyTemplate("${escapeForAfterEffects(plan.renderSettingsTemplate)}"); } catch (renderTemplateError) { item.remove(); return __aeError("After Effects could not apply the requested render-settings template: " + String(renderTemplateError)); }
           var outputModule = item.outputModule(1);
           try { outputModule.applyTemplate("${escapeForAfterEffects(plan.outputModuleTemplate)}"); } catch (outputTemplateError) { item.remove(); return __aeError("After Effects could not apply the requested output-module template: " + String(outputTemplateError)); }
           outputModule.file = outputFile;
           project.save(project.file);
-          return __aeResult({ queued: true, queueItemIndex: item.index, compositionName: String(comp.name), outputPath: outputFile.fsName, renderStarted: false, renderVerified: false, verificationScope: "The item was queued only. Start the queue in After Effects, then verify the resulting media file separately." });
+          return __aeResult({ queued: true, queueItemIndex: queueItemIndex, compositionName: String(comp.name), outputPath: outputFile.fsName, renderStarted: false, renderVerified: false, verificationScope: "The item was queued only. Start the queue in After Effects, then verify the resulting media file separately." });
         `), bridgeOptions);
         return result.success ? { ...result, data: { ...(result.data as object), operationId } } : { ...result, error: `${result.error ?? "After Effects render enqueue failed"} (operation ${operationId})` };
       },

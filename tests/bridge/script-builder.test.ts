@@ -146,7 +146,7 @@ describe("generated script structure", () => {
 
   it("__jsonStringify handles all types", () => {
     const result = getHelpersSource();
-    expect(result).toContain('if (obj === null) return "null"');
+    expect(result).toContain('if (obj === null || obj === undefined) return "null"');
     expect(result).toContain('if (typeof obj === "string")');
     expect(result).toContain('if (typeof obj === "number"');
     expect(result).toContain("if (obj instanceof Array)");
@@ -202,6 +202,45 @@ describe("helpers execute correctly in an ES3-like engine", () => {
       sandbox,
     );
     expect(out).toBe("A|B|true|true|true");
+  });
+
+  it("__result always emits valid JSON for NaN, Infinity, undefined, functions, and control characters", () => {
+    // A single NaN (for example a missing Time read) or a tab/CR in a clip name
+    // or marker comment used to make the entire tool response unparseable.
+    const text = 'tab\there\r\nCRLF "q" back\\slash \u0001 \u2028 end';
+    const out = runInNewContext(
+      getHelpersSource() +
+        "\n__result({ nan: NaN, inf: -Infinity, missing: undefined, fn: function () {}, text: value, list: [1, undefined, NaN, function () {}], ok: 0.5 });",
+      { value: text },
+    ) as string;
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(JSON.parse(out)).toEqual({
+      success: true,
+      data: { nan: null, inf: null, text, list: [1, null, null, null], ok: 0.5 },
+    });
+  });
+
+  it("__error escapes control characters in messages", () => {
+    const out = runInNewContext(getHelpersSource() + '\n__error("line1\\r\\nline2\\t\\u0007");', {}) as string;
+    expect(JSON.parse(out)).toEqual({ success: false, error: "line1\r\nline2\t\u0007" });
+  });
+
+  it("__ticksToTimecode counts whole frames without float drift", () => {
+    const tc = (seconds: number, fps: number) =>
+      runInNewContext(getHelpersSource() + `\n__ticksToTimecode(${Math.round(seconds * 254016000000)}, ${fps});`, {}) as string;
+    // Live Premiere 25.2: 121.6 s at 25 fps is 3040 frames = 00:02:01:15 (was :14).
+    expect(tc(121.6, 25)).toBe("00:02:01:15");
+    expect(tc(0, 25)).toBe("00:00:00:00");
+    expect(tc(3600 + 61 + 23 / 24, 24)).toBe("01:01:01:23");
+    expect(tc(10.08, 25)).toBe("00:00:10:02");
+  });
+
+  it("__isClipDisabled reads the disabled property (Premiere 25.2 has no isDisabled())", () => {
+    const run = (clip: unknown) => runInNewContext(getHelpersSource() + "\n__isClipDisabled(clip);", { clip });
+    expect(run({ disabled: true })).toBe(true);
+    expect(run({ disabled: false })).toBe(false);
+    expect(run({ isDisabled: () => true })).toBe(true);
+    expect(run({})).toBe(false);
   });
 
   it("a stale wrapper from an older helpers version gets replaced", () => {

@@ -34,7 +34,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                 nodeId: item.nodeId,
                 name: item.name,
                 treePath: item.treePath,
-                type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 3 ? "root" : item.type === 4 ? "file" : "unknown"
+                type: __projectItemTypeName(item)
               };
               try { entry.mediaPath = item.getMediaPath(); } catch(e) {}
               try { entry.offline = item.isOffline(); } catch(e) {}
@@ -129,7 +129,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
         properties: {
           bin_id: {
             type: "string",
-            description: "Bin name, node ID, or path (e.g., 'Footage', 'Footage/Raw')",
+            description: "Bin name, node ID, or path (e.g., 'Footage', 'Footage/Raw'); '/' or 'root' for the project root",
           },
           recursive: {
             type: "boolean",
@@ -163,8 +163,13 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           if (!app.project || !app.project.rootItem) return __error("No project is open");
           var requestedBin = "${escapeForExtendScript(args.bin_id)}";
-          // Node ID (recursive, string-normalized), then bin path, then bin name.
-          var target = __findBin(requestedBin);
+          // The project root is a bin too, but list_project_items never lists it:
+          // accept "/", "root", or its node ID. Otherwise node ID, then bin
+          // path, then bin name.
+          var rootBin = app.project.rootItem;
+          var target = null;
+          if (requestedBin === "/" || requestedBin.toLowerCase() === "root" || __nodeIdOf(rootBin) === requestedBin) target = rootBin;
+          else target = __findBin(requestedBin);
           if (!target) {
             var nonBin = __findProjectItemByNodeId(requestedBin);
             if (nonBin) return __error("Project item " + requestedBin + " is not a bin. Pass a bin node ID, bin path, or bin name; use get_project_item_info for other item types.");
@@ -172,12 +177,10 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
           }
 
           function getItemDetails(item) {
-            var itemType = null;
-            try { itemType = item.type; } catch(e) {}
             var info = {
               nodeId: __nodeIdOf(item),
               name: "",
-              type: itemType === 1 ? "clip" : itemType === 2 ? "bin" : itemType === 4 ? "file" : "unknown"
+              type: __projectItemTypeName(item)
             };
             try { info.name = item.name; } catch(e) {}
             try { info.treePath = item.treePath; } catch(e) {}
@@ -272,6 +275,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
             if (s) {
               info.frameRate = s.videoFrameRate;
               info.audioSampleRate = s.audioSampleRate;
+              info.audioSampleRateHz = __sampleRateHz(s.audioSampleRate);
               info.audioChannelType = s.audioChannelType;
               info.audioChannelCount = s.audioChannelCount;
               info.videoFieldType = s.videoFieldType;
@@ -284,12 +288,12 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
           try { info.playheadSeconds = __ticksToSeconds(seq.getPlayerPosition().ticks); } catch(e) {}
 
           // In/Out points
-          try { info.inPointSeconds = __ticksToSeconds(seq.getInPoint()); } catch(e) {}
-          try { info.outPointSeconds = __ticksToSeconds(seq.getOutPoint()); } catch(e) {}
+          try { info.inPointSeconds = __sequencePointSeconds(seq.getInPoint()); } catch(e) {}
+          try { info.outPointSeconds = __sequencePointSeconds(seq.getOutPoint()); } catch(e) {}
 
           // Work area
-          try { info.workAreaIn = __ticksToSeconds(seq.getWorkAreaInPoint()); } catch(e) {}
-          try { info.workAreaOut = __ticksToSeconds(seq.getWorkAreaOutPoint()); } catch(e) {}
+          try { info.workAreaIn = __workAreaSeconds(seq.getWorkAreaInPoint()); } catch(e) {}
+          try { info.workAreaOut = __workAreaSeconds(seq.getWorkAreaOutPoint()); } catch(e) {}
 
           // Zero point
           try { info.zeroPoint = __ticksToSeconds(seq.zeroPoint); } catch(e) {}
@@ -341,7 +345,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                 outPointSeconds: __ticksToSeconds(clip.outPoint.ticks),
                 mediaType: clip.mediaType
               };
-              try { ci.enabled = !clip.isDisabled(); } catch(e) { ci.enabled = true; }
+              try { ci.enabled = !__isClipDisabled(clip); } catch(e) { ci.enabled = true; }
               try { ci.speed = clip.getSpeed(); } catch(e) {}
               try { ci.reversed = clip.isSpeedReversed(); } catch(e) {}
               try { ci.isAdjustmentLayer = clip.isAdjustmentLayer(); } catch(e) {}
@@ -414,7 +418,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                 outPointSeconds: __ticksToSeconds(clip.outPoint.ticks),
                 mediaType: clip.mediaType
               };
-              try { ci.enabled = !clip.isDisabled(); } catch(e) { ci.enabled = true; }
+              try { ci.enabled = !__isClipDisabled(clip); } catch(e) { ci.enabled = true; }
               try { ci.speed = clip.getSpeed(); } catch(e) {}
               try {
                 if (clip.projectItem) {
@@ -491,7 +495,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
             mediaType: clip.mediaType
           };
 
-          try { info.enabled = !clip.isDisabled(); } catch(e) { info.enabled = true; }
+          try { info.enabled = !__isClipDisabled(clip); } catch(e) { info.enabled = true; }
           try { info.speed = clip.getSpeed(); } catch(e) {}
           try { info.reversed = clip.isSpeedReversed(); } catch(e) {}
           try { info.isSelected = clip.isSelected(); } catch(e) {}
@@ -611,7 +615,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
           var info = {
             nodeId: item.nodeId,
             name: item.name,
-            type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 3 ? "root" : item.type === 4 ? "file" : "unknown",
+            type: __projectItemTypeName(item),
             treePath: item.treePath
           };
 
@@ -772,7 +776,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                 var entry = {
                   nodeId: item.nodeId,
                   name: item.name,
-                  type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 4 ? "file" : "unknown",
+                  type: __projectItemTypeName(item),
                   treePath: item.treePath
                 };
                 try { entry.mediaPath = item.getMediaPath(); } catch(e) {}
@@ -917,7 +921,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               totalVideoClips++;
               var clip = track.clips[c];
               trackFilled += parseFloat(clip.end.ticks) - parseFloat(clip.start.ticks);
-              try { if (clip.isDisabled()) disabledClips++; } catch(e) {}
+              try { if (__isClipDisabled(clip)) disabledClips++; } catch(e) {}
               try {
                 if (clip.projectItem) {
                   var srcName = clip.projectItem.name;

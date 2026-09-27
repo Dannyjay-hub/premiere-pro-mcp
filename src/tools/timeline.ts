@@ -1,3 +1,4 @@
+import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -151,7 +152,8 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_from_timeline: {
-      description: "Remove a clip from the timeline",
+      description:
+        "Remove a clip from the timeline. By default its linked audio/video partners go with it, as with Premiere's Clear on a linked clip. With ripple: true the gap is closed through the same explicit, verified ripple delete as ripple_delete (Premiere's own ripple flag does nothing on current builds), shifting sync-locked tracks so audio stays in sync.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -163,17 +165,35 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: "Whether to ripple delete (close the gap). Default: false",
           },
+          include_linked: {
+            type: "boolean",
+            description:
+              "Also remove the clip's linked audio/video partners (default: true). A ripple removal always includes them, since closing the gap on one side only would desync the timeline.",
+          },
         },
         required: ["node_id"],
       },
-      handler: async (args: { node_id: string; ripple?: boolean }) => {
+      handler: async (args: { node_id: string; ripple?: boolean; include_linked?: boolean }) => {
+        const nodeId = escapeForExtendScript(args.node_id);
+        if (args.ripple === true) {
+          if (args.include_linked === false) {
+            return {
+              success: false,
+              error: "A ripple removal always includes linked partners; use ripple_delete with scope 'own_track' to close the gap on one track only (this desyncs other tracks).",
+            };
+          }
+          return sendCommand(
+            buildToolScript(rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false })),
+            bridgeOptions,
+          );
+        }
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found: ${escapeForExtendScript(args.node_id)}");
-          
-          var clip = result.clip;
-          clip.remove(${args.ripple ? "true" : "false"}, ${args.ripple ? "true" : "false"});
-          return __result({ removed: true, clipName: clip.name });
+          var result = __findClip("${nodeId}");
+          if (!result) return __error("Clip not found: ${nodeId}");
+          var outcome = __removeClipAndPartners(result, ${args.include_linked !== false});
+          if (!outcome.ok) return __error(outcome.error);
+          outcome.data.verified = true;
+          return __result(outcome.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -384,6 +404,10 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             description:
               "How to handle effect keyframes beyond the trimmed visible range: reject (default) leaves the timeline unchanged; preserve explicitly keeps them and reports their count.",
           },
+          include_linked: {
+            type: "boolean",
+            description: "Also apply the edit to the clip's linked audio/video partners, as Premiere does with linked selection (default: true).",
+          },
         },
         required: ["node_id"],
       },
@@ -392,6 +416,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
         new_in_seconds?: number;
         new_out_seconds?: number;
         keyframe_policy?: "reject" | "preserve";
+        include_linked?: boolean;
       }) => {
         // The schema permits both optional edit points. Applying both requires
         // two CEP writes and can leave a partially altered timeline when the
@@ -422,188 +447,229 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
         }
 
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found: ${escapeForExtendScript(args.node_id)}");
+          function __editOne(result, nodeId) {
 
-          var clip = result.clip;
+            var clip = result.clip;
 
-          // Premiere snaps in/out points to frame boundaries, so verification
-          // allows one frame of drift from the requested value. seq.timebase is
-          // ticks-per-frame; fall back to 24fps if it cannot be read so we never
-          // compare against NaN.
-          var seq = app.project.activeSequence;
-          var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var tolerance = __ticksToSeconds(frameTicks);
+            // Premiere snaps in/out points to frame boundaries, so verification
+            // allows one frame of drift from the requested value. seq.timebase is
+            // ticks-per-frame; fall back to 24fps if it cannot be read so we never
+            // compare against NaN.
+            var seq = app.project.activeSequence;
+            var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
+            if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+            var tolerance = __ticksToSeconds(frameTicks);
 
-${KEYFRAME_SCAN_HELPERS}
-          function __snapshotTrimGeometry(item) {
-            return {
-              inPoint: __trimSeconds(item.inPoint),
-              outPoint: __trimSeconds(item.outPoint),
-              start: __trimSeconds(item.start),
-              end: __trimSeconds(item.end),
-              duration: __trimSeconds(item.duration)
-            };
-          }
-
-          var before = __snapshotTrimGeometry(clip);
-          if (!isFinite(before.inPoint) || !isFinite(before.outPoint) || !isFinite(before.start) || !isFinite(before.end) || !isFinite(before.duration)) {
-            return __error("Premiere did not provide readable source and timeline times for this clip; trim was not attempted.");
-          }
-          if (before.outPoint - before.inPoint < tolerance || before.end - before.start < tolerance) {
-            return __error("Clip has an empty or unreadable duration; trim was not attempted.");
-          }
-
-          // A source-point trim can only have an exact CEP postcondition when
-          // the source and visible durations agree. Retimed/reversed clips need
-          // host-specific semantics, so refusing them is safer than guessing.
-          var durationMismatch = Math.abs((before.end - before.start) - (before.outPoint - before.inPoint));
-          if (durationMismatch > tolerance) {
-            // Check if this looks like a partial write (source metadata changed but timeline didn't)
-            // by seeing if the clip appears to be at 100% speed but has mismatched durations.
-            // A truly retimed clip would show consistent metadata; a corrupted one won't.
-            try {
-              var playbackSpeed = clip.getSpeed ? clip.getSpeed() : null;
-              // If speed is exactly 100 or unreadable, this is likely a partial-write corruption, not a retime.
-              if (playbackSpeed === null || Math.abs(playbackSpeed - 100) < 0.01) {
-                return __error("Clip has inconsistent source/timeline durations (source: " + (before.outPoint - before.inPoint).toFixed(3) + "s, timeline: " + (before.end - before.start).toFixed(3) + "s) at 100% speed. This can happen after a partial trim write. Undo the previous edit or use the host UI to restore consistency before retrying trim_clip.");
-              }
-            } catch(speedError) {
-              // clip.getSpeed() might not be available on all Premiere versions; fall through to generic check
+  ${KEYFRAME_SCAN_HELPERS}
+            function __snapshotTrimGeometry(item) {
+              return {
+                inPoint: __trimSeconds(item.inPoint),
+                outPoint: __trimSeconds(item.outPoint),
+                start: __trimSeconds(item.start),
+                end: __trimSeconds(item.end),
+                duration: __trimSeconds(item.duration)
+              };
             }
-            return __error("trim_clip does not support retimed or otherwise non-1x clips because CEP cannot prove the requested source trim maps to the correct timeline edge. Use a host-verified workflow instead.");
-          }
 
-          var requestedIn = ${args.new_in_seconds !== undefined ? args.new_in_seconds : "null"};
-          var requestedOut = ${args.new_out_seconds !== undefined ? args.new_out_seconds : "null"};
-          var targetIn = requestedIn === null ? before.inPoint : requestedIn;
-          var targetOut = requestedOut === null ? before.outPoint : requestedOut;
-          if (!isFinite(targetIn) || !isFinite(targetOut) || targetIn < 0 || targetOut - targetIn < tolerance) {
-            return __error("The requested source trim must leave at least one frame between in and out; trim was not attempted.");
-          }
+            var before = __snapshotTrimGeometry(clip);
+            if (!isFinite(before.inPoint) || !isFinite(before.outPoint) || !isFinite(before.start) || !isFinite(before.end) || !isFinite(before.duration)) {
+              return __editFail("Premiere did not provide readable source and timeline times for this clip; trim was not attempted.");
+            }
+            if (before.outPoint - before.inPoint < tolerance || before.end - before.start < tolerance) {
+              return __editFail("Clip has an empty or unreadable duration; trim was not attempted.");
+            }
 
-          var prospectiveDuration = targetOut - targetIn;
-          var beforeKeyframes = __findOutOfRangeKeyframes(clip, prospectiveDuration);
-          if (beforeKeyframes.errors.length && "${keyframePolicy}" === "reject") {
-            return __error("Could not inspect every time-varying effect property before trim (" + beforeKeyframes.errors.join("; ") + "); trim was not attempted so keyframe behavior is not guessed.");
-          }
-          if (beforeKeyframes.outside.length && "${keyframePolicy}" === "reject") {
-            return __error("Refusing trim before mutation: " + beforeKeyframes.outside.length + " effect keyframe(s) would remain outside the visible clip. Use keyframe_policy: preserve only if retaining those keyframes is intentional, or adjust them explicitly with the keyframe tools.");
-          }
+            // A source-point trim can only have an exact CEP postcondition when
+            // the source and visible durations agree. Retimed/reversed clips need
+            // host-specific semantics, so refusing them is safer than guessing.
+            var durationMismatch = Math.abs((before.end - before.start) - (before.outPoint - before.inPoint));
+            if (durationMismatch > tolerance) {
+              // Check if this looks like a partial write (source metadata changed but timeline didn't)
+              // by seeing if the clip appears to be at 100% speed but has mismatched durations.
+              // A truly retimed clip would show consistent metadata; a corrupted one won't.
+              try {
+                var playbackSpeed = clip.getSpeed ? clip.getSpeed() : null;
+                // If speed is exactly 100 or unreadable, this is likely a partial-write corruption, not a retime.
+                // getSpeed() reports 1 for normal speed on Premiere 25.2 and 100 on older builds.
+                if (playbackSpeed === null || Math.abs(playbackSpeed - 1) < 0.0001 || Math.abs(playbackSpeed - 100) < 0.01) {
+                  return __editFail("Clip has inconsistent source/timeline durations (source: " + (before.outPoint - before.inPoint).toFixed(3) + "s, timeline: " + (before.end - before.start).toFixed(3) + "s) at 100% speed. This can happen after a partial trim write. Undo the previous edit or use the host UI to restore consistency before retrying trim_clip.");
+                }
+              } catch(speedError) {
+                // clip.getSpeed() might not be available on all Premiere versions; fall through to generic check
+              }
+              return __editFail("trim_clip does not support retimed or otherwise non-1x clips because CEP cannot prove the requested source trim maps to the correct timeline edge. Use a host-verified workflow instead.");
+            }
 
-          // Capture original ticks as strings. Do not keep the Time object
-          // references — Premiere can mutate the same instance on write.
-          var originalInPointTicks = String(clip.inPoint.ticks);
-          var originalOutPointTicks = String(clip.outPoint.ticks);
-          var originalStartTicks = String(clip.start.ticks);
-          var originalEndTicks = String(clip.end.ticks);
+            var requestedIn = ${args.new_in_seconds !== undefined ? args.new_in_seconds : "null"};
+            var requestedOut = ${args.new_out_seconds !== undefined ? args.new_out_seconds : "null"};
+            var targetIn = requestedIn === null ? before.inPoint : requestedIn;
+            var targetOut = requestedOut === null ? before.outPoint : requestedOut;
+            if (!isFinite(targetIn) || !isFinite(targetOut) || targetIn < 0 || targetOut - targetIn < tolerance) {
+              return __editFail("The requested source trim must leave at least one frame between in and out; trim was not attempted.");
+            }
 
-          ${args.new_in_seconds !== undefined ? `clip.inPoint = __secondsToTicks(${args.new_in_seconds}).toString();` : "clip.outPoint = __secondsToTicks(" + args.new_out_seconds + ").toString();"}
+            var prospectiveDuration = targetOut - targetIn;
+            var beforeKeyframes = __findOutOfRangeKeyframes(clip, prospectiveDuration);
+            if (beforeKeyframes.errors.length && "${keyframePolicy}" === "reject") {
+              return __editFail("Could not inspect every time-varying effect property before trim (" + beforeKeyframes.errors.join("; ") + "); trim was not attempted so keyframe behavior is not guessed.");
+            }
+            if (beforeKeyframes.outside.length && "${keyframePolicy}" === "reject") {
+              return __editFail("Refusing trim before mutation: " + beforeKeyframes.outside.length + " effect keyframe(s) would remain outside the visible clip. Use keyframe_policy: preserve only if retaining those keyframes is intentional, or adjust them explicitly with the keyframe tools.");
+            }
 
-          // Re-find the TrackItem after the write. Premiere can replace stale
-          // DOM references during an edit, especially for audio clips.
-          var afterResult = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!afterResult) return __error("Clip could not be found after the trim attempt; the timeline may have changed and the result is not verified.");
-          if (afterResult.trackType !== result.trackType || afterResult.trackIndex !== result.trackIndex) {
-            return __error("Clip moved tracks during the trim attempt; the result is not verified.");
-          }
-          var after = __snapshotTrimGeometry(afterResult.clip);
-          if (!isFinite(after.inPoint) || !isFinite(after.outPoint) || !isFinite(after.start) || !isFinite(after.end) || !isFinite(after.duration)) {
-            return __error("Premiere did not provide readable source and timeline times after trim; the result is not verified.");
-          }
+            // Capture original ticks as strings. Do not keep the Time object
+            // references — Premiere can mutate the same instance on write.
+            var originalInPointTicks = String(clip.inPoint.ticks);
+            var originalOutPointTicks = String(clip.outPoint.ticks);
+            var originalStartTicks = String(clip.start.ticks);
+            var originalEndTicks = String(clip.end.ticks);
 
-          var actualIn = after.inPoint;
-          var actualOut = after.outPoint;
+            // Write the visible edge together with its source point, as roll_edit
+            // does. On Premiere 25.2 a source-point write alone leaves the
+            // timeline edge where it was (the head trim never moved the clip).
+            ${args.new_in_seconds !== undefined ? `
+            var trimInTicks = __secondsToTicks(${args.new_in_seconds});
+            var trimStart = new Time();
+            trimStart.ticks = String(Math.round(parseFloat(originalStartTicks) + (trimInTicks - parseFloat(originalInPointTicks))));
+            clip.start = trimStart;
+            clip.inPoint = String(Math.round(trimInTicks));` : `
+            var trimOutTicks = __secondsToTicks(${args.new_out_seconds});
+            var trimEnd = new Time();
+            trimEnd.ticks = String(Math.round(parseFloat(originalEndTicks) + (trimOutTicks - parseFloat(originalOutPointTicks))));
+            clip.end = trimEnd;
+            clip.outPoint = String(Math.round(trimOutTicks));`}
 
-          var drift = [];
-          ${args.new_in_seconds !== undefined ? `
-          if (Math.abs(actualIn - ${args.new_in_seconds}) > tolerance) {
-            drift.push("inPoint requested ${args.new_in_seconds}s, read back " + actualIn + "s");
-          }` : ""}
-          ${args.new_out_seconds !== undefined ? `
-          if (Math.abs(actualOut - ${args.new_out_seconds}) > tolerance) {
-            drift.push("outPoint requested ${args.new_out_seconds}s, read back " + actualOut + "s");
-          }` : ""}
+            // Re-find the TrackItem after the write. Premiere can replace stale
+            // DOM references during an edit, especially for audio clips.
+            var afterResult = __findClip(nodeId);
+            if (!afterResult) return __editFail("Clip could not be found after the trim attempt; the timeline may have changed and the result is not verified.");
+            if (afterResult.trackType !== result.trackType || afterResult.trackIndex !== result.trackIndex) {
+              return __editFail("Clip moved tracks during the trim attempt; the result is not verified.");
+            }
+            var after = __snapshotTrimGeometry(afterResult.clip);
+            if (!isFinite(after.inPoint) || !isFinite(after.outPoint) || !isFinite(after.start) || !isFinite(after.end) || !isFinite(after.duration)) {
+              return __editFail("Premiere did not provide readable source and timeline times after trim; the result is not verified.");
+            }
 
-          var expectedStart = ${args.new_in_seconds !== undefined
-            ? "before.start + (actualIn - before.inPoint)"
-            : "before.start"};
-          var expectedEnd = ${args.new_in_seconds !== undefined
-            ? "before.end"
-            : "before.end + (actualOut - before.outPoint)"};
-          if (Math.abs(after.start - expectedStart) > tolerance) {
-            drift.push("timeline start expected " + expectedStart + "s, read back " + after.start + "s");
-          }
-          if (Math.abs(after.end - expectedEnd) > tolerance) {
-            drift.push("timeline end expected " + expectedEnd + "s, read back " + after.end + "s");
-          }
-          if (Math.abs(after.duration - (after.end - after.start)) > tolerance) {
-            drift.push("timeline duration " + after.duration + "s does not match visible span " + (after.end - after.start) + "s");
-          }
-          if (Math.abs((after.end - after.start) - (actualOut - actualIn)) > tolerance) {
-            drift.push("visible timeline duration does not match the applied source range");
-          }
+            var actualIn = after.inPoint;
+            var actualOut = after.outPoint;
 
-          var afterInTicks = String(afterResult.clip.inPoint.ticks);
-          var afterOutTicks = String(afterResult.clip.outPoint.ticks);
-          var afterStartTicks = String(afterResult.clip.start.ticks);
-          var afterEndTicks = String(afterResult.clip.end.ticks);
-          var sourceMetadataChanged = afterInTicks !== originalInPointTicks || afterOutTicks !== originalOutPointTicks;
-          var timelineMoved = afterStartTicks !== originalStartTicks || afterEndTicks !== originalEndTicks;
-          if (!timelineMoved) {
-            drift.push("visible timeline start/end ticks did not move");
-          }
+            var drift = [];
+            ${args.new_in_seconds !== undefined ? `
+            if (Math.abs(actualIn - ${args.new_in_seconds}) > tolerance) {
+              drift.push("inPoint requested ${args.new_in_seconds}s, read back " + actualIn + "s");
+            }` : ""}
+            ${args.new_out_seconds !== undefined ? `
+            if (Math.abs(actualOut - ${args.new_out_seconds}) > tolerance) {
+              drift.push("outPoint requested ${args.new_out_seconds}s, read back " + actualOut + "s");
+            }` : ""}
 
-          if (drift.length) {
-            if (sourceMetadataChanged) {
-              // Partial write: source in/out changed without a verified timeline edge.
-              var restoredIn = new Time();
-              restoredIn.ticks = originalInPointTicks;
-              var restoredOut = new Time();
-              restoredOut.ticks = originalOutPointTicks;
-              afterResult.clip.inPoint = restoredIn;
-              afterResult.clip.outPoint = restoredOut;
+            var expectedStart = ${args.new_in_seconds !== undefined
+              ? "before.start + (actualIn - before.inPoint)"
+              : "before.start"};
+            var expectedEnd = ${args.new_in_seconds !== undefined
+              ? "before.end"
+              : "before.end + (actualOut - before.outPoint)"};
+            if (Math.abs(after.start - expectedStart) > tolerance) {
+              drift.push("timeline start expected " + expectedStart + "s, read back " + after.start + "s");
+            }
+            if (Math.abs(after.end - expectedEnd) > tolerance) {
+              drift.push("timeline end expected " + expectedEnd + "s, read back " + after.end + "s");
+            }
+            if (Math.abs(after.duration - (after.end - after.start)) > tolerance) {
+              drift.push("timeline duration " + after.duration + "s does not match visible span " + (after.end - after.start) + "s");
+            }
+            if (Math.abs((after.end - after.start) - (actualOut - actualIn)) > tolerance) {
+              drift.push("visible timeline duration does not match the applied source range");
+            }
 
-              var rolledBack = __findClip("${escapeForExtendScript(args.node_id)}");
-              if (rolledBack) {
-                var rollbackSucceeded = String(rolledBack.clip.inPoint.ticks) === originalInPointTicks &&
-                                        String(rolledBack.clip.outPoint.ticks) === originalOutPointTicks;
+            var afterInTicks = String(afterResult.clip.inPoint.ticks);
+            var afterOutTicks = String(afterResult.clip.outPoint.ticks);
+            var afterStartTicks = String(afterResult.clip.start.ticks);
+            var afterEndTicks = String(afterResult.clip.end.ticks);
+            var sourceMetadataChanged = afterInTicks !== originalInPointTicks || afterOutTicks !== originalOutPointTicks;
+            var timelineMoved = afterStartTicks !== originalStartTicks || afterEndTicks !== originalEndTicks;
+            if (!timelineMoved) {
+              drift.push("visible timeline start/end ticks did not move");
+            }
 
-                if (rollbackSucceeded) {
-                  return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The write partially changed source metadata without moving the timeline edge, which would poison the clip for future trims. The source metadata was rolled back to its original state. Structural clip edits are known to no-op on some Premiere Pro 26.x installations. Use the workaround (set in/out on Source Monitor before placing via create_sequence_from_clips) or undo and retry in the Premiere UI.");
+            if (drift.length) {
+              if (timelineMoved) {
+                var restoredStart = new Time();
+                restoredStart.ticks = originalStartTicks;
+                var restoredEnd = new Time();
+                restoredEnd.ticks = originalEndTicks;
+                try { afterResult.clip.start = restoredStart; afterResult.clip.end = restoredEnd; } catch (edgeRestoreError) {}
+              }
+              if (sourceMetadataChanged || timelineMoved) {
+                // Partial write: source in/out changed without a verified timeline edge.
+                var restoredIn = new Time();
+                restoredIn.ticks = originalInPointTicks;
+                var restoredOut = new Time();
+                restoredOut.ticks = originalOutPointTicks;
+                afterResult.clip.inPoint = restoredIn;
+                afterResult.clip.outPoint = restoredOut;
+
+                var rolledBack = __findClip(nodeId);
+                if (rolledBack) {
+                  var rollbackSucceeded = String(rolledBack.clip.inPoint.ticks) === originalInPointTicks &&
+                                          String(rolledBack.clip.outPoint.ticks) === originalOutPointTicks &&
+                                          String(rolledBack.clip.start.ticks) === originalStartTicks &&
+                                          String(rolledBack.clip.end.ticks) === originalEndTicks;
+
+                  if (rollbackSucceeded) {
+                    return __editFail("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The write partially changed source metadata without moving the timeline edge, which would poison the clip for future trims. The source metadata was rolled back to its original state. Structural clip edits are known to no-op on some Premiere Pro 26.x installations. Use the workaround (set in/out on Source Monitor before placing via create_sequence_from_clips) or undo and retry in the Premiere UI.");
+                  } else {
+                    return __editFail("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred and rollback of source metadata could not be verified. The clip may be in an inconsistent state. Use Undo to restore it.");
+                  }
                 } else {
-                  return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred and rollback of source metadata could not be verified. The clip may be in an inconsistent state. Use Undo to restore it.");
+                  return __editFail("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred but the clip could not be re-found for rollback. The clip may be in an inconsistent state. Use Undo to restore it.");
                 }
               } else {
-                return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred but the clip could not be re-found for rollback. The clip may be in an inconsistent state. Use Undo to restore it.");
+                return __editFail("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The source metadata was unchanged, so the clip remains consistent. Structural clip edits are known to no-op on some Premiere Pro 26.x installations.");
               }
-            } else {
-              return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The source metadata was unchanged, so the clip remains consistent. Structural clip edits are known to no-op on some Premiere Pro 26.x installations.");
             }
-          }
 
-          var afterKeyframes = __findOutOfRangeKeyframes(afterResult.clip, after.end - after.start);
-          if (afterKeyframes.errors.length && "${keyframePolicy}" === "reject") {
-            return __error("The timeline trim may have applied, but keyframes could not be fully read back (" + afterKeyframes.errors.join("; ") + "). It is not reported as verified; inspect the clip or use Undo.");
-          }
-          if (afterKeyframes.outside.length && "${keyframePolicy}" === "reject") {
-            return __error("The timeline trim may have applied, but " + afterKeyframes.outside.length + " effect keyframe(s) remain outside its visible range. It is not reported as verified; inspect the clip or use Undo.");
-          }
+            var afterKeyframes = __findOutOfRangeKeyframes(afterResult.clip, after.end - after.start);
+            if (afterKeyframes.errors.length && "${keyframePolicy}" === "reject") {
+              return __editFail("The timeline trim may have applied, but keyframes could not be fully read back (" + afterKeyframes.errors.join("; ") + "). It is not reported as verified; inspect the clip or use Undo.");
+            }
+            if (afterKeyframes.outside.length && "${keyframePolicy}" === "reject") {
+              return __editFail("The timeline trim may have applied, but " + afterKeyframes.outside.length + " effect keyframe(s) remain outside its visible range. It is not reported as verified; inspect the clip or use Undo.");
+            }
 
-          return __result({
-            trimmed: true,
-            verified: true,
-            clipName: afterResult.clip.name,
-            inPoint: actualIn,
-            outPoint: actualOut,
-            timelineStart: after.start,
-            timelineEnd: after.end,
-            timelineDuration: after.duration,
-            keyframePolicy: "${keyframePolicy}",
-            keyframesOutsideVisibleRange: afterKeyframes.outside.length,
-            keyframesVerified: afterKeyframes.errors.length === 0 && afterKeyframes.outside.length === 0
-          });
+            return __editOk({
+              trimmed: true,
+              verified: true,
+              clipName: afterResult.clip.name,
+              inPoint: actualIn,
+              outPoint: actualOut,
+              timelineStart: after.start,
+              timelineEnd: after.end,
+              timelineDuration: after.duration,
+              keyframePolicy: "${keyframePolicy}",
+              keyframesOutsideVisibleRange: afterKeyframes.outside.length,
+              keyframesVerified: afterKeyframes.errors.length === 0 && afterKeyframes.outside.length === 0
+            });
+          }
+          var target = __findClip("${escapeForExtendScript(args.node_id)}");
+          if (!target) return __error("Clip not found: " + "${escapeForExtendScript(args.node_id)}");
+          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
+          var main;
+          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
+          if (!main.ok) return __error(main.error);
+          var linkedEdited = [];
+          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
+            var partner = partners[partnerIndex];
+            var partnerResult;
+            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
+            if (!partnerResult.ok) {
+              return __error("The trim was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay consistent, or retry with include_linked false.");
+            }
+            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
+          }
+          main.data.linkedPartnersEdited = linkedEdited;
+          return __result(main.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -637,6 +703,10 @@ ${KEYFRAME_SCAN_HELPERS}
             description:
               "When shortening, how to handle effect keyframes beyond the new visible length: reject (default) leaves the timeline unchanged; preserve keeps them and reports their count.",
           },
+          include_linked: {
+            type: "boolean",
+            description: "Also apply the edit to the clip's linked audio/video partners, as Premiere does with linked selection (default: true).",
+          },
         },
         required: ["node_id"],
       },
@@ -645,6 +715,7 @@ ${KEYFRAME_SCAN_HELPERS}
         duration_seconds?: number;
         end_seconds?: number;
         keyframe_policy?: "reject" | "preserve";
+        include_linked?: boolean;
       }) => {
         if (typeof args.node_id !== "string" || args.node_id.trim() === "") {
           return { success: false, error: "set_clip_duration requires a non-empty node_id." };
@@ -670,176 +741,204 @@ ${KEYFRAME_SCAN_HELPERS}
         const nodeId = escapeForExtendScript(args.node_id);
 
         const script = buildToolScript(`
-          var result = __findClip("${nodeId}");
-          if (!result) return __error("Clip not found: ${nodeId}");
-          var clip = result.clip;
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          function __editOne(result, nodeId) {
+            var clip = result.clip;
+            var seq = app.project.activeSequence;
+            if (!seq) return __editFail("No active sequence");
 
-          // Premiere snaps edits to frame boundaries; allow one frame of drift.
-          var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var tolerance = __ticksToSeconds(frameTicks);
-          ${KEYFRAME_SCAN_HELPERS}
+            // Premiere snaps edits to frame boundaries; allow one frame of drift.
+            var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
+            if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+            var tolerance = __ticksToSeconds(frameTicks);
+            ${KEYFRAME_SCAN_HELPERS}
 
-          // Capture tick strings, never Time references: Premiere can mutate the
-          // same Time instance on write.
-          var originalStartTicks = String(clip.start.ticks);
-          var originalEndTicks = String(clip.end.ticks);
-          var startTicks = parseFloat(originalStartTicks);
-          var endTicks = parseFloat(originalEndTicks);
-          if (!isFinite(startTicks) || !isFinite(endTicks) || !(endTicks > startTicks)) {
-            return __error("Premiere did not provide a readable, non-empty timeline range for this clip; no change was attempted.");
-          }
-
-          var targetEndTicks = ${mode === "duration"
-            ? `startTicks + __secondsToTicks(${requested})`
-            : `__secondsToTicks(${requested})`};
-          if (targetEndTicks - startTicks < frameTicks) {
-            return __error("The requested end must be at least one frame after the clip start (" + __ticksToSeconds(startTicks) + "s); no change was attempted.");
-          }
-
-          var trackCollection = result.trackType === "video" ? seq.videoTracks : seq.audioTracks;
-          var track = trackCollection[result.trackIndex];
-          if (!track) return __error("Could not resolve the clip's " + result.trackType + " track; no change was attempted.");
-
-          // The next clip on the same track bounds any extension. Premiere's end
-          // setter would otherwise overwrite or collide with it.
-          var nextClip = null;
-          for (var ni = 0; ni < track.clips.numItems; ni++) {
-            var candidate = track.clips[ni];
-            if (String(candidate.nodeId) === String(clip.nodeId)) continue;
-            var candidateStart = parseFloat(candidate.start.ticks);
-            if (!isFinite(candidateStart) || candidateStart <= startTicks) continue;
-            if (!nextClip || candidateStart < nextClip.start) {
-              nextClip = { nodeId: String(candidate.nodeId), name: candidate.name, start: candidateStart, endTicks: String(candidate.end.ticks) };
+            // Capture tick strings, never Time references: Premiere can mutate the
+            // same Time instance on write.
+            var originalStartTicks = String(clip.start.ticks);
+            var originalEndTicks = String(clip.end.ticks);
+            var startTicks = parseFloat(originalStartTicks);
+            var endTicks = parseFloat(originalEndTicks);
+            if (!isFinite(startTicks) || !isFinite(endTicks) || !(endTicks > startTicks)) {
+              return __editFail("Premiere did not provide a readable, non-empty timeline range for this clip; no change was attempted.");
             }
-          }
-          if (nextClip && targetEndTicks > nextClip.start + 1) {
-            return __error("Refusing to extend: the requested end (" + __ticksToSeconds(targetEndTicks) + "s) would overlap the next clip '" + nextClip.name + "' on " + result.trackType + " track " + result.trackIndex + ", which starts at " + __ticksToSeconds(nextClip.start) + "s. Move or trim that clip first. No change was attempted.");
-          }
-          var clipCountBefore = track.clips.numItems;
 
-          var mediaPath = "";
-          try { if (clip.projectItem) mediaPath = String(clip.projectItem.getMediaPath()); } catch (mediaPathError) {}
-          var isStillImage = /\\.(png|jpe?g|tiff?|psd|gif|bmp|tga|webp|heic|heif|exr|dpx|ai|eps)$/i.test(mediaPath);
-          var speed = null;
-          var reversed = null;
-          try { speed = clip.getSpeed(); } catch (speedError) {}
-          try { reversed = !!clip.isSpeedReversed(); } catch (reverseError) {}
-
-          var newDurationSeconds = __ticksToSeconds(targetEndTicks - startTicks);
-          var shortening = targetEndTicks < endTicks;
-          if (shortening && "${keyframePolicy}" === "reject") {
-            var beforeKeys = __findOutOfRangeKeyframes(clip, newDurationSeconds);
-            if (beforeKeys.errors.length) {
-              return __error("Could not inspect every time-varying effect property before shortening (" + beforeKeys.errors.join("; ") + "); no change was attempted.");
+            var targetEndTicks = ${mode === "duration"
+              ? `startTicks + __secondsToTicks(${requested})`
+              : `__secondsToTicks(${requested})`};
+            if (targetEndTicks - startTicks < frameTicks) {
+              return __editFail("The requested end must be at least one frame after the clip start (" + __ticksToSeconds(startTicks) + "s); no change was attempted.");
             }
-            if (beforeKeys.outside.length) {
-              return __error("Refusing to shorten: " + beforeKeys.outside.length + " effect keyframe(s) would sit beyond the new visible length. Use keyframe_policy: preserve to keep them intentionally, or move them with the keyframe tools. No change was attempted.");
-            }
-          }
 
-          if (Math.abs(targetEndTicks - endTicks) < 1) {
-            return __result({
+            var trackCollection = result.trackType === "video" ? seq.videoTracks : seq.audioTracks;
+            var track = trackCollection[result.trackIndex];
+            if (!track) return __editFail("Could not resolve the clip's " + result.trackType + " track; no change was attempted.");
+
+            // The next clip on the same track bounds any extension. Premiere's end
+            // setter would otherwise overwrite or collide with it.
+            var nextClip = null;
+            for (var ni = 0; ni < track.clips.numItems; ni++) {
+              var candidate = track.clips[ni];
+              if (String(candidate.nodeId) === String(clip.nodeId)) continue;
+              var candidateStart = parseFloat(candidate.start.ticks);
+              if (!isFinite(candidateStart) || candidateStart <= startTicks) continue;
+              if (!nextClip || candidateStart < nextClip.start) {
+                nextClip = { nodeId: String(candidate.nodeId), name: candidate.name, start: candidateStart, endTicks: String(candidate.end.ticks) };
+              }
+            }
+            if (nextClip && targetEndTicks > nextClip.start + 1) {
+              return __editFail("Refusing to extend: the requested end (" + __ticksToSeconds(targetEndTicks) + "s) would overlap the next clip '" + nextClip.name + "' on " + result.trackType + " track " + result.trackIndex + ", which starts at " + __ticksToSeconds(nextClip.start) + "s. Move or trim that clip first. No change was attempted.");
+            }
+            var clipCountBefore = track.clips.numItems;
+
+            var mediaPath = "";
+            try { if (clip.projectItem) mediaPath = String(clip.projectItem.getMediaPath()); } catch (mediaPathError) {}
+            var isStillImage = /\\.(png|jpe?g|tiff?|psd|gif|bmp|tga|webp|heic|heif|exr|dpx|ai|eps)$/i.test(mediaPath);
+            var speed = null;
+            var reversed = null;
+            try { speed = clip.getSpeed(); } catch (speedError) {}
+            try { reversed = !!clip.isSpeedReversed(); } catch (reverseError) {}
+
+            var newDurationSeconds = __ticksToSeconds(targetEndTicks - startTicks);
+            var shortening = targetEndTicks < endTicks;
+            if (shortening && "${keyframePolicy}" === "reject") {
+              var beforeKeys = __findOutOfRangeKeyframes(clip, newDurationSeconds);
+              if (beforeKeys.errors.length) {
+                return __editFail("Could not inspect every time-varying effect property before shortening (" + beforeKeys.errors.join("; ") + "); no change was attempted.");
+              }
+              if (beforeKeys.outside.length) {
+                return __editFail("Refusing to shorten: " + beforeKeys.outside.length + " effect keyframe(s) would sit beyond the new visible length. Use keyframe_policy: preserve to keep them intentionally, or move them with the keyframe tools. No change was attempted.");
+              }
+            }
+
+            if (Math.abs(targetEndTicks - endTicks) < 1) {
+              return __editOk({
+                outcome: "verified",
+                verified: true,
+                changed: false,
+                clipName: clip.name,
+                trackType: result.trackType,
+                trackIndex: result.trackIndex,
+                timelineStart: __ticksToSeconds(startTicks),
+                timelineEnd: __ticksToSeconds(endTicks),
+                durationSeconds: __ticksToSeconds(endTicks - startTicks),
+                isStillImage: isStillImage
+              });
+            }
+
+            // Documented TrackItem.end is a read/write Time. Write a Time built from
+            // ticks; fall back to a tick string on hosts that reject the object.
+            var writeErrors = [];
+            try {
+              var newEnd = new Time();
+              newEnd.ticks = String(targetEndTicks);
+              clip.end = newEnd;
+            } catch (timeWriteError) {
+              writeErrors.push(timeWriteError.toString());
+              try { clip.end = String(targetEndTicks); } catch (tickWriteError) { writeErrors.push(tickWriteError.toString()); }
+            }
+            // Keep the source out point consistent with the new visible end. Premiere
+            // 25.2 leaves outPoint stale after an end write, which later made
+            // trim_clip refuse the clip as "inconsistent". Stills have no source
+            // range to follow.
+            if (!isStillImage) {
+              try {
+                var inTicksNow = parseFloat(clip.inPoint.ticks);
+                if (isFinite(inTicksNow)) clip.outPoint = String(Math.round(inTicksNow + (targetEndTicks - startTicks)));
+              } catch (outPointWriteError) { writeErrors.push("outPoint: " + outPointWriteError.toString()); }
+            }
+
+            var after = __findClip(nodeId);
+            if (!after) return __editFail("The clip could not be found after the end write; the result is not verified. Inspect the timeline or use Undo.");
+            if (after.trackType !== result.trackType || after.trackIndex !== result.trackIndex) {
+              return __editFail("The clip changed track during the end write; the result is not verified. Use Undo to restore it.");
+            }
+            var afterStart = parseFloat(after.clip.start.ticks);
+            var afterEnd = parseFloat(after.clip.end.ticks);
+            var drift = [];
+            if (!isFinite(afterStart) || !isFinite(afterEnd)) drift.push("start/end could not be read back");
+            if (Math.abs(afterStart - startTicks) > frameTicks) drift.push("start moved from " + __ticksToSeconds(startTicks) + "s to " + __ticksToSeconds(afterStart) + "s");
+            if (Math.abs(afterEnd - targetEndTicks) > frameTicks) drift.push("end requested " + __ticksToSeconds(targetEndTicks) + "s, read back " + __ticksToSeconds(afterEnd) + "s");
+            if (track.clips.numItems !== clipCountBefore) drift.push("track clip count changed from " + clipCountBefore + " to " + track.clips.numItems);
+            if (nextClip) {
+              var nextAfter = null;
+              for (var na = 0; na < track.clips.numItems; na++) {
+                if (String(track.clips[na].nodeId) === nextClip.nodeId) { nextAfter = track.clips[na]; break; }
+              }
+              if (!nextAfter || Math.abs(parseFloat(nextAfter.start.ticks) - nextClip.start) > 1 || String(nextAfter.end.ticks) !== nextClip.endTicks) {
+                drift.push("the next clip '" + nextClip.name + "' changed");
+              }
+            }
+
+            if (drift.length) {
+              var mutated = String(after.clip.start.ticks) !== originalStartTicks || String(after.clip.end.ticks) !== originalEndTicks;
+              var clamped = targetEndTicks > endTicks && isFinite(afterEnd) && afterEnd < targetEndTicks - frameTicks;
+              var hint = clamped
+                ? (isStillImage
+                  ? " Premiere clamped the still image's end, which usually means its project item has in/out points limiting the usable range. Clear them with clear_item_in_out on the project item, then retry."
+                  : " Premiere clamped the end, most likely because the source media has no more frames after the current out point.")
+                : "";
+              if (writeErrors.length) hint += " Write errors: " + writeErrors.join("; ") + ".";
+              if (!mutated) {
+                return __editFail("Premiere did not apply the duration change: " + drift.join("; ") + ". The clip is unchanged." + hint);
+              }
+              var restored = false;
+              try {
+                __writeClipSpan(after.clip, originalStartTicks, originalEndTicks);
+                var check = __findClip(nodeId);
+                restored = !!check && String(check.clip.start.ticks) === originalStartTicks && String(check.clip.end.ticks) === originalEndTicks;
+              } catch (restoreError) {}
+              return __editFail("Premiere did not apply a verified duration change: " + drift.join("; ") + ". " + (restored ? "The original start and end were restored." : "The original range could not be restored; use Undo.") + hint);
+            }
+
+            var payload = {
               outcome: "verified",
               verified: true,
-              changed: false,
-              clipName: clip.name,
-              trackType: result.trackType,
-              trackIndex: result.trackIndex,
-              timelineStart: __ticksToSeconds(startTicks),
-              timelineEnd: __ticksToSeconds(endTicks),
-              durationSeconds: __ticksToSeconds(endTicks - startTicks),
-              isStillImage: isStillImage
-            });
-          }
-
-          // Documented TrackItem.end is a read/write Time. Write a Time built from
-          // ticks; fall back to a tick string on hosts that reject the object.
-          var writeErrors = [];
-          try {
-            var newEnd = new Time();
-            newEnd.ticks = String(targetEndTicks);
-            clip.end = newEnd;
-          } catch (timeWriteError) {
-            writeErrors.push(timeWriteError.toString());
-            try { clip.end = String(targetEndTicks); } catch (tickWriteError) { writeErrors.push(tickWriteError.toString()); }
-          }
-
-          var after = __findClip("${nodeId}");
-          if (!after) return __error("The clip could not be found after the end write; the result is not verified. Inspect the timeline or use Undo.");
-          if (after.trackType !== result.trackType || after.trackIndex !== result.trackIndex) {
-            return __error("The clip changed track during the end write; the result is not verified. Use Undo to restore it.");
-          }
-          var afterStart = parseFloat(after.clip.start.ticks);
-          var afterEnd = parseFloat(after.clip.end.ticks);
-          var drift = [];
-          if (!isFinite(afterStart) || !isFinite(afterEnd)) drift.push("start/end could not be read back");
-          if (Math.abs(afterStart - startTicks) > frameTicks) drift.push("start moved from " + __ticksToSeconds(startTicks) + "s to " + __ticksToSeconds(afterStart) + "s");
-          if (Math.abs(afterEnd - targetEndTicks) > frameTicks) drift.push("end requested " + __ticksToSeconds(targetEndTicks) + "s, read back " + __ticksToSeconds(afterEnd) + "s");
-          if (track.clips.numItems !== clipCountBefore) drift.push("track clip count changed from " + clipCountBefore + " to " + track.clips.numItems);
-          if (nextClip) {
-            var nextAfter = null;
-            for (var na = 0; na < track.clips.numItems; na++) {
-              if (String(track.clips[na].nodeId) === nextClip.nodeId) { nextAfter = track.clips[na]; break; }
+              changed: true,
+              clipName: after.clip.name,
+              trackType: after.trackType,
+              trackIndex: after.trackIndex,
+              timelineStart: __ticksToSeconds(afterStart),
+              timelineEnd: __ticksToSeconds(afterEnd),
+              durationSeconds: __ticksToSeconds(afterEnd - afterStart),
+              previousEnd: __ticksToSeconds(endTicks),
+              previousDurationSeconds: __ticksToSeconds(endTicks - startTicks),
+              inPoint: __trimSeconds(after.clip.inPoint),
+              outPoint: __trimSeconds(after.clip.outPoint),
+              isStillImage: isStillImage,
+              speed: speed,
+              reversed: reversed,
+              keyframePolicy: "${keyframePolicy}",
+              linkedItemsAdjusted: false
+            };
+            if (shortening) {
+              var afterKeys = __findOutOfRangeKeyframes(after.clip, __ticksToSeconds(afterEnd - afterStart));
+              payload.keyframesOutsideVisibleRange = afterKeys.outside.length;
+              if (afterKeys.errors.length || (afterKeys.outside.length && "${keyframePolicy}" === "reject")) {
+                payload.outcome = "committed_unverified";
+                payload.verified = false;
+                payload.warning = "The timeline end was read back, but effect keyframes could not be fully verified after the change. Inspect the clip or use Undo.";
+              }
             }
-            if (!nextAfter || Math.abs(parseFloat(nextAfter.start.ticks) - nextClip.start) > 1 || String(nextAfter.end.ticks) !== nextClip.endTicks) {
-              drift.push("the next clip '" + nextClip.name + "' changed");
-            }
+            return __editOk(payload);
           }
-
-          if (drift.length) {
-            var mutated = String(after.clip.start.ticks) !== originalStartTicks || String(after.clip.end.ticks) !== originalEndTicks;
-            var clamped = targetEndTicks > endTicks && isFinite(afterEnd) && afterEnd < targetEndTicks - frameTicks;
-            var hint = clamped
-              ? (isStillImage
-                ? " Premiere clamped the still image's end, which usually means its project item has in/out points limiting the usable range. Clear them with clear_item_in_out on the project item, then retry."
-                : " Premiere clamped the end, most likely because the source media has no more frames after the current out point.")
-              : "";
-            if (writeErrors.length) hint += " Write errors: " + writeErrors.join("; ") + ".";
-            if (!mutated) {
-              return __error("Premiere did not apply the duration change: " + drift.join("; ") + ". The clip is unchanged." + hint);
+          var target = __findClip("${nodeId}");
+          if (!target) return __error("Clip not found: " + "${nodeId}");
+          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
+          var main;
+          try { main = __editOne(target, "${nodeId}"); } catch (mainError) { main = __editFail(mainError.toString()); }
+          if (!main.ok) return __error(main.error);
+          var linkedEdited = [];
+          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
+            var partner = partners[partnerIndex];
+            var partnerResult;
+            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
+            if (!partnerResult.ok) {
+              return __error("The duration change was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay consistent, or retry with include_linked false.");
             }
-            var restored = false;
-            try {
-              __writeClipSpan(after.clip, originalStartTicks, originalEndTicks);
-              var check = __findClip("${nodeId}");
-              restored = !!check && String(check.clip.start.ticks) === originalStartTicks && String(check.clip.end.ticks) === originalEndTicks;
-            } catch (restoreError) {}
-            return __error("Premiere did not apply a verified duration change: " + drift.join("; ") + ". " + (restored ? "The original start and end were restored." : "The original range could not be restored; use Undo.") + hint);
+            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
           }
-
-          var payload = {
-            outcome: "verified",
-            verified: true,
-            changed: true,
-            clipName: after.clip.name,
-            trackType: after.trackType,
-            trackIndex: after.trackIndex,
-            timelineStart: __ticksToSeconds(afterStart),
-            timelineEnd: __ticksToSeconds(afterEnd),
-            durationSeconds: __ticksToSeconds(afterEnd - afterStart),
-            previousEnd: __ticksToSeconds(endTicks),
-            previousDurationSeconds: __ticksToSeconds(endTicks - startTicks),
-            inPoint: __trimSeconds(after.clip.inPoint),
-            outPoint: __trimSeconds(after.clip.outPoint),
-            isStillImage: isStillImage,
-            speed: speed,
-            reversed: reversed,
-            keyframePolicy: "${keyframePolicy}",
-            linkedItemsAdjusted: false
-          };
-          if (shortening) {
-            var afterKeys = __findOutOfRangeKeyframes(after.clip, __ticksToSeconds(afterEnd - afterStart));
-            payload.keyframesOutsideVisibleRange = afterKeys.outside.length;
-            if (afterKeys.errors.length || (afterKeys.outside.length && "${keyframePolicy}" === "reject")) {
-              payload.outcome = "committed_unverified";
-              payload.verified = false;
-              payload.warning = "The timeline end was read back, but effect keyframes could not be fully verified after the change. Inspect the clip or use Undo.";
-            }
-          }
-          return __result(payload);
+          main.data.linkedPartnersEdited = linkedEdited;
+          return __result(main.data);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -980,7 +1079,8 @@ ${KEYFRAME_SCAN_HELPERS}
     },
 
     duplicate_clip: {
-      description: "Duplicate a clip on the timeline (copy to same position on next available track)",
+      description:
+        "Duplicate a timeline clip, with its linked audio/video partner, onto the first tracks above it that are empty for the clip's time range. The copy keeps the clip's source in point and visible duration, is placed with an overwrite edit (nothing ripples), and is read back. Fails without changes when no free track is available; add one with add_tracks.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -992,27 +1092,118 @@ ${KEYFRAME_SCAN_HELPERS}
         required: ["node_id"],
       },
       handler: async (args: { node_id: string }) => {
+        const nodeId = escapeForExtendScript(args.node_id);
         const script = buildToolScript(`
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found: ${escapeForExtendScript(args.node_id)}");
-          
+          var result = __findClip("${nodeId}");
+          if (!result) return __error("Clip not found: ${nodeId}");
           var clip = result.clip;
           var seq = app.project.activeSequence;
-          var projectItem = clip.projectItem;
-          
-          if (!projectItem) return __error("Cannot find source project item for clip");
-          
-          var newTrackIndex = result.trackIndex + 1;
-          var startTicks = clip.start.ticks;
-          
-          seq.insertClip(projectItem, startTicks, newTrackIndex, newTrackIndex);
-          
-          return __result({ duplicated: true, clipName: clip.name, newTrackIndex: newTrackIndex });
+          if (!seq) return __error("No active sequence");
+          var item = clip.projectItem;
+          if (!item) return __error("Cannot find source project item for clip");
+          var frameTicks = seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24;
+          var startTicks = parseFloat(clip.start.ticks);
+          var endTicks = parseFloat(clip.end.ticks);
+          var inTicks = parseFloat(clip.inPoint.ticks);
+          if (!isFinite(startTicks) || !isFinite(endTicks) || !isFinite(inTicks) || !(endTicks > startTicks)) {
+            return __error("Premiere did not report a readable range for this clip; nothing was changed.");
+          }
+          // outPoint can read back stale after a timeline end edit, so the copy's
+          // source range is the in point plus the visible duration.
+          var copyIn = __ticksToSeconds(inTicks);
+          var copyOut = __ticksToSeconds(inTicks + (endTicks - startTicks));
+
+          var isVideo = result.trackType === "video";
+          var partner = null;
+          try {
+            var linked = clip.getLinkedItems();
+            for (var li = 0; linked && li < linked.numItems; li++) {
+              var candidate = linked[li];
+              if (String(candidate.nodeId) === String(clip.nodeId)) continue;
+              var located = __findClip(String(candidate.nodeId));
+              if (located && located.trackType !== result.trackType) { partner = located; break; }
+            }
+          } catch (linkError) {}
+
+          function mediaSpan(mediaType) {
+            try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (spanError) { return null; }
+          }
+          var videoSpan = mediaSpan(1);
+          var audioSpan = mediaSpan(2);
+          var hasVideo = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+          var hasAudio = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+
+          function freeTrack(tracks, fromIndex) {
+            for (var t = Math.max(0, fromIndex); t < tracks.numTracks; t++) {
+              var busy = false;
+              for (var c = 0; c < tracks[t].clips.numItems; c++) {
+                var other = tracks[t].clips[c];
+                if (parseFloat(other.start.ticks) < endTicks - 1 && parseFloat(other.end.ticks) > startTicks + 1) { busy = true; break; }
+              }
+              if (!busy) return t;
+            }
+            return -1;
+          }
+          var videoFrom = isVideo ? result.trackIndex + 1 : (partner ? partner.trackIndex + 1 : 0);
+          var audioFrom = !isVideo ? result.trackIndex + 1 : (partner ? partner.trackIndex + 1 : 0);
+          var videoTarget = hasVideo ? freeTrack(seq.videoTracks, videoFrom) : -1;
+          var audioTarget = hasAudio ? freeTrack(seq.audioTracks, audioFrom) : -1;
+          if (hasVideo && videoTarget < 0) return __error("No video track above V" + (videoFrom) + " is free for " + __ticksToSeconds(startTicks) + "-" + __ticksToSeconds(endTicks) + "s. Add one with add_tracks and retry; nothing was changed.");
+          if (hasAudio && audioTarget < 0) return __error("No audio track above A" + (audioFrom) + " is free for " + __ticksToSeconds(startTicks) + "-" + __ticksToSeconds(endTicks) + "s. Add one with add_tracks and retry; nothing was changed.");
+
+          function idsOn(track) {
+            var ids = {};
+            for (var c = 0; c < track.clips.numItems; c++) ids[String(track.clips[c].nodeId)] = true;
+            return ids;
+          }
+          function newClipOn(track, before) {
+            for (var c = 0; c < track.clips.numItems; c++) {
+              if (!before[String(track.clips[c].nodeId)]) return track.clips[c];
+            }
+            return null;
+          }
+          var beforeVideo = videoTarget >= 0 ? idsOn(seq.videoTracks[videoTarget]) : {};
+          var beforeAudio = audioTarget >= 0 ? idsOn(seq.audioTracks[audioTarget]) : {};
+
+          var originalIn = item.getInPoint(4);
+          var originalOut = item.getOutPoint(4);
+          var originalInSeconds = originalIn ? Number(originalIn.seconds) : 0;
+          var originalOutSeconds = originalOut ? Number(originalOut.seconds) : 0;
+          var placeError = null;
+          try {
+            item.setInPoint(copyIn, 4);
+            item.setOutPoint(copyOut, 4);
+            seq.overwriteClip(item, String(startTicks), Math.max(videoTarget, 0), Math.max(audioTarget, 0));
+          } catch (overwriteError) {
+            placeError = overwriteError.toString();
+          }
+          try { item.setInPoint(originalInSeconds, 4); item.setOutPoint(originalOutSeconds, 4); } catch (restoreError) {}
+          if (placeError) return __error("Premiere rejected the duplicate: " + placeError);
+
+          var newVideo = videoTarget >= 0 ? newClipOn(seq.videoTracks[videoTarget], beforeVideo) : null;
+          var newAudio = audioTarget >= 0 ? newClipOn(seq.audioTracks[audioTarget], beforeAudio) : null;
+          // Keep only what the original clip had: drop the other media kind when it had no linked partner.
+          if (isVideo && !partner && newAudio) { try { newAudio.remove(false, false); } catch (dropAudio) {} newAudio = null; }
+          if (!isVideo && !partner && newVideo) { try { newVideo.remove(false, false); } catch (dropVideo) {} newVideo = null; }
+
+          var primary = isVideo ? newVideo : newAudio;
+          if (!primary) return __error("Premiere did not place the duplicate on the expected track; inspect the timeline or use Undo.");
+          var drift = Math.abs(parseFloat(primary.start.ticks) - startTicks) + Math.abs(parseFloat(primary.end.ticks) - endTicks);
+          var inDrift = Math.abs(parseFloat(primary.inPoint.ticks) - inTicks);
+          function describe(c, type, index) {
+            return c ? { nodeId: String(c.nodeId), trackType: type, trackIndex: index, startSeconds: __ticksToSeconds(c.start.ticks), endSeconds: __ticksToSeconds(c.end.ticks), inSeconds: __ticksToSeconds(c.inPoint.ticks) } : null;
+          }
+          return __result({
+            duplicated: true,
+            verified: drift <= 2 * frameTicks && inDrift <= frameTicks,
+            clipName: clip.name,
+            copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
+            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget)
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },
     },
-
     enable_disable_clip: {
       description: "Enable or disable a clip on the timeline",
       parameters: {
@@ -1069,11 +1260,11 @@ ${KEYFRAME_SCAN_HELPERS}
           },
           position_x: {
             type: "number",
-            description: "Horizontal position",
+            description: "Horizontal position in sequence pixels",
           },
           position_y: {
             type: "number",
-            description: "Vertical position",
+            description: "Vertical position in sequence pixels",
           },
           rotation: {
             type: "number",
@@ -1127,7 +1318,7 @@ ${KEYFRAME_SCAN_HELPERS}
               for (var p = 0; p < comp.properties.numItems; p++) {
                 var prop = comp.properties[p];
                 ${args.scale !== undefined ? `
-                if (prop.displayName === "Scale") {
+                if (__propertyNameMatches(prop.displayName, "Scale")) {
                   prop.setValue(${args.scale}, true);
                   changes.scale = ${args.scale};
                 }` : ""}
@@ -1136,8 +1327,11 @@ ${KEYFRAME_SCAN_HELPERS}
                   var posVal = prop.getValue();
                   var px = posVal && typeof posVal === "object" && posVal.length >= 2 ? posVal[0] : 0;
                   var py = posVal && typeof posVal === "object" && posVal.length >= 2 ? posVal[1] : 0;
-                  ${args.position_x !== undefined ? `px = ${args.position_x}; changes.position_x = ${args.position_x};` : ""}
-                  ${args.position_y !== undefined ? `py = ${args.position_y}; changes.position_y = ${args.position_y};` : ""}
+                  // position_x/y are sequence pixels; Premiere 25.2 stores Position normalized.
+                  var posScale = __motionPointScale(prop, __sequenceFrameSize(app.project.activeSequence));
+                  if (!posScale) return __error("The sequence frame size is unreadable, so position pixels cannot be converted; nothing was changed.");
+                  ${args.position_x !== undefined ? `px = ${args.position_x} * posScale.x; changes.position_x = ${args.position_x};` : ""}
+                  ${args.position_y !== undefined ? `py = ${args.position_y} * posScale.y; changes.position_y = ${args.position_y};` : ""}
                   prop.setValue([px, py], true);
                 }` : ""}
                 ${args.rotation !== undefined ? `

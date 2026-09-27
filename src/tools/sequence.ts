@@ -142,8 +142,19 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
           var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}");
           if (!seq) return __error("Sequence not found: ${escapeForExtendScript(args.sequence_id)}");
           
+          // Report the copy itself: Premiere names every copy "<name> Copy", so a caller
+          // looking it up by name can land on an older copy (live: a rerun edited the
+          // previous run's copy). Diff the sequence IDs to find the new one.
+          var existingIds = {};
+          for (var before = 0; before < app.project.sequences.numSequences; before++) existingIds[String(app.project.sequences[before].sequenceID)] = true;
           seq.clone();
-          return __result({ duplicated: true, originalName: seq.name });
+          var copy = null;
+          for (var after = 0; after < app.project.sequences.numSequences; after++) {
+            var candidate = app.project.sequences[after];
+            if (!existingIds[String(candidate.sequenceID)]) { copy = candidate; break; }
+          }
+          if (!copy) return __error("Premiere did not create a copy of " + seq.name);
+          return __result({ duplicated: true, verified: true, originalName: seq.name, originalId: seq.sequenceID, name: copy.name, id: copy.sequenceID });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -279,7 +290,7 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
     },
 
     auto_reframe_sequence: {
-      description: "Auto-reframe a sequence for a different aspect ratio",
+      description: "Auto-reframe a sequence into a new sequence of target_width x target_height. Premiere derives the new sequence from the source height (a 1080p source at 9:16 comes out 607x1080), so the tool then sets the requested frame size and verifies it; the Auto Reframe effect refits to the new size.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -339,14 +350,43 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
           var newName = "${escapeForExtendScript(requestedName || "")}" || (seq.name + " - Auto Reframe ${numerator}x${denominator}");
           var reframed = seq.autoReframeSequence(${numerator}, ${denominator}, "${motionPreset}", newName, ${args.use_nested_sequences === true});
           if (!reframed) return __error("Premiere did not create an auto-reframed sequence");
+          // Premiere keeps the source height (1920x1080 at 9:16 gives 607x1080). Resize to the
+          // requested frame; the Auto Reframe effect refits to the new frame size by itself.
+          var targetWidth = ${args.target_width};
+          var targetHeight = ${args.target_height};
+          var premiereWidth = Number(reframed.frameSizeHorizontal);
+          var premiereHeight = Number(reframed.frameSizeVertical);
+          var resized = false;
+          if (premiereWidth !== targetWidth || premiereHeight !== targetHeight) {
+            var sizeError = null;
+            try {
+              var reframedSettings = reframed.getSettings();
+              reframedSettings.videoFrameWidth = targetWidth;
+              reframedSettings.videoFrameHeight = targetHeight;
+              reframed.setSettings(reframedSettings);
+            } catch (eResize) {
+              sizeError = eResize.toString();
+            }
+            var appliedSettings = null;
+            try { appliedSettings = reframed.getSettings(); } catch (eRead) {}
+            if (sizeError || !appliedSettings || Number(appliedSettings.videoFrameWidth) !== targetWidth || Number(appliedSettings.videoFrameHeight) !== targetHeight) {
+              return __jsonStringify({ success: false,
+                error: "Premiere created the auto-reframed sequence at " + premiereWidth + "x" + premiereHeight + " but did not accept the requested " + targetWidth + "x" + targetHeight + " frame size" + (sizeError ? " (" + sizeError + ")" : "") + ".",
+                data: { name: reframed.name, id: reframed.sequenceID, width: premiereWidth, height: premiereHeight } });
+            }
+            resized = true;
+          }
           return __result({
             reframed: true,
             sourceName: seq.name,
             name: reframed.name,
             id: reframed.sequenceID,
             requestedAspectRatio: "${numerator}:${denominator}",
-            observedWidth: reframed.frameSizeHorizontal,
-            observedHeight: reframed.frameSizeVertical
+            width: targetWidth,
+            height: targetHeight,
+            premiereFrameSize: premiereWidth + "x" + premiereHeight,
+            resizedToRequest: resized,
+            verified: true
           });
         `);
         return sendCommand(script, bridgeOptions);

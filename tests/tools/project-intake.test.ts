@@ -87,3 +87,22 @@ describe("preview_project_intake tool", () => {
     expect(script).not.toMatch(/\.moveBin\(|\.createBin\(|\.deleteBin\(/);
   });
 });
+
+describe("intake capture script against a live-shaped project", () => {
+  it("reports each item once despite smart bins and labels sequences (live: 'duplicate ids', sequences flagged)", async () => {
+    const { runInNewContext } = await import("node:vm");
+    const { getHelpersSource } = await import("../../src/bridge/script-builder.js");
+    const { projectIntakeCaptureScript } = await import("../../src/tools/project-intake.js");
+    const recap = { nodeId: "clip-1", name: "recap.mp4", type: 1, getMediaPath: () => "/m/recap.mp4", isSequence: () => false };
+    const edit = { nodeId: "seq-1", name: "Edit", type: 1, getMediaPath: () => "", isSequence: () => true };
+    const smart = { nodeId: "smart-1", name: "Recap search", type: 2, children: { numItems: 1, 0: recap } };
+    const root = { children: { numItems: 3, 0: recap, 1: edit, 2: smart } };
+    const out = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${projectIntakeCaptureScript(100)}`, {
+      app: { project: { name: "Test.prproj", documentID: "p1", rootItem: root } },
+    })));
+    expect(out.success).toBe(true);
+    const items = out.data.items as Array<{ id: string; type: string }>;
+    expect(items.map((item) => item.id)).toEqual(["clip-1", "seq-1", "smart-1"]);
+    expect(items.find((item) => item.id === "seq-1")?.type).toBe("sequence");
+  });
+});

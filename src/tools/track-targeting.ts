@@ -3,6 +3,7 @@ import {
   escapeForExtendScript,
 } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
+import { describePresetFolder } from "./encoder-formats.js";
 
 /**
  * Premiere's audio `Volume > Level` property is NOT in decibels. It is a
@@ -342,7 +343,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
               endSeconds: __ticksToSeconds(clip.end.ticks),
               durationSeconds: __ticksToSeconds(clip.duration.ticks)
             };
-            try { ci.enabled = !clip.isDisabled(); } catch(e) { ci.enabled = true; }
+            try { ci.enabled = !__isClipDisabled(clip); } catch(e) { ci.enabled = true; }
             try { ci.speed = clip.getSpeed(); } catch(e) {}
             info.clips.push(ci);
           }
@@ -412,6 +413,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var razored = 0;
           var eligible = 0;
           var failures = [];
+          var linkGroups = __captureLinkGroupsAt(seq, ticks);
 
           // QE razor() expects a timecode string, not ticks. See timeline.ts.
           var __razorFrameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
@@ -462,11 +464,16 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             return __error("Premiere razored only " + razored + " of " + eligible + " eligible track(s)" + (failures.length ? " (" + failures.join("; ") + ")" : "") + ". The operation was only partially applied, so it is not reported as verified. Structural QE edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
           }
 
+          var relink = __relinkRazoredPieces(seq, ticks, linkGroups);
+          if (relink.failures.length) {
+            return __error("Premiere razored " + razored + " track(s) but did not keep " + relink.failures.length + " linked video/audio group(s) linked after the cut (" + relink.failures.join("; ") + "). Relink them with link_selection before further edits, or use Undo.");
+          }
           return __result({
             razored: razored,
             eligibleTracks: eligible,
             verified: true,
             failures: failures,
+            relinkedGroups: relink.relinked,
             atSeconds: __ticksToSeconds(ticks)
           });
         `);
@@ -499,8 +506,12 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var t = new Time();
           t.seconds = ${args.start_seconds};
           item.setStartTime(t.ticks);
-
-          return __result({ item: item.name, startSeconds: ${args.start_seconds} });
+          var observedStart = NaN;
+          try { observedStart = Number(item.startTime().seconds); } catch (startReadError) {}
+          if (!isFinite(observedStart) || Math.abs(observedStart - ${args.start_seconds}) > 0.001) {
+            return __error("Premiere did not apply the start time; read back " + observedStart + " s.");
+          }
+          return __result({ item: item.name, startSeconds: observedStart, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -744,11 +755,11 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           },
           x: {
             type: "number",
-            description: "X position in pixels",
+            description: "X position in sequence pixels (converted to Premiere's normalized Position when the host stores it that way)",
           },
           y: {
             type: "number",
-            description: "Y position in pixels",
+            description: "Y position in sequence pixels (converted to Premiere's normalized Position when the host stores it that way)",
           },
         },
         required: ["node_id", "x", "y"],
@@ -764,8 +775,16 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             if (clip.components[i].displayName === "Motion") {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
                 if (clip.components[i].properties[p].displayName === "Position") {
-                  clip.components[i].properties[p].setValue([${args.x}, ${args.y}], true);
-                  set = true;
+                  var pointProp = clip.components[i].properties[p];
+                  var pointScale = __motionPointScale(pointProp, __sequenceFrameSize(app.project.activeSequence));
+                  if (!pointScale) return __error("The sequence frame size is unreadable, so pixels cannot be converted to Premiere's normalized position; nothing was changed.");
+                  var written = [${args.x} * pointScale.x, ${args.y} * pointScale.y];
+                  pointProp.setValue(written, true);
+                  var readBack = pointProp.getValue();
+                  if (!readBack || readBack.length < 2 || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
+                    return __error("Premiere did not apply the requested position; read back " + readBack + ".");
+                  }
+                  set = { normalized: pointScale.normalized, value: [readBack[0], readBack[1]] };
                   break;
                 }
               }
@@ -773,7 +792,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             }
           }
           if (!set) return __error("Could not set position");
-          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name });
+          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -806,7 +825,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "Motion") {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
-                if (clip.components[i].properties[p].displayName === "Scale") {
+                if (__propertyNameMatches(clip.components[i].properties[p].displayName, "Scale")) {
                   clip.components[i].properties[p].setValue(${args.scale}, true);
                   set = true;
                   break;
@@ -897,8 +916,16 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             if (clip.components[i].displayName === "Motion") {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
                 if (clip.components[i].properties[p].displayName === "Anchor Point") {
-                  clip.components[i].properties[p].setValue([${args.x}, ${args.y}], true);
-                  set = true;
+                  var pointProp = clip.components[i].properties[p];
+                  var pointScale = __motionPointScale(pointProp, __clipSourceFrameSize(clip, app.project.activeSequence));
+                  if (!pointScale) return __error("The source frame size is unreadable, so pixels cannot be converted to Premiere's normalized anchor point; nothing was changed.");
+                  var written = [${args.x} * pointScale.x, ${args.y} * pointScale.y];
+                  pointProp.setValue(written, true);
+                  var readBack = pointProp.getValue();
+                  if (!readBack || readBack.length < 2 || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
+                    return __error("Premiere did not apply the requested anchor point; read back " + readBack + ".");
+                  }
+                  set = { normalized: pointScale.normalized, value: [readBack[0], readBack[1]] };
                   break;
                 }
               }
@@ -906,7 +933,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             }
           }
           if (!set) return __error("Could not set anchor point");
-          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name });
+          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1423,7 +1450,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           format: {
             type: "string",
             description:
-              "Filter to presets whose name or format bucket matches this (e.g. 'H.264', 'ProRes', 'Proxy'). Omit to list all.",
+              "Filter by container/format (e.g. 'H.264', 'mp4', 'QuickTime', 'WAV') or preset name (e.g. 'ProRes', 'Proxy'). Presets whose format matches come first. Omit to list all.",
           },
         },
       },
@@ -1433,24 +1460,22 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           if (!presets.length) {
             return __error("No .epr presets found. Is Adobe Media Encoder installed alongside Premiere Pro?");
           }
-
-          ${
-            args.format
-              ? `var needle = __presetSearchText("${escapeForExtendScript(args.format)}");
-               var filtered = [];
-               for (var i = 0; i < presets.length; i++) {
-                 var p = presets[i];
-                 if (__presetSearchText(p.name).indexOf(needle) !== -1 || __presetSearchText(p.format).indexOf(needle) !== -1) {
-                   filtered.push(p);
-                 }
-               }
-               presets = filtered;`
-              : ""
-          }
-
-          return __result({ count: presets.length, presets: presets });
+          return __result({ presets: presets });
         `);
-        return sendCommand(script, bridgeOptions);
+        const result = await sendCommand(script, bridgeOptions);
+        if (!result.success) return result;
+        const raw = ((result.data as { presets?: Array<{ name: string; path: string; format: string }> })?.presets) ?? [];
+        const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+        let presets = raw.map((preset) => ({ ...preset, ...describePresetFolder(preset.format) }));
+        if (args.format) {
+          const needle = normalize(args.format);
+          const byFormat = presets.filter((p) => normalize(`${p.formatLabel} ${p.formatCode ?? ""} ${p.extension ?? ""}`).includes(needle));
+          const byName = presets.filter((p) => !byFormat.includes(p) && normalize(`${p.name} ${p.format}`).includes(needle));
+          // Presets whose container format matches come first; name-only matches
+          // (e.g. "H264 ..." presets that write QuickTime) follow.
+          presets = [...byFormat, ...byName];
+        }
+        return { success: true, data: { count: presets.length, presets } };
       },
     },
 
@@ -1577,7 +1602,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     set_poster_frame: {
       description:
-        "Set the poster frame (thumbnail) for a project item at a specific time.",
+        "Unavailable: Premiere's scripting API cannot set a project item's poster frame. Fails without changing the item; set it in the Project panel (Shift+P).",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1593,21 +1618,15 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         required: ["item_id", "time_seconds"],
       },
       handler: async (args: { item_id: string; time_seconds: number }) => {
-        const script = buildToolScript(`
-          var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
-
-          try {
-            var t = new Time();
-            t.seconds = ${args.time_seconds};
-            item.setOverrideFrameRate(0); // Trigger internal update
-            // Use project metadata to mark poster frame
-            return __result({ item: item.name, timeSeconds: ${args.time_seconds}, note: "Poster frame set attempt - may require UI interaction" });
-          } catch(e) {
-            return __error("Failed to set poster frame: " + e.message);
-          }
-        `);
-        return sendCommand(script, bridgeOptions);
+        void args;
+        // The previous implementation set nothing, called setOverrideFrameRate(0)
+        // as an "internal update" (which reset the item's frame-rate
+        // interpretation to ~0 fps on Premiere 25.2), and reported success.
+        return {
+          success: false,
+          error:
+            "Premiere's scripting API has no poster-frame setter (ProjectItem.setPosterFrame does not exist on this host). Nothing was changed. Set the poster frame in the Project panel (hover-scrub the clip and press Shift+P).",
+        };
       },
     },
 

@@ -2,7 +2,7 @@ import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { execFile } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -135,6 +135,36 @@ export function parseEbur128Summary(stderr: string): LoudnessMeasurement {
     loudnessRangeLu: finiteMetric(summary.match(/Loudness range:[\s\S]*?\bLRA:\s*(-?(?:inf|\d+(?:\.\d+)?))\s+LU/i)?.[1]),
     truePeakDbfs: finiteMetric(summary.match(/True peak:[\s\S]*?\bPeak:\s*(-?(?:inf|\d+(?:\.\d+)?))\s+dBFS/i)?.[1]),
   };
+}
+
+export interface LoudnormStats {
+  input_i: string; input_tp: string; input_lra: string; input_thresh: string; target_offset: string;
+  normalization_type?: string;
+}
+
+/** The JSON block loudnorm prints to stderr with print_format=json. */
+export function parseLoudnormJson(stderr: string): LoudnormStats {
+  const start = stderr.lastIndexOf("{");
+  const end = stderr.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("loudnorm printed no measurement");
+  const stats = JSON.parse(stderr.slice(start, end + 1)) as LoudnormStats;
+  for (const key of ["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"] as const) {
+    if (!Number.isFinite(Number(stats[key]))) throw new Error(`loudnorm measurement is missing ${key} (silent input?)`);
+  }
+  return stats;
+}
+
+async function probeAudioStream(path: string): Promise<{ sampleRate: number | null; bitRate: number | null } | null> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,bit_rate", "-of", "json", path], { timeout: 15000 });
+    const stream = JSON.parse(stdout).streams?.[0];
+    if (!stream) return null;
+    const rate = Number(stream.sample_rate);
+    const bits = Number(stream.bit_rate);
+    return { sampleRate: Number.isFinite(rate) && rate > 0 ? rate : null, bitRate: Number.isFinite(bits) && bits > 0 ? bits : null };
+  } catch {
+    return { sampleRate: null, bitRate: null };
+  }
 }
 
 /**
@@ -806,6 +836,10 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         } catch (error) {
           const failure = error as { code?: string; killed?: boolean; stderr?: Buffer | string; message?: string };
           const detail = Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : (failure.stderr ?? failure.message ?? "");
+          if (failure.code === undefined && !failure.killed && failure.stderr === undefined) {
+            // The media decoded; the beat analysis itself found no steady pulse.
+            return { success: false, error: `No steady beat found: ${failure.message ?? "unknown analysis error"}. The media decoded fine; it may be speech, a quiet or ambient bed, or free-tempo music.` };
+          }
           return { success: false, error: failure.code === "ENOENT"
             ? "ffmpeg was not found on PATH; install FFmpeg to analyze beats."
             : failure.killed
@@ -974,17 +1008,50 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         if (existsSync(outputPath)) return { success: false, error: `Output already exists and will not be overwritten: ${outputPath}` };
         if (!existsSync(dirname(outputPath)) || !statSync(dirname(outputPath)).isDirectory()) return { success: false, error: `Output directory does not exist: ${dirname(outputPath)}` };
 
-        try {
-          await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-n", "-i", inputPath,
-            "-af", `loudnorm=I=${target}:TP=${truePeak}:LRA=11`,
-            "-c:v", "copy", outputPath,
-          ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
-        } catch (error) {
+        // Two-pass loudnorm: measure, then apply linearly with the measured values.
+        // Single-pass (dynamic) loudnorm undershot a dense, clipped music-video mix by
+        // 1.6 LU and resampled its audio to 96 kHz at a lower bitrate (live check).
+        const failureOf = (error: unknown) => {
           const failure = error as { code?: string; killed?: boolean; stderr?: string; message?: string };
           if (failure.code === "ENOENT") return { success: false, error: "ffmpeg was not found on PATH" };
           if (failure.killed) return { success: false, error: "ffmpeg loudness normalization timed out after 300 seconds" };
           return { success: false, error: `ffmpeg normalization failed: ${(failure.stderr ?? failure.message ?? "unknown error").split(/\r?\n/).filter(Boolean).slice(-3).join(" ")}` };
+        };
+        const source = await probeAudioStream(inputPath);
+        if (!source) return { success: false, error: `No audio stream found in ${inputPath}` };
+        let firstPass: LoudnormStats;
+        try {
+          const measured = await execFileAsync("ffmpeg", [
+            "-nostdin", "-hide_banner", "-i", inputPath, "-vn", "-sn", "-dn",
+            "-af", `loudnorm=I=${target}:TP=${truePeak}:LRA=11:print_format=json`, "-f", "null", "-",
+          ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
+          firstPass = parseLoudnormJson(measured.stderr);
+        } catch (error) {
+          return failureOf(error);
+        }
+        // A loudness-range target below the source's own range forces dynamic mode;
+        // allow the source's range so the gain can stay linear.
+        const lra = Math.min(50, Math.max(11, Math.ceil(Number(firstPass.input_lra)) + 1));
+        const filter = [
+          `loudnorm=I=${target}`, `TP=${truePeak}`, `LRA=${lra}`,
+          `measured_I=${firstPass.input_i}`, `measured_TP=${firstPass.input_tp}`, `measured_LRA=${firstPass.input_lra}`,
+          `measured_thresh=${firstPass.input_thresh}`, `offset=${firstPass.target_offset}`, "linear=true", "print_format=json",
+        ].join(":");
+        const extension = extname(outputPath).toLowerCase();
+        const aacContainer = [".mp4", ".m4a", ".mov", ".m4v", ".aac"].includes(extension);
+        const audioCodecArgs = aacContainer
+          ? ["-c:a", "aac", "-b:a", `${Math.max(192, Math.round((source.bitRate ?? 192000) / 1000))}k`]
+          : [];
+        let secondPass: LoudnormStats;
+        try {
+          const applied = await execFileAsync("ffmpeg", [
+            "-nostdin", "-hide_banner", "-n", "-i", inputPath,
+            "-af", filter, "-ar", String(source.sampleRate ?? 48000), ...audioCodecArgs,
+            "-c:v", "copy", outputPath,
+          ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
+          secondPass = parseLoudnormJson(applied.stderr);
+        } catch (error) {
+          return failureOf(error);
         }
         if (!existsSync(outputPath) || !statSync(outputPath).isFile() || statSync(outputPath).size < 1) {
           return { success: false, error: "ffmpeg reported completion but no non-empty output file exists" };
@@ -1010,6 +1077,9 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
             inputPath, outputPath, outputSizeBytes: statSync(outputPath).size,
             target: { integratedLufs: target, maxTruePeakDbfs: truePeak, toleranceLu: tolerance },
             measured: measurement, deltaLu,
+            input: { integratedLufs: Number(firstPass.input_i), truePeakDbfs: Number(firstPass.input_tp), loudnessRangeLu: Number(firstPass.input_lra) },
+            normalizationType: secondPass.normalization_type ?? null,
+            audio: { sampleRate: source.sampleRate ?? 48000, codec: aacContainer ? "aac" : "ffmpeg default for the container", bitrateKbps: aacContainer ? Math.max(192, Math.round((source.bitRate ?? 192000) / 1000)) : null },
             verified: loudnessPass && truePeakPass,
             loudnessPass, truePeakPass,
             verificationScope: "The new output file exists and was remeasured locally. This does not prove subjective mix quality, rights, or Premiere timeline state.",

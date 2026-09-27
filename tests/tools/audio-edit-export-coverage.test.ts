@@ -226,7 +226,10 @@ describe("edit plan validation and apply coverage", () => {
 
     expect(script).toContain('__findSequence("seq\\"one")');
     expect(script).toContain("function __planFindClip");
-    expect(script).toContain("found0.remove(true, true)");
+    // TrackItem.remove(true, ...) does not ripple on 25.2; the verified ripple delete does.
+    expect(script).not.toContain("remove(true, true)");
+    expect(script).toContain("var ripple0 = (function () { var __result = function (d)");
+    expect(script).toContain("app.project.activeSequence = seq");
     expect(result).toEqual({ success: false, error: "Premiere rejected the edit (operation apply-remove)" });
     expect(auditSink.mock.calls.map(([event]) => event.outcome)).toEqual(["started", "failed"]);
   });
