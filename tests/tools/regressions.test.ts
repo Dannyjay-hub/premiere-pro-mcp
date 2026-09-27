@@ -294,6 +294,15 @@ describe("PR #3 follow-ups — color_correct and export_sequence", () => {
     expect(code).not.toContain("Adobe Media Encoder 2025");
     expect(code).not.toContain("Adobe Media Encoder 2026");
   });
+
+  it("export_sequence fails closed when Premiere rejects the render or writes no file", async () => {
+    const script = await scriptFor(exportTools.export_sequence, { output_path: "/tmp/out.mp4" });
+
+    expect(script).toContain("var exportResult = seq.exportAsMediaDirect(");
+    expect(script).toContain('if (exportResult === false) return __error("Premiere rejected the sequence export.")');
+    expect(script).toContain('if (!outputFile.exists) return __error("Premiere did not write the requested export file.")');
+    expect(script).toContain("verified: true");
+  });
 });
 
 describe("script-builder helpers used by the fixes are actually defined", () => {

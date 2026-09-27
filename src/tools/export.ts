@@ -717,8 +717,13 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             presetPath,
             ${args.work_area_only ? "app.encoder.ENCODE_WORKAREA" : "app.encoder.ENCODE_ENTIRE"}
           );
+          // Premiere documents a boolean; false means the render was rejected.
+          // Some hosts throw instead; buildToolScript already maps that to __error.
+          if (exportResult === false) return __error("Premiere rejected the sequence export.");
+          var outputFile = new File(outputPath);
+          if (!outputFile.exists) return __error("Premiere did not write the requested export file.");
 
-          return __result({ exported: true, outputPath: outputPath, presetUsed: presetPath });
+          return __result({ exported: true, verified: true, outputPath: outputPath, presetUsed: presetPath });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: 120000 }); // 2 min timeout for exports
       },
