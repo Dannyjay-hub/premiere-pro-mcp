@@ -358,8 +358,15 @@ function processOneCommand(cmdFileName) {
       }
     } catch (e) {
       // If result isn't JSON, wrap it
-      if (result && result.indexOf("Error") === 0) {
-        response = JSON.stringify({ success: false, error: result });
+      // "EvalScript error." is CEP's generic message when the host script throws
+      // outside its own try/catch or does not parse. It is a failure, not data.
+      if (result && (result.indexOf("Error") === 0 || /^EvalScript error/i.test(result))) {
+        response = JSON.stringify({
+          success: false,
+          error: /^EvalScript error/i.test(result)
+            ? "Premiere could not run the generated script (" + result + "). No result was produced; treat the command as failed."
+            : result,
+        });
         log("Result: " + result, "err");
       } else {
         response = JSON.stringify({ success: true, data: result });

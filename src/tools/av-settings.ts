@@ -102,6 +102,7 @@ export function getAvSettingsTools(bridgeOptions: BridgeOptions) {
               channelType: optional("audioChannelType"),
               channelTypeLabels: { "0": "mono", "1": "stereo", "2": "5.1", "3": "multichannel", "4": "4-channel", "5": "8-channel" },
               sampleRate: valueOfTime(optional("audioSampleRate")),
+              sampleRateHz: __sampleRateHz(optional("audioSampleRate")),
               displayFormat: optional("audioDisplayFormat")
             },
             colorAndRender: {

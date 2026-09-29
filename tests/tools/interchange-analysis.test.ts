@@ -125,7 +125,7 @@ describe("FCPXML inspection and approved-root reference verification", () => {
       ],
       warnings: ["DOCTYPE is present; this tool inspects text only and never resolves entities"],
     });
-    expect(inspectFcpxml("<sequence />").warnings).toContain("No <fcpxml> root element was found");
+    expect(inspectFcpxml("<sequence />").warnings).toContain("No <fcpxml> or <xmeml> root element was found");
   });
 
   it("verifies only file URLs inside caller-approved roots and hides denied paths", async () => {

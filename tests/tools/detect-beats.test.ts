@@ -91,4 +91,20 @@ describe("detect_beats analysis", () => {
     await expect(tools.detect_beats.handler({ media_path: mediaPath }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("invalid stream") });
   });
+
+  it("reports a decoded file with no steady pulse as no beat, not as a decode failure (live: quiet ambient bed)", async () => {
+    const mediaPath = createMediaFixture();
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: sampleBuffer(new Int16Array(200 * 12)), stderr: Buffer.alloc(0) });
+    const result = await tools.detect_beats.handler({ media_path: mediaPath }) as { success: boolean; error?: string };
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("No steady beat found") });
+    expect(result.error).not.toContain("could not decode");
+  });
+
+  it("reports an unexpected analysis error as a failure, not as \"no steady beat\"", async () => {
+    const mediaPath = createMediaFixture();
+    // A stdout that is not a Buffer makes the sample read itself throw.
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: { length: 4800, readInt16LE: () => { throw new RangeError("offset out of range"); } }, stderr: Buffer.alloc(0) });
+    const result = await tools.detect_beats.handler({ media_path: mediaPath }) as { success: boolean; error?: string };
+    expect(result).toMatchObject({ success: false, error: "Beat analysis failed: offset out of range" });
+  });
 });

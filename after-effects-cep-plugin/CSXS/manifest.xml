@@ -2,6 +2,7 @@
 <ExtensionManifest Version="7.0" ExtensionBundleId="com.mcp.aftereffects.bridge" ExtensionBundleVersion="1.18.6" ExtensionBundleName="MCP for Adobe After Effects">
   <ExtensionList>
     <Extension Id="com.mcp.aftereffects.bridge.panel" Version="1.18.6"/>
+    <Extension Id="com.mcp.aftereffects.bridge.headless" Version="1.18.6"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -30,6 +31,30 @@
           <Type>Panel</Type>
           <Menu>MCP for Adobe After Effects</Menu>
           <Geometry><Size><Height>250</Height><Width>390</Width></Size><MinSize><Height>200</Height><Width>320</Width></MinSize></Geometry>
+          <Icons/>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <Extension Id="com.mcp.aftereffects.bridge.headless">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--allow-file-access-from-files</Parameter>
+            <Parameter>--enable-nodejs</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+            <Event>applicationActivate</Event>
+          </StartOn>
+        </Lifecycle>
+        <UI>
+          <Type>Custom</Type>
+          <Geometry><Size><Height>1</Height><Width>1</Width></Size></Geometry>
           <Icons/>
         </UI>
       </DispatchInfo>

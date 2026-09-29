@@ -164,7 +164,7 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
 
     set_metadata: {
       description:
-        "Update project metadata on a project item. Supply complete metadata_xml plus updated_fields, or field_name and value to read-modify-write one XMP/project property through AdobeXMPScript with field readback.",
+        "Update project metadata on a project item. Supply complete metadata_xml plus updated_fields, or field_name and value to read-modify-write one XMP/project property through AdobeXMPScript with field readback. The project packet (default) stays in the project; packet 'xmp' is written by Premiere into the source media file on disk and requires the filesystem capability.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -487,7 +487,7 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
 
     set_xmp_metadata: {
       description:
-        "Merge a raw XMP XML patch into a project item's existing XMP metadata without removing unrelated fields.",
+        "Merge a raw XMP XML patch into a project item's existing XMP metadata without removing unrelated fields. WARNING: Premiere writes XMP into the source media file on disk (the file's metadata block and modification time change; picture and sound are untouched). Requires the filesystem capability.",
       parameters: {
         type: "object" as const,
         properties: {

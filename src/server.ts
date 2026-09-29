@@ -5,6 +5,7 @@ import {
   type StandardSchemaWithJSON,
 } from "@modelcontextprotocol/server";
 import { BridgeOptions } from "./bridge/file-bridge.js";
+import { runWithUndoTracking } from "./bridge/undo-tracking.js";
 import { getDiscoveryTools } from "./tools/discovery.js";
 import { getProjectTools } from "./tools/project.js";
 import { getMediaTools } from "./tools/media.js";
@@ -14,6 +15,7 @@ import { getEffectsTools } from "./tools/effects.js";
 import { getTransitionsTools } from "./tools/transitions.js";
 import { getAudioTools } from "./tools/audio.js";
 import { getTextTools } from "./tools/text.js";
+import { getStockTitleTools } from "./tools/stock-titles.js";
 import { getMarkerTools } from "./tools/markers.js";
 import { getTrackTools } from "./tools/tracks.js";
 import { getPlayheadTools } from "./tools/playhead.js";
@@ -71,6 +73,7 @@ import {
   isToolPermitted,
   resolveCapabilities,
 } from "./security/index.js";
+import { capabilitiesForToolInvocation } from "./security/capabilities.js";
 import { EXTENDSCRIPT_REFERENCE } from "./resources/extendscript-reference.js";
 import { getLiveContextResources } from "./resources/live-context-resources.js";
 import { PROJECT_CONTEXT_RESOURCE } from "./context/project-context-resource.js";
@@ -141,7 +144,7 @@ const toolResultOutputSchema = fromJsonSchema({
       description: "The registered MCP tool name.",
     },
     data: {
-      description: "Tool-specific result data when ok is true.",
+      description: "Tool-specific result data when ok is true; on failure, diagnostic detail when the tool provides it.",
     },
     error: {
       type: "string",
@@ -258,6 +261,7 @@ function collectStaticTools(
     ...getTransitionsTools(bridgeOptions),
     ...getAudioTools(bridgeOptions),
     ...getTextTools(bridgeOptions),
+    ...getStockTitleTools(bridgeOptions),
     ...getMogrtAuthoringTools(bridgeOptions),
     ...getMogrtStudioTools(bridgeOptions),
     ...getRenderHandoffTools(bridgeOptions),
@@ -351,6 +355,28 @@ export interface ServerOptions {
   toolPacks?: string;
 }
 
+/**
+ * Local planners snap times to frames and default frame_rate to 30. On 24, 25,
+ * or 60 fps material that silently shifts every frame number, so surface a
+ * warning whenever a caller relies on that default.
+ */
+function withFrameRateDefaultWarning<TArgs, TResult>(tool: { parameters?: unknown; handler: (args: TArgs) => Promise<TResult> }) {
+  const frameRate = (tool.parameters as { properties?: Record<string, { description?: string }> } | undefined)?.properties?.frame_rate;
+  if (!frameRate || !/defaults to 30\b/.test(frameRate.description ?? "")) return tool.handler;
+  return async (args: TArgs): Promise<TResult> => {
+    const result = await tool.handler(args);
+    const input = args as Record<string, unknown> | undefined;
+    const outcome = result as { success?: boolean; data?: unknown };
+    if (input?.frame_rate !== undefined || !outcome?.success || !outcome.data || typeof outcome.data !== "object" || Array.isArray(outcome.data)) {
+      return result;
+    }
+    const data = outcome.data as Record<string, unknown>;
+    const warning = "frame_rate was not given, so frame numbers assume 30 fps. Pass the sequence frame rate (get_sequence_settings) for 24, 25, or 60 fps material.";
+    const warnings = Array.isArray(data.warnings) ? [...data.warnings, warning] : [warning];
+    return { ...(result as object), data: { ...data, warnings } } as TResult;
+  };
+}
+
 export function createServer(
   bridgeOptions: BridgeOptions,
   serverOptions: ServerOptions = {},
@@ -429,7 +455,7 @@ export function createServer(
     }
 
     const inputSchema = jsonSchemaToInputSchema(tool.parameters);
-    const guardedHandler = guardToolHandler(name, tool.handler, capabilities);
+    const guardedHandler = guardToolHandler(name, withFrameRateDefaultWarning(tool), capabilities);
 
     const annotations = annotationsForTool(name);
     server.registerTool(
@@ -444,7 +470,12 @@ export function createServer(
       async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          const result = await guardedHandler(args as Record<string, unknown>);
+          // Every call that may change the project records the undo position:
+          // anything that needs more than inspect (edit, and also filesystem or
+          // export tools such as import_*, relink_*, consolidate_* that add
+          // project items). Only inspect-only calls skip it.
+          const tracksUndo = capabilitiesForToolInvocation(name, args).some((capability) => capability !== "inspect");
+          const result = await runWithUndoTracking(tracksUndo, () => guardedHandler(args as Record<string, unknown>));
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",
@@ -485,17 +516,20 @@ export function createServer(
               ],
             };
           } else {
+            const failureData = (result as { data?: unknown }).data;
             return {
               structuredContent: structuredToolResult(
                 name,
                 false,
-                undefined,
+                failureData,
                 result.error,
               ),
               content: [
                 {
                   type: "text" as const,
-                  text: `Error: ${result.error}`,
+                  text: failureData === undefined || failureData === null
+                    ? `Error: ${result.error}`
+                    : `Error: ${result.error}\nDetails: ${JSON.stringify(failureData, null, 2)}`,
                 },
               ],
               isError: true,

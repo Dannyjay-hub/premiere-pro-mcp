@@ -95,7 +95,10 @@ describe("issue #617 — import_mogrt writes text explicitly and verifies by rea
     hostWith({ app: { project: { activeSequence: { importMGT: () => ({ getMGTComponent: () => null }) } } } });
     const result = await text.import_mogrt.handler({ mogrt_path: "a.mogrt", text_values: { Headline: "x" } }) as { data: Record<string, unknown> };
     expect(result.data.textVerification).toBe("committed_unverified");
-    expect(result.data.warnings).toEqual([expect.stringMatching(/no MGT component/)]);
+    expect(result.data.warnings).toEqual([
+      expect.stringMatching(/no MGT component/),
+      expect.stringMatching(/duration was not verified \(committed_unverified\): the imported clip exposes no readable timeline range/),
+    ]);
   });
 
   it("keeps the legacy import path unchanged without text_values", async () => {

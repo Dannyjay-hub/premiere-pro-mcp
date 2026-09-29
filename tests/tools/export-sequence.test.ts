@@ -1,0 +1,113 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runInNewContext } from "node:vm";
+import { getHelpersSource } from "../../src/bridge/script-builder.js";
+import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
+
+vi.mock("../../src/bridge/file-bridge.js", () => ({
+  sendCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
+  sendRawCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
+  getTempDir: vi.fn().mockReturnValue("/tmp/test"),
+  cleanupTempDir: vi.fn(),
+}));
+
+import { sendCommand } from "../../src/bridge/file-bridge.js";
+import { getExportTools } from "../../src/tools/export.js";
+
+const mockedSendCommand = vi.mocked(sendCommand);
+const tools = getExportTools({ tempDir: "/tmp/export-seq", timeoutMs: 5000 } as BridgeOptions);
+type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
+
+beforeEach(() => vi.clearAllMocks());
+
+/** QuickTime-folder preset: Premiere reports ".mov" and writes a MOV whatever the path says (live 25.2). */
+function host(options: { writes?: boolean; marks?: [number, number]; returns?: unknown; existing?: string[] } = {}) {
+  const written: string[] = [];
+  const modes: number[] = [];
+  // Files on disk: path -> [size, mtime]. A pre-existing file starts at 2048 bytes.
+  const disk = new Map<string, [number, number]>((options.existing ?? []).map((path) => [path, [2048, 1000]]));
+  let clock = 2000;
+  const seq = {
+    end: String(121.6 * 254016000000),
+    getInPoint: () => options.marks?.[0] ?? 0,
+    getOutPoint: () => options.marks?.[1] ?? 121.6,
+    getExportFileExtension: () => ".mov",
+    exportAsMediaDirect: (path: string, _preset: string, mode: number) => {
+      modes.push(mode);
+      if (options.writes !== false) { written.push(path); disk.set(path, [4096, clock++]); }
+      return options.returns ?? "";
+    },
+  };
+  function File(this: { exists: boolean; length: number; modified: { getTime: () => number } | null }, path: string) {
+    const entry = disk.get(path);
+    this.exists = !!entry;
+    this.length = entry ? entry[0] : 0;
+    this.modified = entry ? { getTime: () => entry[1] } : null;
+  }
+  mockedSendCommand.mockImplementation(async (script: string) =>
+    JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app: { project: { activeSequence: seq }, encoder: { ENCODE_ENTIRE: 0, ENCODE_IN_TO_OUT: 1, ENCODE_WORKAREA: 2 } }, File }))));
+  return Object.assign(written, { modes });
+}
+
+const preset = join(mkdtempSync(join(tmpdir(), "epr-")), "H264 Match Source - High bitrate.epr");
+writeFileSync(preset, "<PremiereData><ExporterFileType>1299148630</ExporterFileType></PremiereData>");
+
+describe("export_sequence", () => {
+  it("refuses a .mp4 path for a preset that writes .mov (live: mislabeled QuickTime file)", async () => {
+    const written = host();
+    const result = await tools.export_sequence.handler({ output_path: "/out/full.mp4", preset_path: preset }) as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("writes .mov files but output_path ends in .mp4") });
+    expect([...written]).toEqual([]);
+  });
+
+  it("adds the preset's extension when the path has none and verifies the file", async () => {
+    host();
+    await expect(tools.export_sequence.handler({ output_path: "/out/full", preset_path: preset })).resolves.toMatchObject({
+      success: true,
+      data: { outputPath: "/out/full.mov", extension: "mov", verified: true, sizeBytes: 4096 },
+    });
+  });
+
+  it("fails when Premiere writes nothing", async () => {
+    host({ writes: false });
+    await expect(tools.export_sequence.handler({ output_path: "/out/full.mov", preset_path: preset })).resolves.toMatchObject({ success: false, error: expect.stringContaining("did not write") });
+  });
+
+  it("renders the in/out range and reports its expected duration (live: 24.4-34.9 s welcome)", async () => {
+    const written = host({ marks: [24.4, 34.9] });
+    await expect(tools.export_sequence.handler({ output_path: "/out/welcome.mov", preset_path: preset, range: "in_to_out" })).resolves.toMatchObject({
+      success: true,
+      data: { range: "in_to_out", rangeStartSeconds: 24.4, expectedDurationSeconds: 10.5 },
+    });
+    expect(written.modes).toEqual([1]);
+  });
+
+  it("refuses in_to_out without marks instead of rendering the whole sequence", async () => {
+    const written = host();
+    await expect(tools.export_sequence.handler({ output_path: "/out/welcome.mov", preset_path: preset, range: "in_to_out" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("needs sequence in/out points") });
+    expect(written.modes).toEqual([]);
+  });
+
+  it("fails when Premiere returns false, even if a file appears (#647)", async () => {
+    host({ returns: false });
+    await expect(tools.export_sequence.handler({ output_path: "/out/full.mov", preset_path: preset })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Premiere rejected the sequence export") });
+  });
+
+  it("refuses an output_path that already exists, so a stale file cannot pass as the render", async () => {
+    const written = host({ existing: ["/out/full.mov"] });
+    await expect(tools.export_sequence.handler({ output_path: "/out/full.mov", preset_path: preset })).resolves.toMatchObject({ success: false, error: expect.stringContaining("already exists") });
+    expect(written.modes).toEqual([]);
+  });
+
+  it("with overwrite, fails when the existing file was not replaced", async () => {
+    host({ existing: ["/out/full.mov"], writes: false });
+    await expect(tools.export_sequence.handler({ output_path: "/out/full.mov", preset_path: preset, overwrite: true })).resolves.toMatchObject({ success: false, error: expect.stringContaining("was not replaced") });
+  });
+
+  it("with overwrite, verifies the replaced file", async () => {
+    host({ existing: ["/out/full.mov"] });
+    await expect(tools.export_sequence.handler({ output_path: "/out/full.mov", preset_path: preset, overwrite: true })).resolves.toMatchObject({ success: true, data: { replacedExistingFile: true, sizeBytes: 4096, verified: true } });
+  });
+});

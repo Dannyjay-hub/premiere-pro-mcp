@@ -52,7 +52,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === effectName) {
-                qeEffect = effects[i];
+                qeEffect = __qeEffectObject("video", effects[i]);
                 break;
               }
             }
@@ -107,7 +107,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === effectName) {
-                qeEffect = effects[i];
+                qeEffect = __qeEffectObject("audio", effects[i]);
                 break;
               }
             }
@@ -121,7 +121,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_effect: {
-      description: "Remove an effect from a clip by its index or name. Returns a capability error when the host cannot remove an individual component.",
+      description: "Remove one effect from a clip by its index or name (the last instance when names repeat) and verify the clip's components afterwards. Built-in components (Opacity, Motion, Volume, Channel Volume, Panner) cannot be removed. EXPERIMENTAL: when Premiere has no Component.remove() (25.2), it removes through the undocumented QE DOM's targeted qeClip.getComponentAt(i).remove(). Every matching component's removal path is checked before any is removed; it returns a capability error, with nothing changed, when neither path is available.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -145,50 +145,26 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
-          
           var clip = result.clip;
-          // Component.remove() is not present on every CEP Component object in
-          // Premiere 26.x (notably Essential Sound's Amplify component). QE only
-          // exposes an all-effects removal, which is not a safe fallback here.
-          function removeComponent(component, effectName) {
-            try {
-              if (!component || typeof component.remove !== "function") {
-                return {
-                  removed: false,
-                  error: "Premiere does not expose Component.remove() for \"" + effectName + "\". The effect was not removed. No safe targeted QE fallback exists; remove it manually in Effect Controls."
-                };
-              }
-              component.remove();
-              return { removed: true };
-            } catch (e) {
-              return {
-                removed: false,
-                error: "Premiere could not remove \"" + effectName + "\": " + e.toString() + ". The effect may still be present; inspect Effect Controls."
-              };
-            }
-          }
-
           ${args.effect_index !== undefined ? `
-          if (${args.effect_index} < 0 || ${args.effect_index} >= clip.components.numItems) return __error("Effect index out of range");
-          var component = clip.components[${args.effect_index}];
-          var effectName = component.displayName;
-          var removal = removeComponent(component, effectName);
-          if (!removal.removed) return __error(removal.error);
-          return __result({ removed: true, effect: effectName });
+          var chosen = ${args.effect_index};
+          if (chosen < 0 || chosen >= clip.components.numItems) return __error("Effect index out of range");
+          var effectName = String(clip.components[chosen].displayName);
           ` : `
           var effectName = "${escapeForExtendScript(args.effect_name || "")}";
-          var component = null;
+          var chosen = -1;
           for (var i = clip.components.numItems - 1; i >= 0; i--) {
-            if (clip.components[i].displayName === effectName) {
-              component = clip.components[i];
-              break;
-            }
+            if (clip.components[i].displayName === effectName) { chosen = i; break; }
           }
-          if (!component) return __error("Effect not found: " + effectName);
-          var removal = removeComponent(component, effectName);
-          if (!removal.removed) return __error(removal.error);
-          return __result({ removed: true, effect: effectName });
+          if (chosen < 0) return __error("Effect not found: " + effectName);
           `}
+          if (__BUILT_IN_COMPONENTS[effectName]) return __error(effectName + " is a built-in clip component, not an effect, and cannot be removed.");
+          var removal = __removeClipComponents(result, function (name, index) { return index === chosen; });
+          if (removal.unsupported) return __error("Capability error: " + removal.unsupported + " Nothing was removed; remove effects in Effect Controls.");
+          if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for " + effectName + ". The effect was not removed; remove it in Effect Controls.");
+          if (removal.failures.length) return __error("Premiere could not remove " + effectName + " from this clip; it is still present. Inspect Effect Controls.");
+          if (!removal.verified) return __error((removal.remaining.join("|") === removal.before.join("|") ? "Premiere's removal did not take effect: the clip still has " : "Premiere's removal did not take effect as expected: the clip's components read back as ") + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          return __result({ removed: true, verified: true, effect: effectName, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -339,7 +315,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === "Lumetri Color") {
-                qeClip.addVideoEffect(effects[i]);
+                qeClip.addVideoEffect(__qeEffectObject("video", effects[i]));
                 break;
               }
             }
@@ -373,7 +349,8 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
     },
 
     apply_lut: {
-      description: "Apply a LUT file to a clip via Lumetri Color",
+      description:
+        "Unavailable on the CEP backend: Premiere's scripting API cannot load a LUT file into Lumetri Color. Its Input LUT and Look parameters are menu indexes over a curated set of bundled looks, and writing a file path to the LUT asset parameters is accepted but not rendered (seen on Premiere Pro 25.2.3, macOS, by comparing exported frames with the same LUT applied by ffmpeg; other builds were not tested). Fails before changing the clip. Apply the LUT in Lumetri Color > Creative > Look (Browse...) instead.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -389,61 +366,12 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
         required: ["node_id", "lut_path"],
       },
       handler: async (args: { node_id: string; lut_path: string }) => {
-        const script = buildToolScript(`
-          app.enableQE();
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          
-          var clip = result.clip;
-          
-          // Find or apply Lumetri Color
-          var lumetriComp = null;
-          for (var i = 0; i < clip.components.numItems; i++) {
-            if (clip.components[i].displayName === "Lumetri Color") {
-              lumetriComp = clip.components[i];
-              break;
-            }
-          }
-          
-          if (!lumetriComp) {
-            var qeSeq = qe.project.getActiveSequence();
-            if (!qeSeq) return __error("No active sequence (QE); nothing was changed.");
-            var qeTrack = qeSeq.getVideoTrackAt(result.trackIndex);
-            // QE track items include gaps, so the DOM clip index is not a QE index.
-            var qeClip = __findQeClipByDomClip(qeTrack, clip);
-            if (!qeClip) return __error("Could not match the QE clip for " + clip.name + " by timeline start; nothing was changed.");
-            var effectCatalog = __getQeEffectCatalog("video");
-            if (!effectCatalog.ok) return __error(effectCatalog.error);
-            var effects = effectCatalog.effects;
-            for (var i = 0; i < effects.numItems; i++) {
-              if (effects[i].name === "Lumetri Color") {
-                qeClip.addVideoEffect(effects[i]);
-                break;
-              }
-            }
-            // Re-find the component
-            for (var i = 0; i < clip.components.numItems; i++) {
-              if (clip.components[i].displayName === "Lumetri Color") {
-                lumetriComp = clip.components[i];
-                break;
-              }
-            }
-          }
-          
-          if (!lumetriComp) return __error("Could not apply Lumetri Color effect");
-          
-          // Set the LUT path
-          for (var p = 0; p < lumetriComp.properties.numItems; p++) {
-            var prop = lumetriComp.properties[p];
-            if (prop.displayName === "Input LUT") {
-              prop.setValue("${escapeForExtendScript(args.lut_path)}", true);
-              break;
-            }
-          }
-          
-          return __result({ lutApplied: true, clipName: clip.name, lutPath: "${escapeForExtendScript(args.lut_path)}" });
-        `);
-        return sendCommand(script, bridgeOptions);
+        void args;
+        return {
+          success: false,
+          error:
+            "Premiere's scripting API cannot apply a LUT file: Lumetri's Input LUT and Look are menu indexes, and a file path written to the LUT asset parameters is accepted but not rendered (seen on Premiere Pro 25.2.3, macOS; other builds were not tested). Nothing was changed. Apply the LUT in Lumetri Color > Creative > Look > Browse..., or use color_correct for exposure, contrast, temperature, tint, and saturation.",
+        };
       },
     },
 
@@ -579,7 +507,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
           var found = false;
           for (var i = 0; i < effects.numItems; i++) {
             if (effects[i].name === "Warp Stabilizer") {
-              qeClip.addVideoEffect(effects[i]);
+              qeClip.addVideoEffect(__qeEffectObject("video", effects[i]));
               found = true;
               break;
             }

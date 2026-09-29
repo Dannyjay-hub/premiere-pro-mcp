@@ -2,12 +2,66 @@ import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { buildMogrtTextWriteScript, compareMogrtText, MOGRT_TEXT_WRITE_HELPER, summarizeMogrtText, validateMogrtTextMap } from "./mogrt-text.js";
 
+/**
+ * ES3 helper: trim an imported MOGRT clip to a duration by moving only its end,
+ * then read the end back. importMGT always inserts the template's own default
+ * length, so a requested duration has to be applied afterwards. Refuses to run
+ * into the next clip on the same track instead of overwriting it.
+ */
+export const MOGRT_DURATION_HELPER = `
+    function __mogrtSetDuration(clip, trackIndex, durationSeconds) {
+      var check = { status: "committed_unverified", requestedSeconds: durationSeconds, actualSeconds: null };
+      var startTicks = NaN;
+      var endTicks = NaN;
+      try { startTicks = parseFloat(clip.start.ticks); endTicks = parseFloat(clip.end.ticks); } catch (rangeError) {}
+      if (!isFinite(startTicks) || !isFinite(endTicks)) { check.error = "the imported clip exposes no readable timeline range"; return check; }
+      var seq = app.project.activeSequence;
+      var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
+      if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+      var targetEndTicks = startTicks + __secondsToTicks(durationSeconds);
+      if (Math.abs(targetEndTicks - endTicks) <= frameTicks) {
+        check.status = "verified";
+        check.actualSeconds = __ticksToSeconds(endTicks - startTicks);
+        return check;
+      }
+      var track = seq && seq.videoTracks ? seq.videoTracks[trackIndex] : null;
+      if (track && track.clips) {
+        for (var ci = 0; ci < track.clips.numItems; ci++) {
+          var other = track.clips[ci];
+          var otherStart = parseFloat(other.start.ticks);
+          if (isFinite(otherStart) && otherStart >= endTicks - 1 && otherStart < targetEndTicks - 1) {
+            check.status = "blocked";
+            check.actualSeconds = __ticksToSeconds(endTicks - startTicks);
+            check.error = "extending to " + durationSeconds + "s would overlap '" + other.name + "' on video track " + trackIndex + "; the template's default length was kept";
+            return check;
+          }
+        }
+      }
+      var writeErrors = [];
+      try {
+        var newEnd = new Time();
+        newEnd.ticks = String(targetEndTicks);
+        clip.end = newEnd;
+      } catch (timeWriteError) {
+        writeErrors.push(String(timeWriteError));
+        try { clip.end = String(targetEndTicks); } catch (tickWriteError) { writeErrors.push(String(tickWriteError)); }
+      }
+      var afterEnd = NaN;
+      try { afterEnd = parseFloat(clip.end.ticks); } catch (readError) {}
+      if (!isFinite(afterEnd)) { check.error = "the clip end could not be read back"; return check; }
+      check.actualSeconds = __ticksToSeconds(afterEnd - startTicks);
+      check.status = Math.abs(afterEnd - targetEndTicks) <= frameTicks ? "verified" : "mismatch";
+      if (check.status !== "verified" && writeErrors.length) check.error = writeErrors.join("; ");
+      return check;
+    }
+`;
+
 export function getTextTools(bridgeOptions: BridgeOptions) {
   return {
     add_text_overlay: {
       description:
         "Unavailable: Premiere does not expose a supported scripting API to create caption clips directly from raw text. " +
-        "Import an .srt/.vtt and use create_caption_track, or use a MOGRT/PNG overlay for title graphics.",
+        "For on-screen titles from plain text use add_title; for captions import an .srt/.vtt and use create_caption_track.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -41,7 +95,7 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
         return {
           success: false,
           error:
-            "Premiere does not expose a supported scripting API to create a caption clip from raw text. No mutation was attempted. Import an .srt or .vtt first, then use create_caption_track; use a MOGRT or pre-rendered PNG overlay for title graphics.",
+            "Premiere does not expose a supported scripting API to create a caption clip from raw text. No mutation was attempted. For an on-screen title from plain text use add_title; for captions import an .srt or .vtt first, then use create_caption_track.",
         };
       },
     },
@@ -66,7 +120,7 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
           },
           duration_seconds: {
             type: "number",
-            description: "Duration in seconds (default: 5)",
+            description: "Duration in seconds (default: 5). Applied after import by moving the graphic's end and read back; a duration that would overlap the next clip on the track is not applied.",
           },
           text_values: {
             type: "object",
@@ -88,15 +142,18 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
         const trackIndex = args.track_index ?? 0;
         const startSeconds = args.start_seconds ?? 0;
         const durationSeconds = args.duration_seconds ?? 5;
+        if (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 3600) {
+          return { success: false, error: "duration_seconds must be a finite number greater than 0 and at most 3600." };
+        }
 
         const script = buildToolScript(`
+          ${MOGRT_DURATION_HELPER}
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          
+
           var mogrtPath = "${escapeForExtendScript(args.mogrt_path)}";
           var startTicks = __secondsToTicks(${startSeconds}).toString();
-          var durationTicks = __secondsToTicks(${durationSeconds}).toString();
-          
+
           var success = seq.importMGT(
             mogrtPath,
             startTicks,
@@ -119,6 +176,7 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
             ${buildMogrtTextWriteScript("mgtComp", "textReadback", textValues)}
           }
           ` : ""}
+          var durationCheck = __mogrtSetDuration(success, ${trackIndex}, ${durationSeconds});
 
           return __result({
             imported: true,
@@ -127,11 +185,19 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
             mogrtPath: mogrtPath,
             trackIndex: ${trackIndex},
             startSeconds: ${startSeconds},
-            durationSeconds: ${durationSeconds}
+            durationSeconds: ${durationSeconds},
+            duration: durationCheck
           });
         `);
         const result = await sendCommand(script, bridgeOptions);
-        if (!textValues || !result.success) return result;
+        if (!result.success) return result;
+        const durationStatus = ((result.data as Record<string, unknown> | undefined)?.duration as { status?: string; error?: string } | undefined);
+        const durationWarning = durationStatus && durationStatus.status !== "verified"
+          ? [`Requested duration was not verified (${durationStatus.status ?? "committed_unverified"})${durationStatus.error ? `: ${durationStatus.error}` : ""}.`]
+          : [];
+        if (!textValues) {
+          return durationWarning.length ? { ...result, data: { ...(result.data as object), warnings: durationWarning } } : result;
+        }
         const { textReadback, textWriteError, ...data } = (result.data ?? {}) as Record<string, unknown>;
         if (!Array.isArray(textReadback)) {
           return {
@@ -139,21 +205,23 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
             data: {
               ...data,
               textVerification: "committed_unverified",
-              warnings: [String(textWriteError ?? "MOGRT text values could not be written or read back")],
+              warnings: [String(textWriteError ?? "MOGRT text values could not be written or read back"), ...durationWarning],
             },
           };
         }
         const checks = compareMogrtText(textValues, textReadback as Array<Record<string, unknown>>);
         const status = summarizeMogrtText(checks);
+        const warnings = [
+          ...(status === "verified" ? [] : ["One or more MOGRT text values did not read back as written; inspect textChecks before delivery."]),
+          ...durationWarning,
+        ];
         return {
           ...result,
           data: {
             ...data,
             textVerification: status,
             textChecks: checks,
-            ...(status === "verified"
-              ? {}
-              : { warnings: ["One or more MOGRT text values did not read back as written; inspect textChecks before delivery."] }),
+            ...(warnings.length ? { warnings } : {}),
           },
         };
       },

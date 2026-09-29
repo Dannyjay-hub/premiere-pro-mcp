@@ -3,6 +3,121 @@ import {
   escapeForExtendScript,
 } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
+import { applyScratchDisks } from "./scratch-disks.js";
+import { readScratchDisks } from "./project-file.js";
+
+// Shared set-up for lift/extract: resolve the sequence in/out range, refuse a
+// range that spans the whole sequence (Premiere reports cleared marks as
+// 0..end), and record what each targeted, unlocked track holds in the range.
+// Lift and Extract act only on targeted tracks, so only those are verified.
+const IN_OUT_EDIT_PREAMBLE = `
+          app.enableQE();
+          var seq = app.project.activeSequence;
+          if (!seq) return __error("No active sequence");
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return __error("QE could not resolve the active sequence");
+          var inSeconds = __sequencePointSeconds(seq.getInPoint());
+          var outSeconds = __sequencePointSeconds(seq.getOutPoint());
+          var seqEndTicks = parseFloat(seq.end);
+          var halfFrame = (seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24) / 2;
+          if (inSeconds === null) inSeconds = 0;
+          if (outSeconds === null) outSeconds = seqEndTicks / TICKS_PER_SECOND;
+          var inTicks = inSeconds * TICKS_PER_SECOND;
+          var outTicks = outSeconds * TICKS_PER_SECOND;
+          if (outTicks - inTicks < halfFrame) return __error("Set sequence in/out points around the range first (set_sequence_in_out_points). No clips were changed.");
+          if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
+            return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");
+          }
+          // Every clip's ID and span, to tell whether a failed edit changed anything.
+          var timelineSignature = function () {
+            var parts = [];
+            var groups = [["V", seq.videoTracks], ["A", seq.audioTracks]];
+            for (var g = 0; g < groups.length; g++) {
+              for (var t = 0; t < groups[g][1].numTracks; t++) {
+                var clips = groups[g][1][t].clips;
+                for (var c = 0; c < clips.numItems; c++) parts.push(groups[g][0] + t + ":" + clips[c].nodeId + "@" + clips[c].start.ticks + "-" + clips[c].end.ticks);
+              }
+            }
+            return parts.join(";");
+          };
+          var measure = function (track) {
+            var covered = 0, overlap = 0;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var cs = parseFloat(track.clips[c].start.ticks), ce = parseFloat(track.clips[c].end.ticks);
+              covered += ce - cs;
+              overlap += Math.max(0, Math.min(ce, outTicks) - Math.max(cs, inTicks));
+            }
+            return { covered: covered, overlap: overlap };
+          };
+          var targeted = [];
+          var anyLocked = false;
+          var unreadable = [];
+          var survey = function (tracks, kind) {
+            for (var t = 0; t < tracks.numTracks; t++) {
+              var locked = false;
+              try { locked = !!tracks[t].isLocked(); } catch (eLock) {}
+              if (locked) { anyLocked = true; continue; }
+              var isTarget = null;
+              try { isTarget = tracks[t].isTargeted() === true; } catch (eTarget) { isTarget = null; }
+              if (isTarget === null) { unreadable.push(kind + (t + 1)); continue; }
+              if (!isTarget) continue;
+              var m = measure(tracks[t]);
+              var after = [];
+              for (var c = 0; c < tracks[t].clips.numItems; c++) {
+                var clip = tracks[t].clips[c];
+                if (parseFloat(clip.start.ticks) >= outTicks - halfFrame) after.push({ nodeId: String(clip.nodeId), start: parseFloat(clip.start.ticks) });
+              }
+              targeted.push({ label: kind + (t + 1), track: tracks[t], covered: m.covered, overlap: m.overlap, after: after });
+            }
+          };
+          survey(seq.videoTracks, "V");
+          survey(seq.audioTracks, "A");
+          if (unreadable.length) return __error("Could not read whether " + unreadable.join(", ") + " are targeted, so the tracks Premiere will edit are unknown. No clips were changed.");
+          var rangeHadClips = false;
+          for (var tt = 0; tt < targeted.length; tt++) if (targeted[tt].overlap > halfFrame) rangeHadClips = true;
+          if (!rangeHadClips) return __error("Nothing to remove: no clips on targeted, unlocked tracks overlap the in/out range (Lift and Extract only edit targeted tracks; see set_target_track). No clips were changed.");
+          var signatureBefore = timelineSignature();
+          // Per-track signatures, to report tracks Premiere changed besides the
+          // targeted ones (live 25.2.3: Extract also closed the range on an
+          // untargeted audio track holding the targeted video's linked audio).
+          var trackSignatures = function () {
+            var out = {};
+            var groups = [["V", seq.videoTracks], ["A", seq.audioTracks]];
+            for (var g = 0; g < groups.length; g++) {
+              for (var t = 0; t < groups[g][1].numTracks; t++) {
+                var clips = groups[g][1][t].clips;
+                var parts = [];
+                for (var c = 0; c < clips.numItems; c++) parts.push(clips[c].nodeId + "@" + clips[c].start.ticks + "-" + clips[c].end.ticks);
+                out[groups[g][0] + (t + 1)] = parts.join(";");
+              }
+            }
+            return out;
+          };
+          var tracksBefore = trackSignatures();
+          var otherTracksChanged = function () {
+            var now = trackSignatures();
+            var changed = [];
+            var edited = {};
+            for (var e = 0; e < targeted.length; e++) edited[targeted[e].label] = true;
+            for (var key in now) if (now.hasOwnProperty(key) && !edited[key] && now[key] !== tracksBefore[key]) changed.push(key);
+            return changed;
+          };
+          // After the edit, each targeted track must hold exactly the range's content less.
+          var coverageProblems = function () {
+            var problems = [];
+            for (var p = 0; p < targeted.length; p++) {
+              var now = measure(targeted[p].track).covered;
+              var expectedCovered = targeted[p].covered - targeted[p].overlap;
+              if (Math.abs(now - expectedCovered) > halfFrame * 2) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
+            }
+            return problems;
+          };
+          var failAfterEdit = function (message, data) {
+            var changed = timelineSignature() !== signatureBefore;
+            data.timelineChanged = changed;
+            return __jsonStringify({ success: false, error: (changed ? "The timeline changed, but " : "Nothing was changed: ") + message, data: data });
+          };
+`;
 
 const MEDIA_REPORT_DEFAULT_LIMIT = 100;
 const MEDIA_REPORT_MAX_LIMIT = 500;
@@ -53,7 +168,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
   return {
     delete_project_item: {
       description:
-        "Delete a project item (clip, bin, etc.) from the project panel. This removes it from the project but does not affect timeline instances.",
+        "Delete a project item (bin, sequence, clip or file) from the project panel and read back that it is gone. " +
+        "organize_project_items_uxp with action 'remove' (authenticated UXP bridge) is the preferred, documented route. This CEP fallback deletes a clip or file by moving it into a temporary bin and deleting that bin, which cannot be undone here. " +
+        "Deleting media also removes its clips from every sequence, so an item (or a bin whose contents are) used on a timeline is refused unless confirm_remove_from_sequences is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -61,10 +178,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Node ID or name of the project item to delete",
           },
+          confirm_remove_from_sequences: {
+            type: "boolean",
+            description: "Delete even when the item (or something inside the bin) is used in a sequence, which also removes those timeline clips (default: false).",
+          },
         },
         required: ["item_id"],
       },
-      handler: async (args: { item_id: string }) => {
+      handler: async (args: { item_id: string; confirm_remove_from_sequences?: boolean }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
@@ -83,11 +204,21 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             } catch (e) {}
           }
 
+          var usage = { clips: 0, sequences: [] };
+          if (!sequence && (item.type === 1 || item.type === 2 || item.type === 4)) {
+            usage = __projectItemUsage(item);
+            if (usage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
+              return __error(name + (item.type === 2 ? " holds media used by " : " is used by ") + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here, so nothing was deleted. Remove the clips first, or pass confirm_remove_from_sequences: true.");
+            }
+          }
           if (item.type === 2) {
             item.deleteBin();
           } else if (sequence) {
             var accepted = app.project.deleteSequence(sequence);
             if (accepted === false) return __error("Premiere rejected deletion of sequence: " + name);
+          } else if (item.type === 1 || item.type === 4) {
+            var removal = __deleteProjectItemViaBin(item);
+            if (!removal.ok) return __error(removal.error + (removal.changed ? "" : " Nothing is reported as deleted."));
           } else {
             return __error(
               "Legacy CEP cannot safely delete this project item type through a documented API. " +
@@ -95,10 +226,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             );
           }
 
-          if (__findProjectItem(nodeId)) {
+          if (__findProjectItemByNodeId(nodeId)) {
             return __error("Premiere did not remove project item: " + name + ". The deletion is not reported as successful.");
           }
-          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId });
+          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId, timelineClipsRemoved: usage.clips, sequencesChanged: usage.sequences });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -106,7 +237,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     delete_multiple_project_items: {
       description:
-        "Delete multiple project items at once from the project panel.",
+        "Delete several project items (bins, sequences, clips or files) and read back that each is gone. Every item is checked before any is deleted. " +
+        "organize_project_items_uxp with action 'remove' (authenticated UXP bridge) is the preferred, documented route; this CEP fallback deletes clips and files through a temporary bin, which cannot be undone here. " +
+        "Items (or bins whose contents are) used on a timeline are refused unless confirm_remove_from_sequences is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -115,10 +248,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             items: { type: "string" },
             description: "Array of node IDs or names of items to delete",
           },
+          confirm_remove_from_sequences: {
+            type: "boolean",
+            description: "Delete even when an item (or something inside a bin) is used in a sequence, which also removes those timeline clips (default: false).",
+          },
         },
         required: ["item_ids"],
       },
-      handler: async (args: { item_ids: string[] }) => {
+      handler: async (args: { item_ids: string[]; confirm_remove_from_sequences?: boolean }) => {
         const idsJson = JSON.stringify(args.item_ids);
         const script = buildToolScript(`
           var ids = ${idsJson};
@@ -137,11 +274,17 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
                 }
               } catch (e) {}
             }
-            if (item.type !== 2 && !sequence) {
+            if (item.type !== 2 && !sequence && item.type !== 1 && item.type !== 4) {
               return __error(
                 "Legacy CEP cannot safely delete project item: " + item.name + ". " +
                 "No project items were deleted; use organize_project_items_uxp with action 'remove' for generic project-item deletion."
               );
+            }
+            if (!sequence) {
+              var itemUsage = __projectItemUsage(item);
+              if (itemUsage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
+                return __error(item.name + (item.type === 2 ? " holds media used by " : " is used by ") + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here. No project items were deleted; pass confirm_remove_from_sequences: true to delete anyway.");
+              }
             }
             planned.push({ nodeId: String(item.nodeId), name: item.name, item: item, sequence: sequence });
           }
@@ -152,9 +295,12 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             if (!__findProjectItem(target.nodeId)) continue;
             if (target.item.type === 2) {
               target.item.deleteBin();
-            } else {
+            } else if (target.sequence) {
               var accepted = app.project.deleteSequence(target.sequence);
               if (accepted === false) return __error("Premiere rejected deletion of sequence: " + target.name);
+            } else {
+              var viaBin = __deleteProjectItemViaBin(target.item);
+              if (!viaBin.ok) return __error(viaBin.error + (p || viaBin.changed ? " The project changed: " + p + " item(s) before this one were deleted." : " No project items were deleted."));
             }
           }
           var deleted = [];
@@ -425,6 +571,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         required: ["width", "height"],
       },
       handler: async (args: { width: number; height: number }) => {
+        if (![args.width, args.height].every((v) => Number.isInteger(v) && v >= 16 && v <= 16384)) {
+          return { success: false, error: "width and height must be integers from 16 to 16384 pixels" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -436,7 +585,12 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           settings.videoFrameHeight = ${args.height};
           seq.setSettings(settings);
 
-          return __result({ width: ${args.width}, height: ${args.height}, sequence: seq.name });
+          var applied = seq.getSettings();
+          if (!applied || Number(applied.videoFrameWidth) !== ${args.width} || Number(applied.videoFrameHeight) !== ${args.height}) {
+            return __error("Premiere did not apply the requested frame size: got " +
+              (applied ? applied.videoFrameWidth + "x" + applied.videoFrameHeight : "no settings"));
+          }
+          return __result({ width: ${args.width}, height: ${args.height}, sequence: seq.name, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -565,6 +719,21 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             return __error("This Premiere host does not expose a writable sequence pixel-aspect-ratio setting. No sequence settings were changed.");
           }
 
+          // Hosts format the ratio differently ("1", "1.0", "1:1", "1.42222"), so
+          // compare the numeric value instead of the string (#642).
+          var parseRatio = function (value) {
+            var text = String(value);
+            var pair = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[:\\/]\\s*([0-9]+(?:\\.[0-9]+)?)\\s*$/.exec(text);
+            if (pair) return Number(pair[2]) > 0 ? Number(pair[1]) / Number(pair[2]) : NaN;
+            return parseFloat(text);
+          };
+          // A request that already matches succeeds even where the setting is read-only.
+          var currentText = String(currentRatio);
+          var currentValue = parseRatio(currentText);
+          if (isFinite(currentValue) && Math.abs(currentValue - parseRatio(requestedRatio)) <= 0.001) {
+            return __result({ ratio: requestedRatio, hostRatio: currentText, sequence: seq.name, alreadySet: true, verified: true });
+          }
+
           try {
             settings.videoPixelAspectRatio = requestedRatio;
           } catch (eAssign) {
@@ -594,14 +763,6 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           } catch (eObserved) {
             return __error("Premiere did not expose the applied sequence pixel-aspect ratio for verification: " + eObserved.toString());
           }
-          // Hosts format the ratio differently ("1", "1.0", "1:1", "1.42222"), so
-          // compare the numeric value instead of the string (#642).
-          var parseRatio = function (value) {
-            var text = String(value);
-            var pair = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[:\\/]\\s*([0-9]+(?:\\.[0-9]+)?)\\s*$/.exec(text);
-            if (pair) return Number(pair[2]) > 0 ? Number(pair[1]) / Number(pair[2]) : NaN;
-            return parseFloat(text);
-          };
           var requestedValue = parseRatio(requestedRatio);
           var observedValue = parseRatio(observedRatio);
           if (!isFinite(observedValue) || Math.abs(observedValue - requestedValue) > 0.001) {
@@ -628,6 +789,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         required: ["field_type"],
       },
       handler: async (args: { field_type: number }) => {
+        if (![0, 1, 2].includes(args.field_type)) {
+          return { success: false, error: "field_type must be 0 (progressive), 1 (upper field first) or 2 (lower field first)" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -638,7 +802,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           settings.videoFieldType = ${args.field_type};
           seq.setSettings(settings);
 
-          return __result({ fieldType: ${args.field_type}, sequence: seq.name });
+          var applied = seq.getSettings();
+          if (!applied || Number(applied.videoFieldType) !== ${args.field_type}) {
+            return __error("Premiere did not apply the requested field type: got " + (applied ? applied.videoFieldType : "no settings"));
+          }
+          return __result({ fieldType: ${args.field_type}, sequence: seq.name, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -862,21 +1030,44 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "Lift (remove without closing gap) the content between sequence in/out points or selected clips.",
+        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          app.enableQE();
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-
+          ${IN_OUT_EDIT_PREAMBLE}
+          var liftName = qeSeq.lift ? "lift" : (qeSeq.left ? "left" : null);
+          if (!liftName) return __error("This Premiere host exposes no QE lift command. No clips were changed.");
           try {
-            var qeSeq = qe.project.getActiveSequence();
-            qeSeq.lift();
-            return __result({ lifted: true });
-          } catch(e) {
-            return __error("Lift failed: " + e.message);
+            qeSeq[liftName]();
+          } catch (eLift) {
+            return failAfterEdit("Premiere's lift failed: " + eLift.toString(), {});
           }
+          var leftovers = [];
+          for (var p = 0; p < targeted.length; p++) {
+            var track = targeted[p].track;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              var cs = parseFloat(clip.start.ticks), ce = parseFloat(clip.end.ticks);
+              if (cs < outTicks - halfFrame && ce > inTicks + halfFrame) {
+                leftovers.push({ track: targeted[p].label, name: clip.name, startSeconds: __ticksToSeconds(String(cs)), endSeconds: __ticksToSeconds(String(ce)) });
+              }
+            }
+          }
+          if (leftovers.length) return failAfterEdit("Premiere's lift left clips inside the in/out range on targeted tracks.", { leftovers: leftovers });
+          var problems = coverageProblems();
+          if (problems.length) return failAfterEdit("Premiere's lift removed more or less than the in/out range: " + problems.join("; ") + ".", { problems: problems });
+          var edited = [];
+          for (var e = 0; e < targeted.length; e++) edited.push(targeted[e].label);
+          return __result({
+            lifted: true,
+            inSeconds: inSeconds,
+            outSeconds: outSeconds,
+            gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            tracksEdited: edited,
+            otherTracksChanged: otherTracksChanged(),
+            sequenceEndSeconds: __ticksToSeconds(seq.end),
+            verified: true
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -884,21 +1075,46 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "Extract (remove and close gap) the content between sequence in/out points.",
+        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          app.enableQE();
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-
+          ${IN_OUT_EDIT_PREAMBLE}
+          var endBefore = parseFloat(seq.end);
           try {
-            var qeSeq = qe.project.getActiveSequence();
             qeSeq.extract();
-            return __result({ extracted: true });
-          } catch(e) {
-            return __error("Extract failed: " + e.message);
+          } catch (eExtract) {
+            return failAfterEdit("Premiere's extract failed: " + eExtract.toString(), {});
           }
+          var shift = outTicks - inTicks;
+          var problems = coverageProblems();
+          for (var p = 0; p < targeted.length; p++) {
+            var track = targeted[p].track;
+            for (var m = 0; m < targeted[p].after.length; m++) {
+              var want = targeted[p].after[m];
+              var found = null;
+              for (var c = 0; c < track.clips.numItems; c++) if (String(track.clips[c].nodeId) === want.nodeId) { found = track.clips[c]; break; }
+              if (!found) { problems.push(targeted[p].label + ": a clip after the range is missing"); continue; }
+              var moved = want.start - parseFloat(found.start.ticks);
+              if (Math.abs(moved - shift) > halfFrame * 2) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
+            }
+          }
+          if (problems.length) return failAfterEdit("Premiere's extract did not close the in/out range as expected: " + problems.join("; ") + ".", { problems: problems });
+          var endAfter = parseFloat(seq.end);
+          var edited = [];
+          for (var e = 0; e < targeted.length; e++) edited.push(targeted[e].label);
+          return __result({
+            extracted: true,
+            inSeconds: inSeconds,
+            outSeconds: outSeconds,
+            removedSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            tracksEdited: edited,
+            otherTracksChanged: otherTracksChanged(),
+            sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)),
+            sequenceEndSeconds: __ticksToSeconds(String(endAfter)),
+            lockedTracksKept: anyLocked,
+            verified: true
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1167,6 +1383,15 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         video_display_format?: number;
         audio_display_format?: number;
       }) => {
+        if (args.video_display_format === undefined && args.audio_display_format === undefined) {
+          return { success: false, error: "Provide video_display_format and/or audio_display_format." };
+        }
+        if (args.video_display_format !== undefined && !(Number.isInteger(args.video_display_format) && args.video_display_format >= 0 && args.video_display_format <= 11)) {
+          return { success: false, error: "video_display_format must be an integer from 0 to 11" };
+        }
+        if (args.audio_display_format !== undefined && ![0, 1].includes(args.audio_display_format)) {
+          return { success: false, error: "audio_display_format must be 0 (audio samples) or 1 (milliseconds)" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1178,7 +1403,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           ${args.audio_display_format !== undefined ? `settings.audioDisplayFormat = ${args.audio_display_format};` : ""}
           seq.setSettings(settings);
 
-          return __result({ sequence: seq.name, videoDisplayFormat: settings.videoDisplayFormat, audioDisplayFormat: settings.audioDisplayFormat });
+          var applied = seq.getSettings();
+          if (!applied) return __error("Premiere did not return sequence settings after the display-format update");
+          ${args.video_display_format !== undefined ? `if (Number(applied.videoDisplayFormat) !== ${args.video_display_format}) return __error("Premiere did not apply the requested video display format: got " + applied.videoDisplayFormat);` : ""}
+          ${args.audio_display_format !== undefined ? `if (Number(applied.audioDisplayFormat) !== ${args.audio_display_format}) return __error("Premiere did not apply the requested audio display format: got " + applied.audioDisplayFormat);` : ""}
+          return __result({ sequence: seq.name, videoDisplayFormat: applied.videoDisplayFormat, audioDisplayFormat: applied.audioDisplayFormat, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1223,7 +1452,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
                     startSeconds: __ticksToSeconds(clip.start.ticks),
                     endSeconds: __ticksToSeconds(clip.end.ticks)
                   };
-                  try { ci.enabled = !clip.isDisabled(); } catch(e) { ci.enabled = true; }
+                  try { ci.enabled = !__isClipDisabled(clip); } catch(e) { ci.enabled = true; }
                   clips.push(ci);
                 }
               }
@@ -1379,7 +1608,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     set_project_scratch_disk: {
       description:
-        "Set the project's scratch disk paths for captured video, audio, and previews.",
+        "Set the project's scratch disks for captured video, captured audio, video previews and audio previews in one call. Each path must be an existing folder or \"SameAsProject\"; any rejected path fails the call.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1399,6 +1628,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Path for audio previews",
           },
+          save_and_verify: {
+            type: "boolean",
+            description:
+              "Save the project afterwards and confirm the saved scratch-disk settings (default: false). Premiere has no scratch-disk getter, so without this the result is unverified.",
+          },
         },
       },
       handler: async (args: {
@@ -1406,60 +1640,47 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         captured_audio?: string;
         video_previews?: string;
         audio_previews?: string;
+        save_and_verify?: boolean;
       }) => {
-        const script = buildToolScript(`
-          var project = app.project;
-          if (!project) return __error("No project open");
-
-          var set = {};
-          ${
-            args.captured_video
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.captured_video)}", 0); set.capturedVideo = "${escapeForExtendScript(args.captured_video)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.captured_audio
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.captured_audio)}", 1); set.capturedAudio = "${escapeForExtendScript(args.captured_audio)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.video_previews
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.video_previews)}", 2); set.videoPreviews = "${escapeForExtendScript(args.video_previews)}"; } catch(e) {}`
-              : ""
-          }
-          ${
-            args.audio_previews
-              ? `
-          try { project.setScratchDiskPath("${escapeForExtendScript(args.audio_previews)}", 3); set.audioPreviews = "${escapeForExtendScript(args.audio_previews)}"; } catch(e) {}`
-              : ""
-          }
-
-          return __result(set);
-        `);
-        return sendCommand(script, bridgeOptions);
+        const writes = ([
+          ["capturedVideo", args.captured_video],
+          ["capturedAudio", args.captured_audio],
+          ["videoPreviews", args.video_previews],
+          ["audioPreviews", args.audio_previews],
+        ] as Array<[string, string | undefined]>)
+          .filter(([, path]) => path !== undefined)
+          .map(([key, path]) => ({ key, path: path as string }));
+        return applyScratchDisks(bridgeOptions, writes, args.save_and_verify === true);
       },
     },
 
     get_project_scratch_disks: {
-      description: "Get the current scratch disk paths for the project.",
+      description:
+        "Get the project's scratch disk locations (captured media, previews, auto-save, Motion Graphics template media, and more). Premiere's scripting API has no scratch-disk getter, so the settings are read from the saved .prproj file; unsaved changes are not reflected. 'SameAsProject' resolves to the project's folder.",
       parameters: {},
       handler: async () => {
+        // project.getScratchDiskPath does not exist (verified on Premiere 25.2;
+        // only app.setScratchDiskPath is scriptable), so ask Premiere only for
+        // the project path and read the saved settings from the file.
         const script = buildToolScript(`
           var project = app.project;
-          if (!project) return __error("No project open");
-
-          var disks = {};
-          try { disks.capturedVideo = project.getScratchDiskPath(0); } catch(e) {}
-          try { disks.capturedAudio = project.getScratchDiskPath(1); } catch(e) {}
-          try { disks.videoPreviews = project.getScratchDiskPath(2); } catch(e) {}
-          try { disks.audioPreviews = project.getScratchDiskPath(3); } catch(e) {}
-
-          return __result(disks);
+          if (!project || !project.path) return __error("No saved project is open");
+          return __result({ projectPath: String(project.path) });
         `);
-        return sendCommand(script, bridgeOptions);
+        const result = await sendCommand(script, bridgeOptions);
+        if (!result.success) return result;
+        const projectPath = String((result.data as { projectPath?: unknown } | undefined)?.projectPath ?? "");
+        try {
+          return {
+            success: true,
+            data: { source: "saved_project_file", projectPath, disks: await readScratchDisks(projectPath) },
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: `Could not read scratch disk settings from the saved project: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
       },
     },
 

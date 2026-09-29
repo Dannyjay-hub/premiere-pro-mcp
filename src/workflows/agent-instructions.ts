@@ -29,6 +29,8 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "Preflight the requested destination and preset, export, then verify the actual file and delivery requirements. Queue acceptance is not render completion.");
   route(["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder"],
     "For reaction Shorts, plan stacked speaker-colored captions without guessing unknown colors, place a subscribe overlay about two-thirds through, and export into a series-named folder created if missing. Caption-track import cannot encode speaker colors; apply reviewed graphics or a MOGRT, and keep Cafe styling off Watch Club kits.");
+  route(["list_stock_titles", "add_title"],
+    "For a title, lower third, or credit from plain text, prefer add_title with a stock template that ships with Premiere; call list_stock_titles to see how many lines each template takes. Check textVerification and duration in the result.");
   route(["import_mogrt", "get_mogrt_component"],
     "When building MOGRT title cards, pass text_values so every text control (for example Headline) is written explicitly and read back; never rely on template defaults or a prior build. Audit a series with get_mogrt_component expected_values. The Essential Graphics panel can display stale text; trust the stored-property readback and a captured frame, not the panel.");
   route(["inspect_project_panel_metadata_uxp"],

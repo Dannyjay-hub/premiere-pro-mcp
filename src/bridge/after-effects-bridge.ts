@@ -44,5 +44,9 @@ export function sendAfterEffectsCommand(
     ...afterEffectsOptions,
     tempDir: getAfterEffectsTempDir(),
     helpers: AFTER_EFFECTS_BRIDGE_HELPERS,
+    hostLabel: "After Effects",
+    // The bundled AE panel always publishes a heartbeat; none means AE or the
+    // panel is not running, so fail now rather than after the full timeout.
+    requireHeartbeat: true,
   });
 }

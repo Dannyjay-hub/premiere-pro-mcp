@@ -75,6 +75,11 @@ export function structuredToolResult(tool: string, success: boolean, data?: unkn
   return {
     ok: success,
     tool,
-    ...(success ? { data: data ?? null } : { error: error ?? "Unknown error" }),
+    ...(success
+      ? { data: data ?? null }
+      // Keep diagnostic data on failure (per-property outcomes, what was and was
+      // not applied). Dropping it left errors pointing at "data.notCopied" that
+      // the client never received.
+      : { error: error ?? "Unknown error", ...(data === undefined || data === null ? {} : { data }) }),
   };
 }

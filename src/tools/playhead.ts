@@ -97,11 +97,14 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           if (!seq) return __error("No active sequence");
           var inPoint = seq.getWorkAreaInPoint();
           var outPoint = seq.getWorkAreaOutPoint();
+          var enabled = null;
+          try { if (typeof seq.isWorkAreaEnabled === "function") enabled = !!seq.isWorkAreaEnabled(); } catch (enabledError) {}
           return __result({
             inSeconds: __workAreaSeconds(inPoint),
             outSeconds: __workAreaSeconds(outPoint),
             rawIn: String(inPoint),
-            rawOut: String(outPoint)
+            rawOut: String(outPoint),
+            enabled: enabled
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -153,9 +156,13 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
           
+          var inSeconds = __sequencePointSeconds(seq.getInPoint());
+          var outSeconds = __sequencePointSeconds(seq.getOutPoint());
           return __result({
-            inSeconds: Number(seq.getInPoint()),
-            outSeconds: Number(seq.getOutPoint())
+            inSeconds: inSeconds,
+            outSeconds: outSeconds,
+            inSet: inSeconds !== null,
+            outSet: outSeconds !== null
           });
         `);
         return sendCommand(script, bridgeOptions);

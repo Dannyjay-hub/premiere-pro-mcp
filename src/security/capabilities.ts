@@ -58,6 +58,11 @@ export const UNSAFE_TOOL_NAMES = new Set(["execute_extendscript", "send_raw_scri
 const INSPECT_TOOL_NAMES = new Set([
   "ping",
   "get_capabilities",
+  // Read-only queries whose names miss the read prefixes.
+  "has_proxy",
+  "is_work_area_enabled",
+  "verify_premiere_connection",
+  "match_frame",
   "preview_edit_plan",
   "preview_transcript_edit_uxp",
   "plan_transcript_rough_cut_uxp",
@@ -108,7 +113,6 @@ const FILESYSTEM_TOOL_NAMES = new Set([
   "preview_mogrt_recipe",
   "verify_mogrt_artifact",
   "apply_lut",
-  "set_scratch_disk_path",
   "verify_delivery_file",
   "verify_delivery_conformance",
   "detect_silence",
@@ -160,6 +164,15 @@ const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[
   enqueue_after_effects_render: ["edit", "export", "filesystem"],
   preview_mogrt_premiere_handoff: ["inspect", "filesystem"],
   apply_mogrt_premiere_handoff: ["edit", "filesystem"],
+  // Premiere writes XMP changes into the source media file on disk (verified:
+  // set_xmp_metadata rewrote a user's MP4 metadata block), so this is a file write.
+  set_xmp_metadata: ["edit", "filesystem"],
+  // Changes the project and writes files: add_title bakes a .mogrt copy under
+  // the user's app-data folder; the scratch-disk setters point Premiere at
+  // folders it will write to and can save the project to verify them.
+  add_title: ["edit", "filesystem"],
+  set_project_scratch_disk: ["edit", "filesystem"],
+  set_scratch_disk_path: ["edit", "filesystem"],
 };
 
 const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, readonly Capability[]>>>> = {
@@ -344,6 +357,10 @@ export function capabilityForTool(toolName: string): Capability {
 /** Resolve authority at the action level for consolidated multi-action tools. */
 export function capabilitiesForToolInvocation(toolName: string, args: unknown): readonly Capability[] {
   const actionMap = ACTION_CAPABILITIES[toolName];
+  if (toolName === "set_metadata" && args && typeof args === "object" && (args as Record<string, unknown>).packet === "xmp") {
+    // XMP field writes land in the source media file, not just the project.
+    return ["edit", "filesystem"];
+  }
   if (!actionMap) return TOOL_CAPABILITY_REQUIREMENTS[toolName] ?? [capabilityForTool(toolName)];
   const input = args && typeof args === "object" && !Array.isArray(args)
     ? args as Record<string, unknown>

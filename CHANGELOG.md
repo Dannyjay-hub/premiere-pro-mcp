@@ -6,9 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- EXPERIMENTAL (QE DOM): `undo`, `redo`, and `multiple_undo` step Premiere's undo stack and verify each step against `undoStackIndex`. They stop when the stack stops moving, refuse on a host without `undoStackIndex`, and refuse when the stack has moved past `expected_undo_stack_index`. A step that moves the stack unexpectedly or leaves the index unreadable is reported as `committed_unverified` with a "Do not retry" warning. (#654)
+- `list_stock_titles` lists Premiere's bundled title templates, and `add_title` places a stock title with the text baked into a copy of the template, reading each line back from its own layer. (#648)
+
 ### Changed
 
 - Tools that declare parameters now reject unknown top-level arguments instead of ignoring them. A misspelled or renamed argument (for example `item_ID` for `item_id`, or `time_seconds` for `start_seconds`) used to be dropped silently, and the tool ran with its default. The call now fails before anything is sent to Premiere, and the error names the unknown arguments and lists the ones the tool accepts. Clients or saved prompts that send extra or renamed fields must be updated. Tools whose schema already sets `additionalProperties` or `patternProperties` are unchanged, and UXP tools already rejected unknown properties. Tools that declare no parameters (for example `ping` or `save_project`) still ignore extra arguments. A catalog test fails if a handler reads an argument its schema does not declare.
+- CEP tools that change the project report `undoSteps` and `undoStackIndex` when Premiere recorded undo entries for the call, so an agent can reverse exactly that call. Tracking covers every non-inspect call, never reads the stack for inspect-only tools, and is reset across project switches. UXP tools and multi-command workflows are not counted; the undo descriptions say so and recommend `expected_undo_stack_index`. `has_proxy`, `is_work_area_enabled`, `verify_premiere_connection`, and `match_frame` are classed as inspect. (#654)
+- `export_sequence` refuses an `output_path` that already exists unless `overwrite: true`, checks that the preset's extension matches the output file (the default H.264 preset writes `.mov`), supports in/out ranges, and verifies a non-empty file was written. (#648)
+- `apply_lut` refuses instead of reporting `lutApplied: true`: Premiere 25.2.3 did not render a LUT set by path, and the old result had no readback. (#648)
+- `delete_project_item` removes items through a temporary bin. It refuses when the item is used in a sequence unless `confirm_remove_from_sequences: true`, refuses when a bin with the temporary name exists, and reads back that both are gone. `organize_project_items_uxp` remove is named as the preferred route. (#648)
+- A CEP command whose busy file stops changing now fails with "CEP panel appears stuck; reload it in Premiere" once its timeout passes; the busy file is never deleted automatically. (#648)
+
+### Fixed
+
+- EXPERIMENTAL (QE DOM): `remove_effect`, `remove_effect_by_name`, and `remove_all_effects` could not remove anything on Premiere 25.2, which has no DOM `Component.remove()`. They now fall back to QE removal, resolve every target's removal path before removing anything, never remove built-in components (Motion, Opacity, Volume, Channel Volume), and verify the result against the clip's component list. On hosts whose built-in component names are localized they refuse with nothing removed until the match names are known (#674). (#654)
+- `remove_from_timeline` and edit plans ripple through Premiere's sync-locked ripple instead of `TrackItem.remove(true, …)`, which never rippled and left gaps and stray audio while reporting success. Every linked partner is checked for locks before anything is removed. (#648)
+- Linked audio and video stay in sync across razor, trim, slip, roll, slide, and duration edits: partner positions are snapshotted before any write, and a trim or duration change applies the main clip's offset to each partner from that snapshot. (#648)
+- `lift_selection` used a QE method that does not exist; `delete_track` now identifies default track names in any language; `consolidate_and_transfer`, both scratch-disk setters, `import_fcp_xml`, the proxy toggle, `encode_file`, and the After Effects MOGRT export work on 25.2. (#648)
+- `normalize_loudness_file` uses two-pass linear loudnorm at the source sample rate instead of single-pass, which missed its target by 1.6 LU and resampled to 96 kHz. (#648)
+- Two regexes in generated ExtendScript lost their `\s` escapes, so a clip's own frame size was never read (anchor points on a 4K clip in a 1080p sequence used the sequence size) and default track-name matching was loose. `set_clip_properties_batch` also writes Scale Width when Uniform Scale is off, so scaling no longer stretches the picture. (#648 review)
 
 ## [1.18.6] - 2026-09-29
 

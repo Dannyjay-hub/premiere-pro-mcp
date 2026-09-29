@@ -177,7 +177,7 @@ describe("set_clip_duration host behavior", () => {
       timelineEnd: 32,
       durationSeconds: 30,
       previousEnd: 7,
-      linkedItemsAdjusted: false,
+      linkedPartnersEdited: [],
     });
     expect(still.writes).toEqual([{ edge: "end", kind: "Time", ticks: sec(32) }]);
   });

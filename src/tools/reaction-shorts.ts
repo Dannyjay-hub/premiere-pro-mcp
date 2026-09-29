@@ -66,6 +66,8 @@ export function getReactionShortsTools() {
           min_solo_cue_seconds: { type: "number", minimum: 0.15, maximum: 3, description: "Cues shorter than this merge with the next same-speaker cue; defaults to 0.45." },
           combine_gap_seconds: { type: "number", minimum: 0, maximum: 5, description: "Maximum gap when combining a flash cue with the next same-speaker cue; defaults to 0.8." },
           min_hold_seconds: { type: "number", minimum: 0.15, maximum: 3, description: "Minimum duration kept after clamping a cue to a shot change; defaults to 0.35." },
+          max_cue_chars: { type: "integer", minimum: 16, maximum: 400, description: "Longest caption text before a cue is split at a word boundary; defaults to 84 (two 42-character lines)." },
+          max_cue_seconds: { type: "number", minimum: 1, maximum: 30, description: "Longest time one caption stays up before it is split; defaults to 6." },
         },
         required: ["word_timeline", "speaker_palette"],
       },

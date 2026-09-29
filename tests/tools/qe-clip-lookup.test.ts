@@ -28,14 +28,11 @@ const effects = getEffectsTools(bridgeOptions);
 const trackTargeting = getTrackTargetingTools(bridgeOptions);
 
 const FIXED_TOOLS: Array<[string, Handler, Record<string, unknown>]> = [
-  ["remove_all_effects", advanced.remove_all_effects, { node_id: "a" }],
   ["set_frame_blend", advanced.set_frame_blend, { node_id: "a", enabled: true }],
   ["set_time_interpolation", advanced.set_time_interpolation, { node_id: "a", interpolation_type: 1 }],
-  ["rename_clip", advanced.rename_clip, { node_id: "a", new_name: "Renamed" }],
   ["apply_effect", effects.apply_effect, { node_id: "a", effect_name: "Gaussian Blur" }],
   ["apply_audio_effect", effects.apply_audio_effect, { node_id: "a", effect_name: "DeNoise" }],
   ["color_correct", effects.color_correct, { node_id: "a", exposure: 1 }],
-  ["apply_lut", effects.apply_lut, { node_id: "a", lut_path: "/tmp/look.cube" }],
   ["stabilize_clip", effects.stabilize_clip, { node_id: "a" }],
   ["copy_effects_between_clips", clipboard.copy_effects_between_clips, { source_node_id: "b", target_node_id: "a" }],
   ["batch_rename_clips", trackTargeting.batch_rename_clips, { pattern: "Shot_{n}", track_type: "video", track_index: 0 }],
@@ -153,25 +150,38 @@ describe("QE clip lookup by DOM clip start (#642)", () => {
     expect(() => new Script(getHelpersSource() + "\n" + script)).not.toThrow();
   });
 
-  it("rename_clip renames the clip after a leading gap, not the gap", async () => {
+  it("rename_clip renames the DOM clip itself, so a leading gap cannot misdirect it", async () => {
     const host = makeHost();
     const result = await run(host, advanced.rename_clip, { node_id: "a", new_name: "Hero" });
-    expect(result.success).toBe(true);
-    expect(host.qeA.setName).toHaveBeenCalledWith("Hero");
-    expect(host.qeB.setName).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true, data: { verified: true, newName: "Hero" } });
+    expect(host.a.name).toBe("Hero");
+    expect(host.b.name).toBe("Clip B");
+    for (const item of [host.gap, host.qeA, host.qeB]) expect(item.setName).not.toHaveBeenCalled();
+  });
+
+  it("apply_lut refuses before touching the clip (Premiere 25.2.3 does not render a LUT set by path)", async () => {
+    const result = await effects.apply_lut.handler({ node_id: "a", lut_path: "/tmp/look.cube" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Nothing was changed") });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("set_frame_blend and set_time_interpolation address the matched clip", async () => {
+    const host = makeHost();
+    expect((await run(host, advanced.set_frame_blend, { node_id: "b", enabled: true })).success).toBe(true);
+    expect((await run(host, advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 })).success).toBe(true);
+    expect(host.qeB.setFrameBlend).toHaveBeenCalledWith(true);
+    expect(host.qeB.setTimeInterpolationType).toHaveBeenCalledWith(2);
     expectGapUntouched(host);
   });
 
-  it("remove_all_effects, set_frame_blend, and set_time_interpolation address the matched clip", async () => {
+  it("remove_all_effects never uses the broad QE removeEffects() and changes nothing without a targeted remove", async () => {
+    // It removes each effect through Component.remove() or QE getComponentAt(i).remove();
+    // this host has neither, so it is a capability error with nothing removed.
     const host = makeHost();
-    expect((await run(host, advanced.remove_all_effects, { node_id: "b" })).success).toBe(true);
-    expect((await run(host, advanced.set_frame_blend, { node_id: "b", enabled: true })).success).toBe(true);
-    expect((await run(host, advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 })).success).toBe(true);
-    expect(host.qeB.removeEffects).toHaveBeenCalledTimes(1);
-    expect(host.qeB.setFrameBlend).toHaveBeenCalledWith(true);
-    expect(host.qeB.setTimeInterpolationType).toHaveBeenCalledWith(2);
-    expect(host.qeA.removeEffects).not.toHaveBeenCalled();
-    expectGapUntouched(host);
+    const result = await run(host, advanced.remove_all_effects, { node_id: "b" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
+    for (const item of [host.gap, host.qeA, host.qeB]) expect(item.removeEffects).not.toHaveBeenCalled();
+    expect(host.b.components.map((c) => c.displayName)).toEqual(["Motion", "Opacity", "Gaussian Blur", "Missing FX"]);
   });
 
   it("apply_effect adds the effect to the matched clip", async () => {

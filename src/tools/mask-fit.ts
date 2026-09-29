@@ -298,7 +298,8 @@ export function getMaskFitTools(bridgeOptions: BridgeOptions) {
         if (!host.motion?.found) warnings.push("The Motion effect was not found on the clip; current Motion values were not read.");
         const positionRaw = asPoint(findHostProperty(motionProps, "Position")?.value);
         const anchorRaw = asPoint(findHostProperty(motionProps, "Anchor Point")?.value);
-        const scaleRaw = asNumber(findHostProperty(motionProps, "Scale")?.value);
+        // Premiere keeps the "Scale Height" name after a clip was once non-uniform.
+        const scaleRaw = asNumber((findHostProperty(motionProps, "Scale") ?? findHostProperty(motionProps, "Scale Height"))?.value);
         const rotation = asNumber(findHostProperty(motionProps, "Rotation")?.value);
         const uniform = findHostProperty(motionProps, "Uniform Scale")?.value;
         if (rotation !== undefined && Math.abs(rotation) > 1e-6) warnings.push(`Motion Rotation is ${rotation}; the fit assumes Rotation 0.`);

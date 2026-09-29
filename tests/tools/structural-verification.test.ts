@@ -42,7 +42,8 @@ describe("trim_clip verification", () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("var actualIn = after.inPoint");
-    expect(script).toContain("Math.abs(actualIn - 2) > tolerance");
+    expect(script).toContain("Math.abs(actualIn - requestedIn) > tolerance");
+    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(2) - parseFloat(target.clip.inPoint.ticks)");
     expect(script).toContain("did not apply a verified timeline trim");
     expect(script).toContain("verified: true");
   });
@@ -50,14 +51,19 @@ describe("trim_clip verification", () => {
   it("compares the read-back out point against the requested value", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_out_seconds: 8 });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain("Math.abs(actualOut - 8) > tolerance");
+    expect(script).toContain("Math.abs(actualOut - requestedOut) > tolerance");
+    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(8) - parseFloat(target.clip.outPoint.ticks)");
   });
 
   it("only writes the edge that was actually requested", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain("clip.inPoint = __secondsToTicks(2).toString();");
-    expect(script).not.toContain("clip.outPoint = __secondsToTicks(2).toString();");
+    // Head trim: the start edge and the in point move together; the tail is untouched.
+    expect(script).toContain("var trimInTicks = parseFloat(originalInPointTicks) + __trimDeltaTicks;");
+    expect(script).toContain("clip.start = trimStart;");
+    expect(script).toContain("clip.inPoint = String(Math.round(trimInTicks));");
+    expect(script).not.toContain("clip.end = trimEnd;");
+    expect(script).not.toContain("clip.outPoint = String(Math.round(trimOutTicks));");
   });
 
   it("derives its tolerance from the sequence timebase so frame snapping is not a failure", async () => {
@@ -81,7 +87,8 @@ describe("trim_clip verification", () => {
   it("verifies the visible timeline geometry as well as source metadata", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_out_seconds: 8 });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain("var afterResult = __findClip(\"abc\")");
+    expect(script).toContain("var afterResult = __findClip(nodeId)");
+    expect(script).toContain("return __runLinkedEdit(target, \"abc\", true, __editOne, \"trim\")");
     expect(script).toContain("var expectedStart = before.start");
     expect(script).toContain("var expectedEnd = before.end + (actualOut - before.outPoint)");
     expect(script).toContain("visible timeline duration does not match the applied source range");
@@ -352,7 +359,8 @@ describe("track creation verification", () => {
 
     expect(script).toContain('typeof seq.insertAudioTrackAt !== "function"');
     expect(script).toContain("afterPublic !== expected && afterPublic !== before");
-    expect(script).toContain("qeSeq.addTracks(0, 2, 0, 0)");
+    // QE signature: (videoCount, videoInsertIndex, audioCount, audioType, audioInsertIndex, submixCount, submixType).
+    expect(script).toContain("qeSeq.addTracks(0, seq.videoTracks.numTracks, 2, 1, seq.audioTracks.numTracks, 0, 0)");
     expect(script).toContain("if (after !== expected)");
     expect(script).toContain("verified: true");
   });
@@ -368,6 +376,9 @@ describe("track creation verification", () => {
 
     expect(script).toContain("var beforeVideo = seq.videoTracks.numTracks");
     expect(script).toContain("var expectedAudio = beforeAudio + 4");
+    expect(script).toContain("qeSeq.addTracks(1, seq.videoTracks.numTracks, 2, 1, seq.audioTracks.numTracks, 0, 0)");
+    expect(script).toContain("qeSeq.addTracks(0, seq.videoTracks.numTracks, 1, 0, seq.audioTracks.numTracks, 0, 0)");
+    expect(script).toContain("qeSeq.addTracks(0, seq.videoTracks.numTracks, 1, 2, seq.audioTracks.numTracks, 0, 0)");
     expect(script).toContain("typeof qeSeq.addTracks !== \"function\"");
     expect(script).toContain("afterVideo !== expectedVideo || afterAudio !== expectedAudio");
     expect(script).toContain("verified: !existingTracksUnlocatable");

@@ -3,6 +3,7 @@
  * All generated code must be ES3-compatible (var, no arrow functions, no let/const).
  */
 import { createHash } from "node:crypto";
+import { undoTrackingEnabled } from "./undo-tracking.js";
 
 const HELPERS = `
 // === MCP Bridge Helpers (auto-prepended) ===
@@ -138,11 +139,16 @@ function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, med
 }
 
 function __ticksToTimecode(ticks, fps) {
-  var totalSeconds = __ticksToSeconds(ticks);
-  var hours = Math.floor(totalSeconds / 3600);
-  var minutes = Math.floor((totalSeconds % 3600) / 60);
-  var secs = Math.floor(totalSeconds % 60);
-  var frames = Math.floor((totalSeconds % 1) * fps);
+  // Count whole frames from ticks first. Deriving frames from fractional
+  // seconds floors float error: 121.6 s at 25 fps gave frame 14 instead of 15.
+  var totalFrames = Math.floor(parseFloat(ticks) * fps / TICKS_PER_SECOND + 1e-6);
+  var framesPerHour = fps * 3600;
+  var hours = Math.floor(totalFrames / framesPerHour);
+  var remainder = totalFrames - hours * framesPerHour;
+  var minutes = Math.floor(remainder / (fps * 60));
+  remainder -= minutes * fps * 60;
+  var secs = Math.floor(remainder / fps);
+  var frames = remainder - secs * fps;
   return __pad(hours) + ":" + __pad(minutes) + ":" + __pad(secs) + ":" + __pad(frames);
 }
 
@@ -185,9 +191,217 @@ function __getCurrentActiveSequence() {
   return __isCurrentProjectSequence(sequence) ? sequence : null;
 }
 
+// Sequence.getInPoint/getOutPoint/getWorkArea*Point return SECONDS (as a
+// string), not ticks, and -400000 when the point is unset (verified on
+// Premiere Pro 25.2). Returns null for unset or unreadable points.
+function __sequencePointSeconds(value) {
+  var seconds = Number(value);
+  if (!isFinite(seconds) || seconds <= -399999) return null;
+  return seconds;
+}
+
+// Premiere reports sample rates as a Time holding one sample period. Returns
+// the rate in Hz (e.g. 48000), or null when it cannot be derived.
+function __sampleRateHz(value) {
+  if (value === null || value === undefined) return null;
+  var ticks = NaN;
+  try { if (value.ticks !== undefined) ticks = parseFloat(value.ticks); } catch (eTicks) {}
+  if (isFinite(ticks) && ticks > 0) return Math.round(TICKS_PER_SECOND / ticks);
+  var numeric = Number(value);
+  if (isFinite(numeric) && numeric > 1) return Math.round(numeric);
+  return null;
+}
+
+function __sequenceFrameSize(seq) {
+  var width = NaN, height = NaN;
+  try { width = Number(seq.frameSizeHorizontal); height = Number(seq.frameSizeVertical); } catch (eSize) {}
+  if (!(width > 0 && height > 0)) {
+    try { var settings = seq.getSettings(); width = Number(settings.videoFrameWidth); height = Number(settings.videoFrameHeight); } catch (eSettings) {}
+  }
+  return { width: width, height: height };
+}
+
+// Anchor Point is relative to the clip's own source frame.
+function __clipSourceFrameSize(clip, seq) {
+  try {
+    var info = /VideoInfo>\\s*([0-9]+)\\s*x\\s*([0-9]+)/.exec(String(clip.projectItem.getProjectMetadata()));
+    if (info) return { width: Number(info[1]), height: Number(info[2]) };
+  } catch (eInfo) {}
+  return __sequenceFrameSize(seq);
+}
+
+// Premiere's scripting API stores Motion Position and Anchor Point normalized
+// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools take pixels,
+// so scale before writing. Writing pixels directly threw clips ~1000 frame
+// widths off screen. The current value is not used to guess the space: a clip
+// already damaged that way reads back in the thousands.
+function __motionPointScale(prop, frame) {
+  if (!(frame.width > 0 && frame.height > 0)) return null;
+  return { x: 1 / frame.width, y: 1 / frame.height, normalized: true };
+}
+
+// Premiere renames Motion "Scale" to "Scale Height" once a clip has been set
+// to non-uniform scale, and keeps that name after uniform scale is turned
+// back on (verified on 25.2). The two names are the same uniform scale only
+// while the component's Uniform Scale box is on; on a non-uniformly scaled
+// clip "Scale Height" is the height alone, so the exact name is required.
+function __isUniformScale(component) {
+  if (!component || !component.properties) return false;
+  for (var i = 0; i < component.properties.numItems; i++) {
+    var prop = component.properties[i];
+    if (String(prop.displayName) !== "Uniform Scale") continue;
+    try {
+      var value = prop.getValue();
+      return value === true || value === 1;
+    } catch (eUniform) {
+      return false;
+    }
+  }
+  return false;
+}
+function __propertyNameMatches(actual, wanted, component) {
+  actual = String(actual);
+  wanted = String(wanted);
+  if (actual === wanted) return true;
+  var aliased = (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
+  return aliased && __isUniformScale(component);
+}
+
+// Scale a clip's Motion component uniformly and read it back. With Uniform
+// Scale on, "Scale" (or its renamed "Scale Height") scales both axes. With it
+// off, "Scale" is the height alone (live 25.2.3: writing Scale 120 left Scale
+// Width at 100 and stretched the picture), so the width is written too.
+// Returns { ok, uniform, error }.
+function __setMotionScale(motion, value) {
+  var uniform = __isUniformScale(motion);
+  var height = null;
+  var width = null;
+  for (var i = 0; i < motion.properties.numItems; i++) {
+    var name = String(motion.properties[i].displayName);
+    if (name === "Scale" || name === "Scale Height") height = motion.properties[i];
+    else if (name === "Scale Width") width = motion.properties[i];
+  }
+  if (!height) return { ok: false, uniform: uniform, error: "Motion has no Scale property; nothing was changed." };
+  if (!uniform && !width) return { ok: false, uniform: uniform, error: "Uniform Scale is off but Motion has no Scale Width property, so the clip cannot be scaled evenly; nothing was changed." };
+  height.setValue(value, true);
+  if (!uniform) width.setValue(value, true);
+  var readHeight = Number(height.getValue());
+  var readWidth = uniform ? readHeight : Number(width.getValue());
+  if (!(Math.abs(readHeight - value) < 0.01) || !(Math.abs(readWidth - value) < 0.01)) {
+    return { ok: false, uniform: uniform, error: "Premiere did not apply the scale: it reads back as " + readHeight + (uniform ? "" : " (height) and " + readWidth + " (width)") + " instead of " + value + "." };
+  }
+  return { ok: true, uniform: uniform };
+}
+
+// TrackItem.isDisabled() does not exist on Premiere 25.2; the state is the
+// boolean "disabled" property. Callers wrapped isDisabled() in try/catch, so
+// every disabled clip was silently reported as enabled.
+function __isClipDisabled(clip) {
+  try {
+    if (typeof clip.disabled === "boolean") return clip.disabled;
+    if (clip.disabled === 1 || clip.disabled === 0) return clip.disabled === 1;
+  } catch (eDisabled) {}
+  try { if (typeof clip.isDisabled === "function") return !!clip.isDisabled(); } catch (eIsDisabled) {}
+  return false;
+}
+
+// How many timeline clips, in every sequence, use this project item.
+function __projectItemUsage(item) {
+  // A bin's usage is the usage of everything inside it: deleting the bin
+  // deletes its contents and their timeline clips.
+  var wanted = {};
+  var collect = function (entry) {
+    wanted[String(entry.nodeId)] = true;
+    if (__isBinItem(entry)) {
+      var count = __childCount(entry);
+      for (var k = 0; k < count; k++) { var child = __childAt(entry, k); if (child) collect(child); }
+    }
+  };
+  collect(item);
+  var usage = { clips: 0, sequences: [] };
+  for (var sq = 0; sq < app.project.sequences.numSequences; sq++) {
+    var sequenceInUse = app.project.sequences[sq];
+    var hit = false;
+    var groups = [sequenceInUse.videoTracks, sequenceInUse.audioTracks];
+    for (var g = 0; g < groups.length; g++) {
+      for (var t = 0; t < groups[g].numTracks; t++) {
+        var trackClips = groups[g][t].clips;
+        for (var c = 0; c < trackClips.numItems; c++) {
+          try {
+            if (trackClips[c].projectItem && wanted[String(trackClips[c].projectItem.nodeId)]) { usage.clips++; hit = true; }
+          } catch (eUse) {}
+        }
+      }
+    }
+    if (hit) usage.sequences.push(String(sequenceInUse.name));
+  }
+  return usage;
+}
+
+// Premiere has no documented delete for a clip/file project item, but deleting
+// a bin deletes what it contains. Move the item into a fresh temporary bin and
+// delete that bin; restore on failure. Callers must refuse items still used on
+// a timeline unless the caller confirmed, because deleting the item also
+// removes those timeline clips, and this path is not undoable.
+function __deleteProjectItemViaBin(item) {
+  var itemId = String(item.nodeId);
+  var holderName = "mcp-delete-" + new Date().getTime();
+  var rootCount = __childCount(app.project.rootItem);
+  for (var r = 0; r < rootCount; r++) {
+    var existing = __childAt(app.project.rootItem, r);
+    if (existing && String(existing.name) === holderName) {
+      return { ok: false, changed: false, error: "A bin named " + holderName + " already exists, so the temporary bin could not be told apart from it. Nothing was deleted." };
+    }
+  }
+  var holder = null;
+  try { holder = app.project.rootItem.createBin(holderName); } catch (eCreate) {}
+  if (!holder) return { ok: false, changed: false, error: "Premiere could not create a temporary bin for the deletion. Nothing was deleted." };
+  var holderId = String(holder.nodeId);
+  var originalParent = null;
+  try { originalParent = item.getBin ? item.getBin() : null; } catch (eParent) {}
+  try { item.moveBin(holder); } catch (eMove) {
+    try { holder.deleteBin(); } catch (eCleanup) {}
+    return { ok: false, changed: !!__findProjectItemByNodeId(holderId), error: "Premiere could not move the item into a temporary bin: " + eMove.toString() + "." };
+  }
+  try { holder.deleteBin(); } catch (eDelete) {
+    try { if (originalParent) item.moveBin(originalParent); } catch (eRestore) {}
+    return { ok: false, changed: true, error: "Premiere could not delete the temporary bin " + holderName + ": " + eDelete.toString() + ". Check the Project panel." };
+  }
+  var itemLeft = !!__findProjectItemByNodeId(itemId);
+  var holderLeft = !!__findProjectItemByNodeId(holderId);
+  if (itemLeft || holderLeft) {
+    return { ok: false, changed: true, error: "The project changed: after deleting the temporary bin " + holderName + ", " + (itemLeft && holderLeft ? "the item and the bin are" : (itemLeft ? "the item is" : "the temporary bin is")) + " still in the project. Check the Project panel." };
+  }
+  return { ok: true, changed: true };
+}
+
 function __isBinItem(item) {
   if (!item) return false;
   try { return item.type === 2; } catch (e) { return false; }
+}
+
+// ProjectItemType names: CLIP=1, BIN=2, ROOT=3, FILE=4. Written as if/else on
+// purpose: ExtendScript parses chained ternaries (a ? b : c ? d : e) left to
+// right, so "item.type === 1 ? 'clip' : item.type === 2 ? ..." yields the wrong
+// name in Premiere even though it is correct in Node.
+function __projectItemTypeName(item) {
+  var type = null;
+  try { type = item.type; } catch (e) { return "unknown"; }
+  if (type === 1) return "clip";
+  if (type === 2) return "bin";
+  if (type === 3) return "root";
+  if (type === 4) return "file";
+  return "unknown";
+}
+
+// Like __projectItemTypeName, but reports sequences (CLIP items whose
+// isSequence() is true) as "sequence".
+function __projectItemKind(item) {
+  var name = __projectItemTypeName(item);
+  if (name === "clip") {
+    try { if (item.isSequence && item.isSequence()) return "sequence"; } catch (e) {}
+  }
+  return name;
 }
 
 // Some bin-typed project items (search bins, items mid-refresh) expose no
@@ -393,6 +607,153 @@ function __findQeClipByDomClip(qeTrack, domClip) {
 // empty catalog, so distinguish that host limitation from a misspelled effect
 // name. Calling addVideoEffect/addAudioEffect without a catalog entry is not a
 // safe fallback; an available UXP bridge has its own documented effect workflow.
+// QE catalogs come in two shapes: legacy collections ({ numItems, [i]: { name } })
+// and, on Premiere 25.2, plain arrays of name strings. Normalize both to the
+// legacy shape; string entries become { name, __qeStub: true } and must be
+// resolved with __qeEffectObject / __qeTransitionObject before use.
+function __qeCatalogFrom(list) {
+  var out = { numItems: 0 };
+  if (!list) return out;
+  var count = NaN;
+  try { if (typeof list.numItems !== "undefined") count = Number(list.numItems); } catch (eCount) {}
+  if (isNaN(count)) { try { count = Number(list.length); } catch (eLength) {} }
+  if (isNaN(count) || count < 0) return out;
+  for (var i = 0; i < count; i++) {
+    var entry = null;
+    try { entry = list[i]; } catch (eEntry) {}
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry === "string") entry = { name: entry, __qeStub: true };
+    out[out.numItems] = entry;
+    out.numItems++;
+  }
+  return out;
+}
+
+function __qeEffectObject(kind, entry) {
+  if (!entry) return null;
+  if (!entry.__qeStub) return entry;
+  try {
+    return kind === "audio" ? qe.project.getAudioEffectByName(entry.name) : qe.project.getVideoEffectByName(entry.name);
+  } catch (eByName) {
+    return null;
+  }
+}
+
+function __qeTransitionObject(kind, entry) {
+  if (!entry) return null;
+  if (!entry.__qeStub) return entry;
+  try {
+    return kind === "audio" ? qe.project.getAudioTransitionByName(entry.name) : qe.project.getVideoTransitionByName(entry.name);
+  } catch (eByName) {
+    return null;
+  }
+}
+
+// Components every clip carries (and a graphic's own layers). They are not
+// effects and are never removed.
+var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
+// Match names are the same in every host language; display names are not.
+var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": "Motion", "AE.ADBE Opacity": "Opacity" };
+
+// Built-in components can only be told apart from effects by their English
+// display names (the audio and Time Remapping match names are not known). On a
+// host whose names are localized ("Deckkraft", "Bewegung") every removal is
+// refused rather than risk removing Opacity or Motion.
+function __componentClassificationProblem(clip, trackType) {
+  var recognized = false;
+  var names = {};
+  for (var i = 0; i < clip.components.numItems; i++) {
+    var component = clip.components[i];
+    var name = String(component.displayName);
+    var match = "";
+    try { match = String(component.matchName || ""); } catch (eMatch) {}
+    if (__BUILT_IN_MATCH_NAMES[match] && __BUILT_IN_MATCH_NAMES[match] !== name) {
+      return "This Premiere host shows component names in another language (" + name + " for " + __BUILT_IN_MATCH_NAMES[match] + "), so built-in components cannot be told apart from effects reliably.";
+    }
+    if (__BUILT_IN_COMPONENTS[name]) recognized = true;
+    names[name] = true;
+  }
+  // Audio clips have no Motion/Opacity match names to cross-check, and one
+  // audio built-in can keep its English name while the others are localized.
+  // Require both Volume and Channel Volume under their English names.
+  if (trackType === "audio" && !(names["Volume"] && names["Channel Volume"])) {
+    return "This audio clip does not show both Volume and Channel Volume under their English names (a non-English host?), so its built-in components cannot be told apart from effects reliably.";
+  }
+  if (!recognized) return "None of this clip's components has a recognized built-in name (a non-English host?), so built-in components cannot be told apart from effects reliably.";
+  return null;
+}
+
+// Remove the clip components selected by wanted(displayName, index), highest
+// index first. DOM Component.remove() is used when present. EXPERIMENTAL:
+// Premiere 25.2 has no DOM remove, so the undocumented QE DOM's targeted
+// qeClip.getComponentAt(i).remove() is used instead; its component order
+// matched the DOM in live testing. Every target's removal path is resolved
+// before anything is removed, so a component neither path can remove refuses
+// the whole call with nothing changed.
+// Returns { removed, failures, before, remaining, verified, nothingRemoved,
+// unsupported } where unsupported explains a refusal made before any removal.
+function __removeClipComponents(result, wanted) {
+  var clip = result.clip;
+  var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true, unsupported: null };
+  var targets = [];
+  out.unsupported = __componentClassificationProblem(clip, result.trackType);
+  if (out.unsupported) {
+    for (var u = 0; u < clip.components.numItems; u++) out.remaining.push(String(clip.components[u].displayName));
+    out.before = out.remaining.slice();
+    return out;
+  }
+  for (var b = 0; b < clip.components.numItems; b++) out.before.push(String(clip.components[b].displayName));
+  for (var i = clip.components.numItems - 1; i >= 0; i--) {
+    var name = String(clip.components[i].displayName);
+    if (__BUILT_IN_COMPONENTS[name]) continue;
+    if (wanted(name, i)) targets.push({ index: i, name: name, component: clip.components[i] });
+  }
+  var qeClip = null;
+  if (targets.length) {
+    try {
+      app.enableQE();
+      var qeSeq = qe.project.getActiveSequence();
+      var qeTrack = result.trackType === "video" ? qeSeq.getVideoTrackAt(result.trackIndex) : qeSeq.getAudioTrackAt(result.trackIndex);
+      qeClip = __findQeClipByDomClip(qeTrack, clip);
+    } catch (eQe) {}
+  }
+  // Preflight: pick a removal path for every target before changing anything.
+  for (var p = 0; p < targets.length; p++) {
+    var candidate = targets[p];
+    candidate.path = null;
+    try { if (typeof candidate.component.remove === "function") candidate.path = "dom"; } catch (eDomCheck) {}
+    if (!candidate.path && qeClip && typeof qeClip.getComponentAt === "function") {
+      try {
+        var qeCandidate = qeClip.getComponentAt(candidate.index);
+        if (qeCandidate && String(qeCandidate.name) === candidate.name && typeof qeCandidate.remove === "function") candidate.path = "qe";
+      } catch (eQeCheck) {}
+    }
+    if (!candidate.path) out.failures.push(candidate.name);
+  }
+  if (out.failures.length) {
+    out.remaining = out.before.slice();
+    return out;
+  }
+  var expected = out.before.slice();
+  for (var t = 0; t < targets.length; t++) {
+    var target = targets[t];
+    var done = false;
+    try {
+      if (target.path === "dom") { target.component.remove(); done = true; }
+      else {
+        var qeComponent = qeClip.getComponentAt(target.index);
+        if (qeComponent && String(qeComponent.name) === target.name) { qeComponent.remove(); done = true; }
+      }
+    } catch (eRemove) {}
+    if (done) { out.removed.push(target.name); out.nothingRemoved = false; expected.splice(target.index, 1); }
+    else out.failures.push(target.name);
+  }
+  var again = __findClip(String(clip.nodeId));
+  if (again) for (var r = 0; r < again.clip.components.numItems; r++) out.remaining.push(String(again.clip.components[r].displayName));
+  out.verified = !!again && out.remaining.join("|") === expected.join("|");
+  return out;
+}
+
 function __getQeEffectCatalog(kind) {
   var label = kind === "audio" ? "audio" : "video";
   if (typeof app === "undefined" || typeof app.enableQE !== "function") {
@@ -421,8 +782,9 @@ function __getQeEffectCatalog(kind) {
     return { ok: false, error: "Premiere could not read its QE " + label + " effect catalog: " + eList.toString() };
   }
 
-  var count = effects && typeof effects.numItems !== "undefined" ? Number(effects.numItems) : NaN;
-  if (isNaN(count) || count < 1) {
+  effects = __qeCatalogFrom(effects);
+  var count = effects.numItems;
+  if (count < 1) {
     return {
       ok: false,
       error: "Premiere returned an empty legacy QE " + label + " effect catalog; no effect was applied. If the authenticated Premiere UXP bridge is connected, use manage_clip_effects_uxp with action 'catalog' and then 'add' instead. Existing clip components can still be inspected or edited."
@@ -587,10 +949,18 @@ function __findH264Preset() {
   }
   if (!candidates.length) return "";
 
-  for (var j = 0; j < candidates.length; j++) {
-    if (candidates[j].name.toLowerCase().indexOf("match source - high") !== -1) return candidates[j].path;
+  // Prefer AME's H.264 exporter folder ("..._48323634", hex "H264"), which writes
+  // MP4. Presets named "H264 ..." also live in the QuickTime folder
+  // ("..._4D6F6F56", "MooV") and write MOV (live 25.2).
+  var ranked = [];
+  for (var k = 0; k < candidates.length; k++) {
+    var mp4 = /_48323634$/i.test(candidates[k].format);
+    var high = candidates[k].name.toLowerCase().indexOf("match source - high") !== -1;
+    ranked.push({ path: candidates[k].path, score: (mp4 ? 2 : 0) + (high ? 1 : 0) });
   }
-  return candidates[0].path;
+  var best = ranked[0];
+  for (var j = 1; j < ranked.length; j++) if (ranked[j].score > best.score) best = ranked[j];
+  return best.path;
 }
 
 // Candidate presets for manage_proxies auto-discovery, in preference order:
@@ -722,7 +1092,10 @@ function __exportStillFrame(outputPath, ticks) {
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
-  var qePath = basePath + (wantJpeg ? ".jpg" : ".png");
+  // QE cuts its output name at the first dot ("shot-12.5s" became "shot-12.png"),
+  // so hand it a dot-free temporary name in the same folder and rename after.
+  var qeBase = outputPath.substring(0, slash + 1) + "mcp-frame-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000);
+  var qePath = qeBase + (wantJpeg ? ".jpg" : ".png");
 
   // Clear any stale file (under either name) so that a file existing afterwards proves we wrote it.
   var stale = new File(outputPath);
@@ -746,7 +1119,7 @@ function __exportStillFrame(outputPath, ticks) {
           notes.push("QE: exportFrame" + (wantJpeg ? "JPEG" : "PNG") + " unavailable on this build");
         } else {
           at = __qeTimecodeForTicks(seq, atTicks);
-          notes.push("QE " + qeSeq.name + " @ " + at.timecode + " (frame " + at.frame + ") returned " + fn.call(qeSeq, at.timecode, basePath));
+          notes.push("QE " + qeSeq.name + " @ " + at.timecode + " (frame " + at.frame + ") returned " + fn.call(qeSeq, at.timecode, qeBase));
         }
       }
     } catch (eQE) {
@@ -754,13 +1127,16 @@ function __exportStillFrame(outputPath, ticks) {
     }
   }
 
-  // QE always names the file base + ".png"/".jpg"; give the caller the name they asked for.
+  // Give the caller the name they asked for, and never leave the temporary file behind.
   var produced = new File(qePath);
-  if (qePath !== outputPath && produced.exists && produced.length > 0) {
-    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) {}
+  if (produced.exists && produced.length > 0) {
+    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) { notes.push("QE: could not rename " + qePath + ": " + e.toString()); }
   }
+  var leftover = new File(qePath);
+  if (leftover.exists) { try { leftover.remove(); } catch (e) {} }
 
-  var written = __firstWrittenFile(outputPath);
+  var exactFile = new File(outputPath);
+  var written = exactFile.exists && exactFile.length > 0 ? exactFile.fsName : "";
   if (written) {
     return { ok: true, method: "qe", path: written, notes: notes, timecode: at ? at.timecode : null, frame: at ? at.frame : null };
   }
@@ -839,6 +1215,390 @@ function __exportStillFrame(outputPath, ticks) {
 // tracks. Premiere's UI insert also razors and shifts every sync-locked track;
 // the public DOM Track object has no isSyncLocked. QE exposes it. Default
 // scope "sync_locked" matches the UI; "target_tracks" is an explicit desync.
+// QE razor() splits each track independently, and on Premiere 25.2 the new
+// right-hand pieces of linked video/audio come out unlinked (the left pieces
+// keep the link). Unlinked pieces then drift out of sync on later edits.
+// Capture link groups that span the cut before razoring, then relink the
+// matching right-hand pieces and restore the user's selection.
+// Result helpers for per-clip edit functions that run once for a clip and once
+// for each of its linked partners.
+function __editOk(data) { return { ok: true, data: data }; }
+function __editFail(message) { return { ok: false, error: String(message) }; }
+
+// Colour parameters report getValue() as a packed 64-bit integer (live 25.2:
+// 0xff0014002800a0c8 for ARGB 255,20,40,160), which a JS double cannot hold
+// exactly. Read them with getColorValue() instead, as [alpha, red, green, blue].
+// getColorValue() has no time argument, so an animated colour is flagged.
+function __readableParamValue(prop, value) {
+  if (typeof value !== "number" || value < 4294967296) return { value: value };
+  var color = null;
+  try { if (typeof prop.getColorValue === "function") color = prop.getColorValue(); } catch (eColor) {}
+  if (!color || color.length !== 4) return { value: value };
+  var animated = false;
+  try { animated = !!prop.isTimeVarying(); } catch (eVarying) {}
+  var out = { value: [Number(color[0]), Number(color[1]), Number(color[2]), Number(color[3])], valueType: "color_argb" };
+  if (animated) out.note = "Animated colour: getColorValue() reports the current value, not the value at the requested time.";
+  return out;
+}
+
+// new Folder(path).exists is also true when path is a FILE (live 25.2); calling
+// Folder(path) without new returns a File object for a file, so test the type.
+function __isDirectory(path) {
+  var entry = Folder(path);
+  return entry instanceof Folder && entry.exists;
+}
+
+// Open projects (Premiere keeps several open; app.project is the active one).
+// Paths compare case-insensitively with forward slashes.
+function __normProjectPath(path) {
+  return String(path || "").split(String.fromCharCode(92)).join("/").toLowerCase();
+}
+function __openProjects() {
+  var list = [];
+  try {
+    for (var i = 0; i < app.projects.numProjects; i++) list.push(app.projects[i]);
+  } catch (eProjects) {
+    if (app.project) list.push(app.project);
+  }
+  return list;
+}
+function __openProjectPaths() {
+  var paths = [];
+  var list = __openProjects();
+  for (var i = 0; i < list.length; i++) paths.push(String(list[i].path));
+  return paths;
+}
+function __findOpenProject(path) {
+  var list = __openProjects();
+  for (var i = 0; i < list.length; i++) if (__normProjectPath(list[i].path) === __normProjectPath(path)) return list[i];
+  return null;
+}
+
+// Remove a timeline clip (a __findClip result) without rippling, plus its
+// linked audio/video partners when includeLinked is true (Premiere's Clear on
+// a linked clip), then verify every removed clip is gone. Every clip's track
+// lock and remove() are checked before anything is removed, so a partner on a
+// locked track refuses the whole removal instead of leaving its audio behind.
+function __removeClipAndPartners(result, includeLinked) {
+  var targets = [result];
+  if (includeLinked) {
+    var partners = __linkedPartnerClips(result);
+    for (var p = 0; p < partners.length; p++) targets.push(partners[p]);
+  }
+  var seq = app.project.activeSequence;
+  var ids = [];
+  var names = [];
+  for (var t = 0; t < targets.length; t++) {
+    var located = targets[t];
+    ids.push(String(located.clip.nodeId));
+    names.push(located.clip.name);
+    var label = located.trackType + " track " + (located.trackIndex + 1);
+    var track = seq ? (located.trackType === "video" ? seq.videoTracks : seq.audioTracks)[located.trackIndex] : null;
+    var locked = null;
+    try { if (track && typeof track.isLocked === "function") locked = !!track.isLocked(); } catch (eLocked) {}
+    if (locked === null) return __editFail("Could not read whether " + label + " is locked, so " + names[t] + " was not removed. Nothing was changed.");
+    if (locked) return __editFail(names[t] + " is on locked " + label + ". Nothing was changed; unlock the track or pass include_linked false (this leaves its linked partner in place).");
+    if (typeof located.clip.remove !== "function") return __editFail("Premiere does not expose remove() for " + names[t] + " on " + label + ". Nothing was changed.");
+  }
+  var removed = [];
+  for (var r = 0; r < targets.length; r++) {
+    try {
+      targets[r].clip.remove(false, false);
+      removed.push(names[r]);
+    } catch (eRemove) {
+      return __editFail((removed.length ? "The timeline changed: " + removed.join(", ") + " was removed, but " : "") + "Premiere could not remove " + names[r] + ": " + eRemove.toString() + (removed.length ? ". The linked clips are now out of sync; inspect the timeline." : ". Nothing was changed."));
+    }
+  }
+  var left = [];
+  for (var v = 0; v < ids.length; v++) if (__findClip(ids[v])) left.push(names[v]);
+  if (left.length) {
+    var gone = ids.length - left.length;
+    return __editFail((gone ? "The timeline changed: " + gone + " clip(s) were removed, but " : "") + "Premiere did not remove: " + left.join(", ") + (gone ? ". Inspect the timeline; linked clips may be out of sync." : ". Nothing was changed."));
+  }
+  return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
+}
+
+// EXPERIMENTAL (undocumented QE DOM). Step Premiere's project undo stack with
+// QE and check every step against qe.project.undoStackIndex(), which moved by
+// exactly one per undone or redone action in live 25.2 testing. The check is
+// about the stack position only; nothing reads the timeline back.
+// status: "stack_verified" (every step moved the index by one), "did_not_move"
+// (nothing left to undo/redo), "moved_unexpectedly" (the index moved by a
+// different amount or the wrong way), "index_unreadable" (a step ran but the
+// index could not be read), or "rejected" (Premiere threw). The last three may
+// have changed the project and must not be treated as "nothing happened".
+function __qeUndoSteps(direction, count) {
+  app.enableQE();
+  var stack = null;
+  try { stack = qe.project; } catch (eQe) {}
+  if (!stack) return { ok: false, status: "unavailable", error: "QE project is unavailable, so the undo stack cannot be reached. No " + direction + " was attempted.", done: 0 };
+  var readIndex = function () {
+    try { var v = Number(stack.undoStackIndex()); return isFinite(v) ? v : null; } catch (eIdx) { return null; }
+  };
+  var start = readIndex();
+  if (start === null) return { ok: false, status: "unavailable", error: "This Premiere host does not expose qe.project.undoStackIndex(), so " + direction + " cannot be checked. No " + direction + " was attempted.", done: 0 };
+  var step = direction === "undo" ? -1 : 1;
+  var done = 0;
+  var index = start;
+  for (var i = 0; i < count; i++) {
+    try {
+      if (direction === "undo") stack.undo(); else stack.redo();
+    } catch (eStep) {
+      // The step may have moved the stack before throwing; check before
+      // reporting it as rejected.
+      var afterThrow = readIndex();
+      if (afterThrow === null) {
+        return { ok: false, status: "index_unreadable", done: done, startIndex: start, index: index,
+          error: direction + " step " + (i + 1) + " threw (" + eStep.toString() + ") and Premiere's undo-stack index could not be read afterwards, so it is not known what changed. Do not retry; inspect the project." };
+      }
+      if (afterThrow !== index) {
+        return { ok: false, status: "moved_unexpectedly", done: done, startIndex: start, index: afterThrow,
+          error: direction + " step " + (i + 1) + " threw (" + eStep.toString() + ") but Premiere's undo stack moved from " + index + " to " + afterThrow + ", so more actions than reported may have been " + direction + "ne. Do not retry; inspect the project." };
+      }
+      return { ok: false, status: "rejected", done: done, startIndex: start, index: index,
+        error: "Premiere rejected " + direction + " step " + (i + 1) + ": " + eStep.toString() + (done ? " (" + done + " step(s) before it were " + direction + "ne)." : ".") };
+    }
+    var next = readIndex();
+    if (next === null) {
+      return { ok: false, status: "index_unreadable", done: done, startIndex: start, index: index,
+        error: direction + " step " + (i + 1) + " ran, but Premiere's undo-stack index could not be read afterwards, so it is not known what changed. Do not retry; inspect the project." };
+    }
+    if (next === index) break;
+    if (next !== index + step) {
+      return { ok: false, status: "moved_unexpectedly", done: done, startIndex: start, index: next,
+        error: direction + " step " + (i + 1) + " moved Premiere's undo stack from " + index + " to " + next + " instead of " + (index + step) + ", so more or other actions than requested may have been " + direction + "ne. Do not retry; inspect the project." };
+    }
+    index = next;
+    done++;
+  }
+  if (done < count) {
+    return {
+      ok: false,
+      status: "did_not_move",
+      error: done === 0
+        ? "Nothing to " + direction + ": Premiere's undo stack did not move."
+        : "Only " + done + " of " + count + " " + direction + " steps were available; the undo stack stopped moving.",
+      done: done, startIndex: start, index: index
+    };
+  }
+  return { ok: true, status: "stack_verified", done: done, startIndex: start, index: index };
+}
+
+// Result of an undo/redo tool from a __qeUndoSteps outcome. An unexpected or
+// unreadable stack move is reported as committed_unverified (success, not
+// verified), never as "nothing happened", so an agent does not retry.
+function __undoStepsResult(outcome, doneKey) {
+  var summary = { undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index, stackStatus: outcome.status,
+    scope: "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched." };
+  summary[doneKey] = outcome.done;
+  // Anything that may have moved the stack, including a run that stopped part
+  // way after undoing some steps, is committed_unverified with a do-not-retry
+  // warning, so an agent does not undo more of the user's work.
+  if (outcome.status === "moved_unexpectedly" || outcome.status === "index_unreadable" || (!outcome.ok && outcome.done > 0)) {
+    summary.outcome = "committed_unverified";
+    summary.stackVerified = false;
+    summary.warning = outcome.error + (/Do not retry/.test(outcome.error) ? "" : " " + outcome.done + " step(s) were " + (doneKey === "redone" ? "redone" : "undone") + ". Do not retry the whole count; inspect the project first.");
+    return __result(summary);
+  }
+  if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
+  summary.stackVerified = true;
+  summary.verification = "undo-stack position only: each step moved qe.project.undoStackIndex() by one; the timeline is not read back";
+  return __result(summary);
+}
+
+// Linked partners of a clip on other tracks (its synced audio for a video
+// clip, and vice versa). getLinkedItems() returns null for unlinked clips.
+function __linkedPartnerClips(result) {
+  var partners = [];
+  var linked = null;
+  try { linked = result.clip.getLinkedItems(); } catch (eLinked) {}
+  for (var i = 0; linked && i < linked.numItems; i++) {
+    var id = String(linked[i].nodeId);
+    if (id === String(result.clip.nodeId)) continue;
+    var located = __findClip(id);
+    if (!located) continue;
+    if (located.trackType === result.trackType && located.trackIndex === result.trackIndex) continue;
+    partners.push(located);
+  }
+  return partners;
+}
+
+// Apply a per-clip edit to a clip and, when includeLinked is true, to its
+// linked audio/video partners. edit(result, nodeId, checkOnly) returns
+// __editOk/__editFail and must change nothing when checkOnly is true. Every
+// clip is checked before any is changed, so a partner that cannot follow
+// refuses the whole edit instead of leaving picture and sound out of sync
+// (most DOM writes add no undo entry, so Undo cannot be relied on). The
+// result is verified only when every clip's edit was verified.
+// Timeline and source position of a clip, read fresh, to tell whether it moved.
+function __clipPositionKey(nodeId) {
+  var found = __findClip(nodeId);
+  if (!found) return null;
+  var parts = [];
+  var fields = ["start", "end", "inPoint", "outPoint"];
+  for (var f = 0; f < fields.length; f++) {
+    try { parts.push(String(found.clip[fields[f]].ticks)); } catch (eField) { parts.push("?"); }
+  }
+  return parts.join("|");
+}
+
+function __runLinkedEdit(target, nodeId, includeLinked, edit, label) {
+  var partners = includeLinked ? __linkedPartnerClips(target) : [];
+  // Each clip's position when it was checked. A partner is edited only if it is
+  // still there when its turn comes: if Premiere moved it while writing the
+  // main clip, applying the offset again would double it and still read back
+  // as the requested target.
+  var checkedAt = {};
+  checkedAt[nodeId] = __clipPositionKey(nodeId);
+  var check;
+  try { check = edit(target, nodeId, true); } catch (eCheck) { check = __editFail(eCheck.toString()); }
+  if (!check.ok) return __error(check.error);
+  var p;
+  for (p = 0; p < partners.length; p++) {
+    var partnerCheck;
+    try { partnerCheck = edit(partners[p], String(partners[p].clip.nodeId), true); } catch (ePartnerCheck) { partnerCheck = __editFail(ePartnerCheck.toString()); }
+    checkedAt[String(partners[p].clip.nodeId)] = __clipPositionKey(String(partners[p].clip.nodeId));
+    if (!partnerCheck.ok) {
+      return __error("The linked " + partners[p].trackType + " clip on track " + (partners[p].trackIndex + 1) + " cannot follow the " + label + ": " + partnerCheck.error + " Nothing was changed; fix that clip or pass include_linked false (this desyncs picture and sound).");
+    }
+  }
+  var main;
+  try { main = edit(target, nodeId, false); } catch (eMain) { main = __editFail(eMain.toString()); }
+  if (!main.ok) return __error(main.error);
+  var verified = main.data.verified !== false;
+  var edited = [];
+  for (p = 0; p < partners.length; p++) {
+    var partner = partners[p];
+    var partnerId = String(partner.clip.nodeId);
+    var outcome;
+    if (__clipPositionKey(partnerId) !== checkedAt[partnerId]) {
+      outcome = __editFail("Premiere moved it while the main clip was written, so the " + label + " was not applied to it again");
+    } else {
+      try { outcome = edit(partner, partnerId, false); } catch (ePartner) { outcome = __editFail(ePartner.toString()); }
+    }
+    if (!outcome.ok) {
+      return __jsonStringify({
+        success: false,
+        error: "The " + label + " was applied to the clip" + (edited.length ? " and " + edited.length + " of its linked partner(s)" : "") + " but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + outcome.error + "). The timeline changed and was not rolled back: picture and sound are now out of sync. Inspect those clips and fix the partner by hand.",
+        data: { timelineChanged: true, clipEdited: main.data, linkedPartnersEdited: edited, failedPartner: { nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex } }
+      });
+    }
+    var partnerVerified = !!outcome.data && outcome.data.verified !== false;
+    if (!partnerVerified) verified = false;
+    edited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex, verified: partnerVerified });
+  }
+  main.data.linkedPartnersEdited = edited;
+  if (!verified) {
+    main.data.verified = false;
+    main.data.outcome = "committed_unverified";
+    if (!main.data.warning) main.data.warning = "The " + label + " was applied, but not every linked clip's result could be verified; inspect them.";
+  }
+  return __result(main.data);
+}
+
+// Start/end keys of a track's transitions, so readback can tell a transition
+// this call added from one that was already there.
+function __transitionKeys(track) {
+  var keys = {};
+  for (var i = 0; i < track.transitions.numItems; i++) keys[String(track.transitions[i].start.ticks) + "-" + String(track.transitions[i].end.ticks)] = true;
+  return keys;
+}
+// True when a transition not listed in beforeKeys covers ticks. Covering
+// rather than centring: Premiere cannot centre an odd frame count on a cut
+// (a 25-frame dissolve splits 12/13) and adds tick drift.
+function __newTransitionCovers(track, beforeKeys, ticks, frameTicks) {
+  var tolerance = frameTicks / 2 + 1;
+  for (var i = 0; i < track.transitions.numItems; i++) {
+    var transition = track.transitions[i];
+    if (beforeKeys[String(transition.start.ticks) + "-" + String(transition.end.ticks)]) continue;
+    var start = parseFloat(transition.start.ticks);
+    var end = parseFloat(transition.end.ticks);
+    if (!isNaN(start) && !isNaN(end) && start - tolerance <= ticks && ticks <= end + tolerance) return true;
+  }
+  return false;
+}
+
+function __captureLinkGroupsAt(seq, cutTicks, onlyTracks) {
+  var cut = parseFloat(cutTicks);
+  var groups = [];
+  var seen = {};
+  var kinds = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
+  for (var k = 0; k < kinds.length; k++) {
+    var tracks = kinds[k][1];
+    for (var t = 0; t < tracks.numTracks; t++) {
+      for (var c = 0; c < tracks[t].clips.numItems; c++) {
+        var clip = tracks[t].clips[c];
+        if (!(parseFloat(clip.start.ticks) < cut - 1 && parseFloat(clip.end.ticks) > cut + 1)) continue;
+        var linked = null;
+        try { linked = clip.getLinkedItems(); } catch (eLinked) {}
+        if (!linked || !(linked.numItems > 1)) continue;
+        var members = [];
+        var ids = [];
+        for (var li = 0; li < linked.numItems; li++) {
+          var member = __findClip(String(linked[li].nodeId));
+          if (!member) continue;
+          var ms = parseFloat(member.clip.start.ticks);
+          var me = parseFloat(member.clip.end.ticks);
+          if (!(ms < cut - 1 && me > cut + 1)) continue;
+          if (onlyTracks && !onlyTracks[member.trackType + ":" + member.trackIndex]) { members = []; break; }
+          members.push({ trackType: member.trackType, trackIndex: member.trackIndex });
+          ids.push(String(linked[li].nodeId));
+        }
+        ids.sort();
+        var key = ids.join("|");
+        if (members.length > 1 && !seen[key]) { seen[key] = true; groups.push(members); }
+      }
+    }
+  }
+  return groups;
+}
+
+function __relinkRazoredPieces(seq, cutTicks, groups) {
+  var outcome = { relinked: 0, failures: [] };
+  if (!groups.length) return outcome;
+  var cut = parseFloat(cutTicks);
+  var tolerance = seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24;
+  var previous = [];
+  try {
+    var selection = seq.getSelection();
+    for (var p = 0; selection && p < selection.length; p++) previous.push(String(selection[p].nodeId));
+  } catch (eSelection) {}
+  function clearSelection() {
+    try {
+      var current = seq.getSelection();
+      for (var q = 0; current && q < current.length; q++) current[q].setSelected(false, true);
+    } catch (eClear) {}
+  }
+  for (var g = 0; g < groups.length; g++) {
+    var pieces = [];
+    for (var m = 0; m < groups[g].length; m++) {
+      var info = groups[g][m];
+      var track = info.trackType === "video" ? seq.videoTracks[info.trackIndex] : seq.audioTracks[info.trackIndex];
+      for (var c = 0; track && c < track.clips.numItems; c++) {
+        if (Math.abs(parseFloat(track.clips[c].start.ticks) - cut) <= tolerance) { pieces.push(track.clips[c]); break; }
+      }
+    }
+    if (pieces.length < 2) { outcome.failures.push("could not find the right-hand pieces to relink"); continue; }
+    clearSelection();
+    try {
+      for (var s = 0; s < pieces.length; s++) pieces[s].setSelected(true, true);
+      seq.linkSelection();
+    } catch (eLink) {
+      outcome.failures.push(eLink.toString());
+    }
+    var relinked = null;
+    try { relinked = pieces[0].getLinkedItems(); } catch (eCheck) {}
+    if (relinked && relinked.numItems >= pieces.length) outcome.relinked++;
+    else outcome.failures.push("Premiere did not relink the pieces after the cut");
+  }
+  clearSelection();
+  for (var r = 0; r < previous.length; r++) {
+    var again = __findClip(previous[r]);
+    if (again) { try { again.clip.setSelected(true, true); } catch (eRestore) {} }
+  }
+  return outcome;
+}
+
 function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, audioTrackIndex, scope) {
   if (!seq) return { ok: false, error: "No active sequence" };
   if (!item) return { ok: false, error: "No clip to insert" };
@@ -886,6 +1646,20 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     return { ok: false, error: "The source clip has no positive in/out duration, so an insert cannot be verified." };
   }
 
+  // insertClip only ripples a target track that actually receives part of the
+  // item: an audio-only item leaves the video target in place, and a still or
+  // silent video leaves the audio target in place. Such a target must be
+  // treated like any other track (shifted only if sync-locked), or it ends up
+  // out of sync with everything that moved. getIn/OutPoint(1) is video media,
+  // (2) audio; an unreadable span keeps the target assumption.
+  function mediaSpan(mediaType) {
+    try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (eSpan) { return null; }
+  }
+  var videoSpan = mediaSpan(1);
+  var audioSpan = mediaSpan(2);
+  var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+  var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+
   function domTrackFor(type, idx) {
     return type === "video" ? seq.videoTracks[idx] : seq.audioTracks[idx];
   }
@@ -918,15 +1692,15 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     parts.push({ type: type, index: idx, domTrack: dt, isTarget: isTarget });
   }
 
-  addPart("video", vTrackIndex, true);
-  addPart("audio", aTrackIndex, true);
+  if (videoReceives) addPart("video", vTrackIndex, true);
+  if (audioReceives) addPart("audio", aTrackIndex, true);
 
   if (!targetOnly) {
     var vN = seq.videoTracks.numTracks;
     var aN = seq.audioTracks.numTracks;
     var ti;
     for (ti = 0; ti < vN; ti++) {
-      if (ti === vTrackIndex) continue;
+      if (ti === vTrackIndex && videoReceives) continue;
       var slv = null;
       try {
         var qv = qeTrackFor("video", ti);
@@ -938,7 +1712,7 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
       if (slv) addPart("video", ti, false);
     }
     for (ti = 0; ti < aN; ti++) {
-      if (ti === aTrackIndex) continue;
+      if (ti === aTrackIndex && audioReceives) continue;
       var sla = null;
       try {
         var qa = qeTrackFor("audio", ti);
@@ -1013,6 +1787,11 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
         return { ok: false, error: "Insert refused; nothing was changed. Sync-locked " + shiftPlan[pi].type + " track " + shiftPlan[pi].index + " has a clip spanning the insert point and QE razor is unavailable, so those tracks cannot be rippled without slicing through them. Razor them first or pass scope 'target_tracks' (which will desync other tracks)." };
       }
     }
+    var razoredTracks = {};
+    for (pi = 0; pi < shiftPlan.length; pi++) {
+      if (shiftPlan[pi].straddlers.length) razoredTracks[shiftPlan[pi].type + ":" + shiftPlan[pi].index] = true;
+    }
+    var insertLinkGroups = __captureLinkGroupsAt(seq, insertTicks, razoredTracks);
     var razored = [];
     for (pi = 0; pi < shiftPlan.length; pi++) {
       if (!shiftPlan[pi].straddlers.length) continue;
@@ -1036,6 +1815,10 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
       if (stillSpan) {
         return { ok: false, error: "QE razor did not split a spanning clip on " + shiftPlan[pi].type + " track " + shiftPlan[pi].index + ", so the timeline is partially changed. Razor that track at the insert point or pass scope 'target_tracks' (which will desync other tracks)." };
       }
+    }
+    var insertRelink = __relinkRazoredPieces(seq, insertTicks, insertLinkGroups);
+    if (insertRelink.failures.length) {
+      return { ok: false, error: "QE razored the sync-locked tracks but did not keep " + insertRelink.failures.length + " linked video/audio group(s) linked (" + insertRelink.failures.join("; ") + "), so the timeline is partially changed. Relink them with link_selection or use Undo." };
     }
   }
 
@@ -1180,19 +1963,37 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
   return { ok: true, data: data };
 }
 
+function __jsonEscapeString(value) {
+  return '"' + value
+    .replace(/\\\\/g, "\\\\\\\\")
+    .replace(/"/g, '\\\\"')
+    .replace(/\\n/g, "\\\\n")
+    .replace(/\\r/g, "\\\\r")
+    .replace(/\\t/g, "\\\\t")
+    .replace(/[\\u0000-\\u001f\\u2028\\u2029]/g, function (ch) {
+      var hex = ch.charCodeAt(0).toString(16);
+      while (hex.length < 4) hex = "0" + hex;
+      return "\\\\u" + hex;
+    }) + '"';
+}
+
 function __jsonStringify(obj) {
   // ES3-compatible JSON stringify. Never delegate to JSON.stringify here: the
   // global JSON polyfill above is a wrapper around THIS function, so delegating
   // creates infinite mutual recursion ("InternalError: Stack overrun") that took
   // down every __result call in the shared engine.
-  if (obj === null) return "null";
-  if (obj === undefined) return "undefined";
-  if (typeof obj === "string") return '"' + obj.replace(/\\\\/g, "\\\\\\\\").replace(/"/g, '\\\\"').replace(/\\n/g, "\\\\n") + '"';
-  if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
+  // Output must always be valid JSON: one NaN, undefined, or raw control
+  // character would otherwise make the whole tool response unparseable.
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "string") return __jsonEscapeString(obj);
+  if (typeof obj === "number") return isFinite(obj) ? String(obj) : "null";
+  if (typeof obj === "boolean") return String(obj);
+  if (typeof obj === "function") return "null";
   if (obj instanceof Array) {
     var arr = [];
     for (var i = 0; i < obj.length; i++) {
-      arr.push(__jsonStringify(obj[i]));
+      var item = obj[i];
+      arr.push(item === undefined || typeof item === "function" ? "null" : __jsonStringify(item));
     }
     return "[" + arr.join(",") + "]";
   }
@@ -1200,19 +2001,54 @@ function __jsonStringify(obj) {
     var parts = [];
     for (var k in obj) {
       if (obj.hasOwnProperty(k)) {
-        parts.push(__jsonStringify(k) + ":" + __jsonStringify(obj[k]));
+        var member = obj[k];
+        if (member === undefined || typeof member === "function") continue;
+        parts.push(__jsonEscapeString(String(k)) + ":" + __jsonStringify(member));
       }
     }
     return "{" + parts.join(",") + "}";
   }
-  return String(obj);
+  return __jsonEscapeString(String(obj));
+}
+
+// EXPERIMENTAL (undocumented QE DOM). Premiere's undo history position when
+// the current command started; buildScript sets it only for tools that change
+// the project (see undo-tracking.ts) and clears it otherwise. QE edits (razor,
+// insert, lift, extract...) add entries; most DOM property/marker writes add
+// none. __result reports how many entries the command added so an agent can
+// undo exactly that call.
+var __undoStart = null;
+function __readUndoIndex() {
+  try {
+    app.enableQE();
+    var v = Number(qe.project.undoStackIndex());
+    return isFinite(v) ? v : null;
+  } catch (eUndoIdx) {
+    return null;
+  }
 }
 
 function __result(data) {
+  if (__undoStart !== null && data && typeof data === "object" && !(data instanceof Array)) {
+    var undoNow = __readUndoIndex();
+    if (undoNow !== null && undoNow > __undoStart) {
+      data.undoSteps = undoNow - __undoStart;
+      data.undoStackIndex = undoNow;
+    }
+  }
   return __jsonStringify({ success: true, data: data });
 }
 
 function __error(msg) {
+  // A failure can come after the command recorded undo entries; report them
+  // so the caller knows the project may have changed.
+  if (__undoStart !== null) {
+    var undoNow = __readUndoIndex();
+    if (undoNow !== null && undoNow > __undoStart) {
+      var recorded = undoNow - __undoStart;
+      return __jsonStringify({ success: false, error: String(msg) + " Premiere recorded " + recorded + " undo entr" + (recorded === 1 ? "y" : "ies") + " during this command, so the project may have changed.", data: { undoSteps: recorded, undoStackIndex: undoNow, timelineChanged: true } });
+    }
+  }
   return __jsonStringify({ success: false, error: String(msg) });
 }
 
@@ -1256,8 +2092,14 @@ export function buildBootstrap(helpersPath: string): string {
  * Helper functions are loaded by the bootstrap the file bridge prepends.
  */
 export function buildScript(code: string): string {
+  // Helpers live in a long-lived engine, so __undoStart is always reset: set
+  // for tools that change the project, cleared for everything else.
+  const undoStart = undoTrackingEnabled()
+    ? `__undoStart = typeof __readUndoIndex === "function" ? __readUndoIndex() : null;`
+    : `__undoStart = null;`;
   return `(function() {
   try {
+    ${undoStart}
     ${code}
   } catch(e) {
     return __error(e.toString());
