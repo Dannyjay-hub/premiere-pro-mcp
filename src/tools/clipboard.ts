@@ -925,7 +925,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_effect_by_name: {
-      description: "Remove all instances of a specific effect from a clip by display name. Returns a capability error when the host cannot remove individual components.",
+      description: "Remove all instances of a specific effect from a clip by display name and verify the clip's components afterwards. EXPERIMENTAL: when Premiere has no Component.remove() (25.2), it removes through the undocumented QE DOM's targeted qeClip.getComponentAt(i).remove(). Every matching component's removal path is checked before any is removed; it returns a capability error, with nothing changed, when neither path is available.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -944,51 +944,16 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
-
-          var clip = result.clip;
           var effectName = "${escapeForExtendScript(args.effect_name)}";
-          var matches = [];
-          // Record matching indices from back to front. This both keeps indexes
-          // stable during removal and lets us preflight every match before any
-          // mutation, so an unsupported Amplify component cannot cause a partial
-          // all-matches removal.
-          for (var i = clip.components.numItems - 1; i >= 0; i--) {
-            if (clip.components[i].displayName === effectName) {
-              matches.push(i);
-            }
-          }
-
-          if (matches.length === 0) return __error("Effect not found: " + effectName);
-
-          function canRemoveComponent(component) {
-            try {
-              return !!component && typeof component.remove === "function";
-            } catch (e) {
-              return false;
-            }
-          }
-
-          // QE offers only removeEffects(), which would also remove unrelated
-          // effects. Do not substitute that broad mutation for this targeted tool.
-          for (var j = 0; j < matches.length; j++) {
-            var component = clip.components[matches[j]];
-            if (!canRemoveComponent(component)) {
-              return __error("Premiere does not expose Component.remove() for \\"" + effectName + "\\". No matching components were removed. No safe targeted QE fallback exists; remove it manually in Effect Controls.");
-            }
-          }
-
-          var removed = 0;
-          for (var j = 0; j < matches.length; j++) {
-            var component = clip.components[matches[j]];
-            try {
-              component.remove();
-              removed++;
-            } catch (e) {
-              return __error("Premiere could not remove \\"" + effectName + "\\" after removing " + removed + " matching component(s): " + e.toString() + ". Inspect Effect Controls before retrying.");
-            }
-          }
-
-          return __result({ removed: removed, effect: effectName, clip: clip.name });
+          if (__BUILT_IN_COMPONENTS[effectName]) return __error(effectName + " is a built-in clip component, not an effect, and cannot be removed.");
+          var found = 0;
+          for (var i = 0; i < result.clip.components.numItems; i++) if (result.clip.components[i].displayName === effectName) found++;
+          if (!found) return __error("Effect not found: " + effectName);
+          var removal = __removeClipComponents(result, function (name) { return name === effectName; });
+          if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for every " + effectName + " instance. No matching components were removed; remove them in Effect Controls.");
+          if (removal.failures.length) return __error("The clip changed: Premiere removed " + removal.removed.length + " of " + found + " " + effectName + " instance(s); " + removal.failures.length + " remain. Inspect Effect Controls.");
+          if (!removal.verified) return __error("Premiere reported removing " + effectName + " but the clip's components read back as " + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          return __result({ removed: removal.removed.length, verified: true, effect: effectName, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);
       },

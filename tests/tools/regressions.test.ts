@@ -506,39 +506,98 @@ describe("issue #196 — empty Premiere 26.x QE effect catalogs", () => {
 });
 
 // https://github.com/leancoderkavy/premiere-pro-mcp/issues/129
-describe("issue #129 — CEP component removal is capability-gated", () => {
+// Premiere 25.2 has no DOM Component.remove(), but QE exposes a targeted
+// qeClip.getComponentAt(i).remove() in the same order as the DOM components.
+describe("issue #129 — effect removal uses the targeted QE component remove and verifies", () => {
   const effects = getEffectsTools(bridgeOptions);
   const clipboard = getClipboardTools(bridgeOptions);
+  const advanced = getAdvancedTools(bridgeOptions);
 
+  function removalHost(names: string[], options: { qeRemoveNoop?: boolean; noQeFor?: string[]; noQeAt?: number[] } = {}) {
+    const list = names.map((displayName) => ({ displayName, matchName: displayName }));
+    const components = new Proxy({}, { get: (_t, key) => (key === "numItems" ? list.length : list[Number(key)]) });
+    const clip = { nodeId: "clip1", name: "Speaker", start: { ticks: "0" }, end: { ticks: "254016000000" }, components };
+    const qeClip = {
+      type: "Clip",
+      start: { ticks: "0" },
+      getComponentAt: (index: number) => (options.noQeFor?.includes(list[index]?.displayName) || options.noQeAt?.includes(index) ? null : {
+        name: list[index]?.displayName,
+        remove: () => { if (!options.qeRemoveNoop) list.splice(index, 1); return true; },
+      }),
+      removeEffects: () => { throw new Error("broad removeEffects must not be used"); },
+    };
+    const qeTrack = { numItems: 1, getItemAt: () => qeClip };
+    const seq = { sequenceID: "s", videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } };
+    mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { enableQE: () => {}, project: { activeSequence: seq } },
+      qe: { project: { getActiveSequence: () => ({ getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack }) } },
+    }))));
+    return list;
+  }
+  const names = (list: Array<{ displayName: string }>) => list.map((c) => c.displayName);
+
+  it("remove_effect removes the named effect through QE and verifies", async () => {
+    const list = removalHost(["Opacity", "Motion", "Gaussian Blur", "Lumetri Color"]);
+    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_name: "Gaussian Blur" })).resolves.toMatchObject({ success: true, data: { verified: true } });
+    expect(names(list)).toEqual(["Opacity", "Motion", "Lumetri Color"]);
+  });
+
+  it("remove_effect by index removes exactly that component", async () => {
+    const list = removalHost(["Opacity", "Motion", "Gaussian Blur", "Lumetri Color"]);
+    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_index: 3 })).resolves.toMatchObject({ success: true });
+    expect(names(list)).toEqual(["Opacity", "Motion", "Gaussian Blur"]);
+  });
+
+  it("remove_effect_by_name removes every instance", async () => {
+    const list = removalHost(["Opacity", "Motion", "Gaussian Blur", "Tint", "Gaussian Blur"]);
+    await expect(clipboard.remove_effect_by_name.handler({ node_id: "clip1", effect_name: "Gaussian Blur" })).resolves.toMatchObject({ success: true, data: { removed: 2 } });
+    expect(names(list)).toEqual(["Opacity", "Motion", "Tint"]);
+  });
+
+  it("remove_all_effects keeps built-in components and never calls removeEffects()", async () => {
+    const list = removalHost(["Opacity", "Motion", "Lumetri Color", "Gaussian Blur"]);
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { verified: true } });
+    expect(names(list)).toEqual(["Opacity", "Motion"]);
+  });
+
+  it("refuses to remove built-in components", async () => {
+    removalHost(["Opacity", "Motion"]);
+    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_name: "Motion" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("built-in") });
+  });
+
+  it("reports failure when Premiere keeps the effect", async () => {
+    removalHost(["Opacity", "Motion", "Lumetri Color"], { qeRemoveNoop: true });
+    const result = await advanced.remove_all_effects.handler({ node_id: "clip1" });
+    expect(result.success).toBe(false);
+  });
+
+  // Adapted from the original #129 guards: a component with no removal path
+  // is a capability error, and nothing is removed before every match is checked.
   it.each([
-    ["index", { node_id: "clip1", effect_index: 3 }],
+    ["index", { node_id: "clip1", effect_index: 2 }],
     ["name", { node_id: "clip1", effect_name: "Amplify" }],
-  ])("remove_effect by %s guards an unavailable Component.remove()", async (_mode, args) => {
-    const code = await codeFor(effects.remove_effect, args);
-
-    expect(code).toContain('typeof component.remove !== "function"');
-    expect(code).toContain("No safe targeted QE fallback exists");
-    expect(code).toContain("return __error(removal.error)");
-    expect(code).not.toContain("qeClip.removeEffects()");
+  ])("remove_effect by %s returns a capability error when neither Component.remove() nor QE can remove it", async (_mode, args) => {
+    const list = removalHost(["Opacity", "Motion", "Amplify"], { noQeFor: ["Amplify"] });
+    await expect(effects.remove_effect.handler(args)).resolves.toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
+    expect(names(list)).toEqual(["Opacity", "Motion", "Amplify"]);
   });
 
-  it("preflights every matching component before remove_effect_by_name mutates any", async () => {
-    const code = await codeFor(clipboard.remove_effect_by_name, {
-      node_id: "clip1",
-      effect_name: "Amplify",
+  it("preflights every matching component before remove_effect_by_name removes any", async () => {
+    // Removal runs highest index first: the later Amplify is removable, the
+    // earlier one (index 1) is not, so without the preflight one would go.
+    const list = removalHost(["Opacity", "Amplify", "Tint", "Amplify"], { noQeAt: [1] });
+    await expect(clipboard.remove_effect_by_name.handler({ node_id: "clip1", effect_name: "Amplify" })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("No matching components were removed"),
     });
-
-    expect(code).toContain("var matches = []");
-    expect(code).toContain("if (!canRemoveComponent(component))");
-    expect(code).toContain("No matching components were removed");
-    expect(code).not.toContain("qeClip.removeEffects()");
-    expect(code.indexOf("if (!canRemoveComponent(component))"))
-      .toBeLessThan(code.lastIndexOf("component.remove()"));
+    expect(names(list)).toEqual(["Opacity", "Amplify", "Tint", "Amplify"]);
   });
 
-  it("documents the capability boundary in each targeted removal tool", () => {
-    expect(effects.remove_effect.description).toContain("capability error");
-    expect(clipboard.remove_effect_by_name.description).toContain("capability error");
+  it("documents the capability boundary and the experimental QE path in each removal tool", () => {
+    for (const tool of [effects.remove_effect, clipboard.remove_effect_by_name, advanced.remove_all_effects]) {
+      expect(tool.description).toContain("capability error");
+      expect(tool.description).toContain("EXPERIMENTAL");
+    }
   });
 });
 

@@ -512,7 +512,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_all_effects: {
-      description: "Remove ALL effects from a clip. Uses QE DOM.",
+      description: "Remove every effect from a clip, keeping its built-in components (Opacity, Motion, Volume, Channel Volume, Panner), and verify the result. EXPERIMENTAL: when Premiere has no Component.remove() (25.2), it removes through the undocumented QE DOM's targeted qeClip.getComponentAt(i).remove(). Every matching component's removal path is checked before any is removed; it returns a capability error, with nothing changed, when neither path is available.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -525,23 +525,16 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
       },
       handler: async (args: { node_id: string }) => {
         const script = buildToolScript(`
-          app.enableQE();
-          var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active sequence (QE)");
-          
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
-          
-          var qeTrack = result.trackType === "video"
-            ? qeSeq.getVideoTrackAt(result.trackIndex)
-            : qeSeq.getAudioTrackAt(result.trackIndex);
-          if (!qeTrack) return __error("QE track not found; nothing was changed.");
-          // QE track items include gaps, so the DOM clip index is not a QE index.
-          var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
-          if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
-
-          qeClip.removeEffects();
-          return __result({ removed: true, clipName: result.clip.name });
+          // qeClip.removeEffects() returned without removing anything on Premiere
+          // 25.2 (Lumetri stayed while this tool reported removed: true), so
+          // remove each effect individually and verify.
+          var removal = __removeClipComponents(result, function () { return true; });
+          if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for " + removal.failures.join(", ") + ". No effects were removed; remove them in Effect Controls.");
+          if (removal.failures.length) return __error("The clip changed: Premiere removed " + removal.removed.join(", ") + " but not " + removal.failures.join(", ") + ". Inspect Effect Controls.");
+          if (!removal.verified) return __error("Effects were removed but the clip's components read back as " + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          return __result({ removed: true, verified: true, clipName: result.clip.name, removedEffects: removal.removed, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);
       },

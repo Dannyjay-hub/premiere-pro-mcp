@@ -5,6 +5,7 @@ import {
   type StandardSchemaWithJSON,
 } from "@modelcontextprotocol/server";
 import { BridgeOptions } from "./bridge/file-bridge.js";
+import { runWithUndoTracking } from "./bridge/undo-tracking.js";
 import { getDiscoveryTools } from "./tools/discovery.js";
 import { getProjectTools } from "./tools/project.js";
 import { getMediaTools } from "./tools/media.js";
@@ -423,7 +424,8 @@ export function createServer(
       async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          const result = await guardedHandler(args as Record<string, unknown>);
+          // Only tools that may change the project record the undo position.
+          const result = await runWithUndoTracking(annotations.readOnlyHint !== true, () => guardedHandler(args as Record<string, unknown>));
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",

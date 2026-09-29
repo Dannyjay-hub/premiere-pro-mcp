@@ -3,6 +3,7 @@
  * All generated code must be ES3-compatible (var, no arrow functions, no let/const).
  */
 import { createHash } from "node:crypto";
+import { undoTrackingEnabled } from "./undo-tracking.js";
 
 const HELPERS = `
 // === MCP Bridge Helpers (auto-prepended) ===
@@ -648,6 +649,74 @@ function __qeTransitionObject(kind, entry) {
   }
 }
 
+// Components every clip carries (and a graphic's own layers). They are not
+// effects and are never removed.
+var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
+
+// Remove the clip components selected by wanted(displayName, index), highest
+// index first. DOM Component.remove() is used when present. EXPERIMENTAL:
+// Premiere 25.2 has no DOM remove, so the undocumented QE DOM's targeted
+// qeClip.getComponentAt(i).remove() is used instead; its component order
+// matched the DOM in live testing. Every target's removal path is resolved
+// before anything is removed, so a component neither path can remove refuses
+// the whole call with nothing changed.
+// Returns { removed, failures, before, remaining, verified, nothingRemoved }.
+function __removeClipComponents(result, wanted) {
+  var clip = result.clip;
+  var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true };
+  var targets = [];
+  for (var b = 0; b < clip.components.numItems; b++) out.before.push(String(clip.components[b].displayName));
+  for (var i = clip.components.numItems - 1; i >= 0; i--) {
+    var name = String(clip.components[i].displayName);
+    if (__BUILT_IN_COMPONENTS[name]) continue;
+    if (wanted(name, i)) targets.push({ index: i, name: name, component: clip.components[i] });
+  }
+  var qeClip = null;
+  if (targets.length) {
+    try {
+      app.enableQE();
+      var qeSeq = qe.project.getActiveSequence();
+      var qeTrack = result.trackType === "video" ? qeSeq.getVideoTrackAt(result.trackIndex) : qeSeq.getAudioTrackAt(result.trackIndex);
+      qeClip = __findQeClipByDomClip(qeTrack, clip);
+    } catch (eQe) {}
+  }
+  // Preflight: pick a removal path for every target before changing anything.
+  for (var p = 0; p < targets.length; p++) {
+    var candidate = targets[p];
+    candidate.path = null;
+    try { if (typeof candidate.component.remove === "function") candidate.path = "dom"; } catch (eDomCheck) {}
+    if (!candidate.path && qeClip && typeof qeClip.getComponentAt === "function") {
+      try {
+        var qeCandidate = qeClip.getComponentAt(candidate.index);
+        if (qeCandidate && String(qeCandidate.name) === candidate.name && typeof qeCandidate.remove === "function") candidate.path = "qe";
+      } catch (eQeCheck) {}
+    }
+    if (!candidate.path) out.failures.push(candidate.name);
+  }
+  if (out.failures.length) {
+    out.remaining = out.before.slice();
+    return out;
+  }
+  var expected = out.before.slice();
+  for (var t = 0; t < targets.length; t++) {
+    var target = targets[t];
+    var done = false;
+    try {
+      if (target.path === "dom") { target.component.remove(); done = true; }
+      else {
+        var qeComponent = qeClip.getComponentAt(target.index);
+        if (qeComponent && String(qeComponent.name) === target.name) { qeComponent.remove(); done = true; }
+      }
+    } catch (eRemove) {}
+    if (done) { out.removed.push(target.name); out.nothingRemoved = false; expected.splice(target.index, 1); }
+    else out.failures.push(target.name);
+  }
+  var again = __findClip(String(clip.nodeId));
+  if (again) for (var r = 0; r < again.clip.components.numItems; r++) out.remaining.push(String(again.clip.components[r].displayName));
+  out.verified = !!again && out.remaining.join("|") === expected.join("|");
+  return out;
+}
+
 function __getQeEffectCatalog(kind) {
   var label = kind === "audio" ? "audio" : "video";
   if (typeof app === "undefined" || typeof app.enableQE !== "function") {
@@ -1210,6 +1279,48 @@ function __removeClipAndPartners(result, includeLinked) {
     return __editFail((gone ? "The timeline changed: " + gone + " clip(s) were removed, but " : "") + "Premiere did not remove: " + left.join(", ") + (gone ? ". Inspect the timeline; linked clips may be out of sync." : ". Nothing was changed."));
   }
   return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
+}
+
+// EXPERIMENTAL (undocumented QE DOM). Step Premiere's project undo stack with QE and verify every step against
+// qe.project.undoStackIndex(), which moves by exactly one per undone or redone
+// action (live 25.2). Stops at the first step that does not move the index, so
+// a stack with nothing left to undo/redo is reported instead of assumed.
+function __qeUndoSteps(direction, count) {
+  app.enableQE();
+  var stack = null;
+  try { stack = qe.project; } catch (eQe) {}
+  if (!stack) return { ok: false, error: "QE project is unavailable, so the undo stack cannot be reached", done: 0 };
+  var readIndex = function () {
+    try { var v = Number(stack.undoStackIndex()); return isFinite(v) ? v : null; } catch (eIdx) { return null; }
+  };
+  var start = readIndex();
+  if (start === null) return { ok: false, error: "This Premiere host does not expose qe.project.undoStackIndex(), so " + direction + " cannot be verified. No " + direction + " was attempted.", done: 0 };
+  var done = 0;
+  var index = start;
+  for (var i = 0; i < count; i++) {
+    try {
+      if (direction === "undo") stack.undo(); else stack.redo();
+    } catch (eStep) {
+      return { ok: false, error: "Premiere rejected " + direction + " step " + (i + 1) + ": " + eStep.toString(), done: done, startIndex: start, index: index };
+    }
+    var next = readIndex();
+    if (next !== (direction === "undo" ? index - 1 : index + 1)) {
+      index = next === null ? index : next;
+      break;
+    }
+    index = next;
+    done++;
+  }
+  if (done < count) {
+    return {
+      ok: false,
+      error: done === 0
+        ? "Nothing to " + direction + ": Premiere's undo stack did not move."
+        : "Only " + done + " of " + count + " " + direction + " steps were available; the undo stack stopped moving.",
+      done: done, startIndex: start, index: index
+    };
+  }
+  return { ok: true, done: done, startIndex: start, index: index };
 }
 
 // Linked partners of a clip on other tracks (its synced audio for a video
@@ -1817,7 +1928,31 @@ function __jsonStringify(obj) {
   return __jsonEscapeString(String(obj));
 }
 
+// EXPERIMENTAL (undocumented QE DOM). Premiere's undo history position when
+// the current command started; buildScript sets it only for tools that change
+// the project (see undo-tracking.ts) and clears it otherwise. QE edits (razor,
+// insert, lift, extract...) add entries; most DOM property/marker writes add
+// none. __result reports how many entries the command added so an agent can
+// undo exactly that call.
+var __undoStart = null;
+function __readUndoIndex() {
+  try {
+    app.enableQE();
+    var v = Number(qe.project.undoStackIndex());
+    return isFinite(v) ? v : null;
+  } catch (eUndoIdx) {
+    return null;
+  }
+}
+
 function __result(data) {
+  if (__undoStart !== null && data && typeof data === "object" && !(data instanceof Array)) {
+    var undoNow = __readUndoIndex();
+    if (undoNow !== null && undoNow > __undoStart) {
+      data.undoSteps = undoNow - __undoStart;
+      data.undoStackIndex = undoNow;
+    }
+  }
   return __jsonStringify({ success: true, data: data });
 }
 
@@ -1865,8 +2000,14 @@ export function buildBootstrap(helpersPath: string): string {
  * Helper functions are loaded by the bootstrap the file bridge prepends.
  */
 export function buildScript(code: string): string {
+  // Helpers live in a long-lived engine, so __undoStart is always reset: set
+  // for tools that change the project, cleared for everything else.
+  const undoStart = undoTrackingEnabled()
+    ? `__undoStart = typeof __readUndoIndex === "function" ? __readUndoIndex() : null;`
+    : `__undoStart = null;`;
   return `(function() {
   try {
+    ${undoStart}
     ${code}
   } catch(e) {
     return __error(e.toString());

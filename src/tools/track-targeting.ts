@@ -1562,17 +1562,54 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     redo: {
       description:
-        "Unavailable: Premiere exposes no supported, observable redo-stack API, so a scripted redo cannot be performed or verified.",
-      parameters: {},
-      handler: async () => ({
-        success: false,
-        error:
-          "redo is unavailable because Premiere exposes no supported redo API that can be verified: qe.project.redo() returns nothing observable and no undo/redo-stack query exists to check it against, so a reported success would be unfounded. No mutation was attempted. Redo the action from Premiere's Edit menu instead.",
-      }),
+        "EXPERIMENTAL (undocumented QE DOM: qe.project.redo / undoStackIndex). Redo the most recently undone Premiere project action(s) through QE, verified step by step against Premiere's undo-stack index. To restore a tool call undone with undo, pass the same count.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          count: {
+            type: "number",
+            description: "Number of redo steps (default: 1)",
+          },
+          expected_undo_stack_index: {
+            type: "number",
+            description:
+              "Optional safety guard: the undoStackIndexAfter reported by the undo you want to redo. The step is refused, with nothing changed, if Premiere's undo stack has moved since.",
+          },
+        },
+      },
+      handler: async (args: { count?: number; expected_undo_stack_index?: number } = {}) => {
+        const count = args.count ?? 1;
+        if (!Number.isInteger(count) || count < 1 || count > 100) {
+          return { success: false, error: "count must be an integer from 1 through 100" };
+        }
+        const guardArg = args.expected_undo_stack_index;
+        if (guardArg !== undefined && (!Number.isInteger(guardArg) || guardArg < 0)) {
+          return { success: false, error: "expected_undo_stack_index must be a non-negative integer" };
+        }
+        const guard = guardArg === undefined ? "null" : String(guardArg);
+        const script = buildToolScript(`
+          __undoStart = null;
+          var expectedIndex = ${guard};
+          if (expectedIndex !== null) {
+            var currentIndex = __readUndoIndex();
+            if (currentIndex !== expectedIndex) {
+              return __jsonStringify({ success: false, error: "Premiere's undo stack is at " + currentIndex + ", not the expected " + expectedIndex + ": other actions were recorded since that call, so redo was not attempted.", data: { undoStackIndex: currentIndex, expectedUndoStackIndex: expectedIndex } });
+            }
+          }
+          var outcome = __qeUndoSteps("redo", ${count});
+          var summary = { redone: outcome.done, undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index };
+          if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
+          summary.verified = true;
+          summary.scope = "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched.";
+          return __result(summary);
+        `);
+        return sendCommand(script, bridgeOptions);
+      },
     },
 
     multiple_undo: {
-      description: "Unavailable: Premiere exposes no supported, observable undo-stack API for multiple scripted undo steps.",
+      description: "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo several Premiere project actions through QE, verifying each step against Premiere's undo-stack index and reporting how many were undone." +
+        " Only actions Premiere records are undoable: QE edits such as razor, insert, overwrite, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Results without undoSteps (most property, marker and keyframe writes) added nothing to the undo history, and undo would reverse an earlier action instead.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1580,17 +1617,40 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Number of undo steps (default: 1)",
           },
+          expected_undo_stack_index: {
+            type: "number",
+            description:
+              "Optional safety guard: the undoStackIndex a tool result reported right after the call you want to reverse. The step is refused, with nothing changed, if Premiere's undo stack has moved since.",
+          },
         },
       },
-      handler: async (args: { count?: number }) => {
+      handler: async (args: { count?: number; expected_undo_stack_index?: number }) => {
         const count = args.count ?? 1;
         if (!Number.isInteger(count) || count < 1 || count > 100) {
           return { success: false, error: "count must be an integer from 1 through 100" };
         }
-        return {
-          success: false,
-          error: "multiple_undo is unavailable because Premiere exposes no supported undo-stack API that can verify how many actions were undone. No mutation was attempted.",
-        };
+        const guardArg = args.expected_undo_stack_index;
+        if (guardArg !== undefined && (!Number.isInteger(guardArg) || guardArg < 0)) {
+          return { success: false, error: "expected_undo_stack_index must be a non-negative integer" };
+        }
+        const guard = guardArg === undefined ? "null" : String(guardArg);
+        const script = buildToolScript(`
+          __undoStart = null;
+          var expectedIndex = ${guard};
+          if (expectedIndex !== null) {
+            var currentIndex = __readUndoIndex();
+            if (currentIndex !== expectedIndex) {
+              return __jsonStringify({ success: false, error: "Premiere's undo stack is at " + currentIndex + ", not the expected " + expectedIndex + ": other actions were recorded since that call, so undo was not attempted.", data: { undoStackIndex: currentIndex, expectedUndoStackIndex: expectedIndex } });
+            }
+          }
+          var outcome = __qeUndoSteps("undo", ${count});
+          var summary = { undone: outcome.done, undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index };
+          if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
+          summary.verified = true;
+          summary.scope = "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched.";
+          return __result(summary);
+        `);
+        return sendCommand(script, bridgeOptions);
       },
     },
 

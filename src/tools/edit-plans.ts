@@ -118,17 +118,26 @@ function buildApplyScript(plan: EditPlan): string {
       return null;
     }
   ` : "";
-  // A failure part-way through leaves earlier operations applied; report which
-  // ones so the caller knows the timeline changed.
+  // A failure part-way through leaves earlier operations applied; report them.
+  // undoSteps (EXPERIMENTAL, QE undoStackIndex) is data only: it counts
+  // QE-recorded actions and misses DOM-only operations such as removals, so it
+  // is never offered as a way to reverse the plan.
   const failure = `
+    var planUndoStart = __readUndoIndex();
     function __planFail(index, message) {
-      // An operation's own "Nothing was changed" is wrong once earlier ones applied.
-      if (results.length) message = String(message).replace(/\\s*Nothing was changed\\.?/g, "");
+      var now = __readUndoIndex();
+      var steps = planUndoStart !== null && now !== null ? now - planUndoStart : null;
+      var changed = results.length > 0 || (steps !== null && steps > 0) || /timeline changed/.test(message);
+      var summary = results.length
+        ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back."
+        : (changed ? (/timeline changed/.test(message) ? "" : " The timeline may have changed: Premiere recorded undo entries during the failed operation.") : (/Nothing was changed/.test(message) ? "" : " Nothing was changed."));
       return __jsonStringify({ success: false,
-        error: "Operation " + index + " failed: " + message + (results.length ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back." : (/Nothing was changed|timeline changed/.test(message) ? "" : " Nothing was changed.")),
-        data: { appliedOperations: results } });
+        error: "Operation " + index + " failed: " + message + summary,
+        data: { appliedOperations: results, timelineChanged: changed, undoSteps: steps, undoStackIndex: now,
+          undoStepsNote: "undoSteps counts only actions Premiere recorded in its undo history (QE edits such as inserts). DOM-only operations, such as clip removals, add no entry, so undoing this many steps does not necessarily reverse the plan." } });
     }
   `;
+
 
   plan.operations.forEach((operation, index) => {
     if (operation.type === "insert_clip") {
