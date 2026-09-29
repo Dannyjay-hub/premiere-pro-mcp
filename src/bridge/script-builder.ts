@@ -1844,6 +1844,18 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
   var beforeVideoIds = {};
   var beforeAudioIds = {};
   var i;
+  // Every clip in the sequence, so a clip Premiere places somewhere other than
+  // the requested tracks is still found (live 25.2.3: a 5.1 clip inserted on a
+  // stereo track landed on a new track at the bottom).
+  var beforeAllIds = {};
+  var groupsBefore = [seq.videoTracks, seq.audioTracks];
+  for (var gb = 0; gb < groupsBefore.length; gb++) {
+    for (var tb = 0; tb < groupsBefore[gb].numTracks; tb++) {
+      for (var cb = 0; cb < groupsBefore[gb][tb].clips.numItems; cb++) beforeAllIds[String(groupsBefore[gb][tb].clips[cb].nodeId)] = true;
+    }
+  }
+  var audioTracksBefore = seq.audioTracks.numTracks;
+  var videoTracksBefore = seq.videoTracks.numTracks;
   var beforeVideoCount = videoTrack.clips.numItems;
   var beforeAudioCount = audioTrack.clips.numItems;
   for (i = 0; i < beforeVideoCount; i++) beforeVideoIds[String(videoTrack.clips[i].nodeId)] = true;
@@ -1884,6 +1896,20 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     if (!beforeAudioIds[String(audioTrack.clips[i].nodeId)]) insertedClips.push(audioTrack.clips[i]);
   }
   if (!insertedClips.length) {
+    var elsewhere = [];
+    var groupsAfter = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
+    for (var ga = 0; ga < groupsAfter.length; ga++) {
+      for (var ta = 0; ta < groupsAfter[ga][1].numTracks; ta++) {
+        var clipsAfter = groupsAfter[ga][1][ta].clips;
+        for (var ca = 0; ca < clipsAfter.numItems; ca++) {
+          if (!beforeAllIds[String(clipsAfter[ca].nodeId)]) elsewhere.push(groupsAfter[ga][0] + " track " + (ta + 1));
+        }
+      }
+    }
+    if (elsewhere.length) {
+      var newTracks = (seq.audioTracks.numTracks - audioTracksBefore) + (seq.videoTracks.numTracks - videoTracksBefore);
+      return { ok: false, changed: true, placedOn: elsewhere, error: "The timeline changed: Premiere placed the clip on " + elsewhere.join(", ") + " instead of the requested video track " + (vTrackIndex + 1) + " / audio track " + (aTrackIndex + 1) + (newTracks > 0 ? ", adding " + newTracks + " track(s)" : "") + " (for example, a 5.1 clip does not fit a stereo track). Other tracks were not shifted to match" + afterRazorNote + ". Move or remove that clip, or target a track that matches its channel layout." };
+    }
     return { ok: false, error: "Premiere did not add a new track item at the requested insertion point" + afterRazorNote + "." };
   }
 

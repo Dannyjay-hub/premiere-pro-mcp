@@ -139,6 +139,8 @@ function issue562Host(options: {
   overlaySeconds?: [number, number];
   sourceDurationSeconds?: number;
   mediaKind?: "audio_only" | "video_only";
+  /** Premiere puts the clip on a new audio track instead (live 25.2.3: a 5.1 clip on a stereo track). */
+  insertElsewhere?: boolean;
 } = {}) {
   // Premiere's getIn/OutPoint(mediaType): 1 = video, 2 = audio, 4 = any. A missing
   // stream reads back as a zero-length span.
@@ -165,7 +167,8 @@ function issue562Host(options: {
   const a2 = makeTrack([makeClip("a2", overlay[0], overlay[1], "cam2")]);
   const a3 = makeTrack([makeClip("a3", 2, 36, "cam3")]);
   const videoTracks = { 0: v1, 1: v2, 2: v3, get numTracks() { return 3; } };
-  const audioTracks = { 0: a1, 1: a2, 2: a3, get numTracks() { return 3; } };
+  let extraAudioTracks = 0;
+  const audioTracks: Record<number, ReturnType<typeof makeTrack>> & { numTracks: number } = { 0: a1, 1: a2, 2: a3, get numTracks() { return 3 + extraAudioTracks; } };
   (options.lockedVideo ?? []).forEach((index) => {
     [v1, v2, v3][index]._locked = true;
     [a1, a2, a3][index]._locked = true;
@@ -188,6 +191,13 @@ function issue562Host(options: {
     getPlayerPosition() { return { ticks: ticksOf(options.playheadSeconds ?? 8) }; },
     insertClip(item: typeof source, time: string | number, vTrack: number, aTrack: number) {
       if (options.insertNoop) return;
+      if (options.insertElsewhere) {
+        const added = makeTrack([]);
+        audioTracks[3] = added;
+        extraAudioTracks = 1;
+        insertOnTrack(added, item, time, "ins-a-new");
+        return;
+      }
       // Like Premiere, only a track that receives part of the item is rippled.
       if (options.mediaKind !== "audio_only") insertOnTrack(videoTracks[vTrack as 0 | 1 | 2], item, time, `ins-v-${vTrack}`);
       if (options.mediaKind !== "video_only") insertOnTrack(audioTracks[aTrack as 0 | 1 | 2], item, time, `ins-a-${aTrack}`);
@@ -539,3 +549,13 @@ describe("insert of an item with only audio or only video keeps the target pair 
     expect(rangesOf(s.audioTracks[0])).toEqual([[0, 4], [4, 8], [10, 14], [14, 20]]);
   });
 });
+
+describe("an insert Premiere places on another track", () => {
+  it("says the timeline changed and names the track, instead of 'did not add a new track item' (live 25.2.3: 5.1 clip)", () => {
+    const { sandbox, seq, source } = issue562Host({ mediaKind: "audio_only", insertElsewhere: true, unlockedVideo: [0, 1, 2] });
+    const outcome = runHelper(sandbox, seq, source, 8);
+    expect(outcome).toMatchObject({ ok: false, changed: true, placedOn: ["audio track 4"] });
+    expect(outcome.error).toMatch(/^The timeline changed: Premiere placed the clip on audio track 4 .*adding 1 track/);
+  });
+});
+
