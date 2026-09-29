@@ -531,9 +531,10 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           // 25.2 (Lumetri stayed while this tool reported removed: true), so
           // remove each effect individually and verify.
           var removal = __removeClipComponents(result, function () { return true; });
+          if (removal.unsupported) return __error("Capability error: " + removal.unsupported + " Nothing was removed; remove effects in Effect Controls.");
           if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for " + removal.failures.join(", ") + ". No effects were removed; remove them in Effect Controls.");
           if (removal.failures.length) return __error("The clip changed: Premiere removed " + removal.removed.join(", ") + " but not " + removal.failures.join(", ") + ". Inspect Effect Controls.");
-          if (!removal.verified) return __error("Effects were removed but the clip's components read back as " + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          if (!removal.verified) return __error((removal.remaining.join("|") === removal.before.join("|") ? "Premiere's removal did not take effect: the clip still has " : "Premiere's removal did not take effect as expected: the clip's components read back as ") + removal.remaining.join(", ") + ". Inspect Effect Controls.");
           return __result({ removed: true, verified: true, clipName: result.clip.name, removedEffects: removal.removed, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);

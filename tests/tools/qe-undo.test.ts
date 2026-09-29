@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import { buildScript, getHelpersSource } from "../../src/bridge/script-builder.js";
 import { runWithUndoTracking } from "../../src/bridge/undo-tracking.js";
+import { capabilitiesForToolInvocation } from "../../src/security/capabilities.js";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
 
 vi.mock("../../src/bridge/file-bridge.js", () => ({
@@ -19,8 +20,6 @@ const mockedSendCommand = vi.mocked(sendCommand);
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/qe-undo", timeoutMs: 5000 };
 const project = getProjectTools(bridgeOptions);
 const targeting = getTrackTargetingTools(bridgeOptions);
-
-type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -42,13 +41,16 @@ function undoHost(index: number, top: number, extra: Record<string, unknown> = {
   return stack;
 }
 
-describe("undo, redo and multiple_undo step QE's undo stack with verification", () => {
+describe("undo, redo and multiple_undo step QE's undo stack and check its position", () => {
   it("undoes one action and reports the stack indices (live: 367 -> 366)", async () => {
     const stack = undoHost(367, 367);
-    await expect(project.undo.handler({})).resolves.toMatchObject({
+    const result = await project.undo.handler({});
+    expect(result).toMatchObject({
       success: true,
-      data: { undone: 1, undoStackIndexBefore: 367, undoStackIndexAfter: 366, verified: true },
+      data: { undone: 1, undoStackIndexBefore: 367, undoStackIndexAfter: 366, stackStatus: "stack_verified", stackVerified: true },
     });
+    // Only the stack position is checked, so the result does not claim a verified timeline.
+    expect((result as { data: Record<string, unknown> }).data.verified).toBeUndefined();
     expect(stack.index).toBe(366);
   });
 
@@ -56,7 +58,7 @@ describe("undo, redo and multiple_undo step QE's undo stack with verification", 
     undoHost(366, 367);
     await expect(targeting.redo.handler({})).resolves.toMatchObject({
       success: true,
-      data: { redone: 1, undoStackIndexAfter: 367, verified: true },
+      data: { redone: 1, undoStackIndexAfter: 367, stackVerified: true },
     });
   });
 
@@ -65,7 +67,7 @@ describe("undo, redo and multiple_undo step QE's undo stack with verification", 
     await expect(targeting.multiple_undo.handler({ count: 3 })).resolves.toMatchObject({
       success: false,
       error: expect.stringContaining("Only 2 of 3 undo steps"),
-      data: { undone: 2, undoStackIndexAfter: 0 },
+      data: { undone: 2, undoStackIndexAfter: 0, stackStatus: "did_not_move" },
     });
   });
 
@@ -74,6 +76,7 @@ describe("undo, redo and multiple_undo step QE's undo stack with verification", 
     await expect(targeting.redo.handler({})).resolves.toMatchObject({
       success: false,
       error: expect.stringContaining("Nothing to redo"),
+      data: { stackStatus: "did_not_move", redone: 0 },
     });
   });
 
@@ -88,8 +91,49 @@ describe("undo, redo and multiple_undo step QE's undo stack with verification", 
   });
 });
 
+describe("an undo that moves the stack unexpectedly is never reported as nothing happening", () => {
+  it("a jump of two (10 -> 8) is committed_unverified and says not to retry", async () => {
+    const stack = undoHost(10, 10, { undo: () => { stack.index -= 2; return true; } });
+    const result = await project.undo.handler({});
+    expect(result).toMatchObject({
+      success: true,
+      data: { outcome: "committed_unverified", stackStatus: "moved_unexpectedly", stackVerified: false, undone: 0, undoStackIndexAfter: 8, warning: expect.stringContaining("Do not retry") },
+    });
+    expect(JSON.stringify(result)).not.toContain("Nothing to undo");
+  });
+
+  it("a move the wrong way is committed_unverified", async () => {
+    const stack = undoHost(10, 20, { undo: () => { stack.index += 1; return true; } });
+    await expect(targeting.multiple_undo.handler({ count: 2 })).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "committed_unverified", stackStatus: "moved_unexpectedly", undoStackIndexAfter: 11 },
+    });
+  });
+
+  it("an index that cannot be read after the step is committed_unverified", async () => {
+    let reads = 0;
+    const stack = undoHost(10, 10, {
+      undoStackIndex: () => { reads += 1; if (reads > 1) throw new Error("gone"); return stack.index; },
+    });
+    await expect(project.undo.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "committed_unverified", stackStatus: "index_unreadable", stackVerified: false },
+    });
+  });
+
+  it("a step Premiere rejects after earlier steps reports how many ran", async () => {
+    let calls = 0;
+    const stack = undoHost(10, 10, { undo: () => { calls += 1; if (calls === 2) throw new Error("busy"); stack.index -= 1; return true; } });
+    await expect(targeting.multiple_undo.handler({ count: 3 })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("1 step(s) before it were undone"),
+      data: { stackStatus: "rejected", undone: 1, undoStackIndexAfter: 9 },
+    });
+  });
+});
+
 describe("results report the undo steps a command added", () => {
-  // The server builds scripts inside runWithUndoTracking(!readOnlyHint, ...).
+  // The server builds scripts inside runWithUndoTracking(<call needs edit>, ...).
   const exec = (code: string, qeProject: Record<string, unknown>, mutating = true) =>
     JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${runWithUndoTracking(mutating, () => buildScript(code))}`, { app: { enableQE: () => {} }, qe: { project: qeProject } })));
 
@@ -102,6 +146,17 @@ describe("results report the undo steps a command added", () => {
     });
   });
 
+  it("tags a failure that came after undo entries were recorded", () => {
+    const stack = { index: 401, undoStackIndex: () => stack.index };
+    const bump = () => { stack.index += 2; };
+    expect(exec("qe.project.bump(); return __error(\"second write failed\");", Object.assign(stack, { bump }))).toEqual({
+      success: false,
+      error: "second write failed",
+      data: { undoSteps: 2, undoStackIndex: 403 },
+    });
+    expect(exec("return __error(\"refused\");", { undoStackIndex: () => 5 })).toEqual({ success: false, error: "refused" });
+  });
+
   it("leaves results alone when nothing was recorded (live: set_clip_opacity) or QE is absent", () => {
     const stack = { undoStackIndex: () => 409 };
     expect(exec("return __result({ opacity: 50 });", stack)).toEqual({ success: true, data: { opacity: 50 } });
@@ -111,13 +166,13 @@ describe("results report the undo steps a command added", () => {
   it("read-only tools never read the undo stack, even in an engine a mutating command used before", () => {
     const stack = { index: 401, undoStackIndex: vi.fn(() => stack.index) };
     const context = { app: { enableQE: vi.fn() }, qe: { project: stack } };
-    const run = (code: string, mutating: boolean) =>
+    const runIn = (code: string, mutating: boolean) =>
       JSON.parse(String(runInNewContext(`${runWithUndoTracking(mutating, () => buildScript(code))}`, context)));
     runInNewContext(getHelpersSource(), context);
-    expect(run("qe.project.index += 2; return __result({ cut: true });", true)).toMatchObject({ data: { undoSteps: 2 } });
+    expect(runIn("qe.project.index += 2; return __result({ cut: true });", true)).toMatchObject({ data: { undoSteps: 2 } });
     stack.undoStackIndex.mockClear();
     context.app.enableQE.mockClear();
-    expect(run("return __result({ clips: 3 });", false)).toEqual({ success: true, data: { clips: 3 } });
+    expect(runIn("return __result({ clips: 3 });", false)).toEqual({ success: true, data: { clips: 3 } });
     expect(stack.undoStackIndex).not.toHaveBeenCalled();
     expect(context.app.enableQE).not.toHaveBeenCalled();
   });
@@ -127,14 +182,28 @@ describe("results report the undo steps a command added", () => {
     expect(runWithUndoTracking(true, () => buildScript("return 1;"))).toContain("__readUndoIndex()");
   });
 
-  it("undo refuses, without undoing, when the stack moved past the guard", async () => {
+  it("read-only CEP tools that the naming hints miss do not need edit, so they are not tracked", () => {
+    for (const name of ["ping", "has_proxy", "is_work_area_enabled", "analyze_loudness", "detect_beats", "validate_export_preset", "verify_delivery_file"]) {
+      expect(capabilitiesForToolInvocation(name, {}), name).not.toContain("edit");
+    }
+    expect(capabilitiesForToolInvocation("trim_clip", {})).toContain("edit");
+  });
+
+  it("undo refuses, without undoing, when the stack position differs from the guard", async () => {
     const stack = undoHost(368, 368);
     await expect(targeting.multiple_undo.handler({ count: 8, expected_undo_stack_index: 367 })).resolves.toMatchObject({
       success: false,
-      error: expect.stringContaining("other actions were recorded since that call"),
+      error: expect.stringContaining("the undo-stack position changed since that call"),
       data: { undoStackIndex: 368, expectedUndoStackIndex: 367 },
     });
     expect(stack.index).toBe(368);
     await expect(project.undo.handler({ expected_undo_stack_index: 368 })).resolves.toMatchObject({ success: true, data: { undone: 1 } });
+  });
+
+  it("describes the guard as a position check that can match again after new edits", () => {
+    for (const tool of [project.undo, targeting.multiple_undo]) {
+      const guard = (tool.parameters as { properties: Record<string, { description: string }> }).properties.expected_undo_stack_index;
+      expect(guard.description).toContain("compares the position only");
+    }
   });
 });

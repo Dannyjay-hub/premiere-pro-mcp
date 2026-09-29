@@ -128,6 +128,9 @@ function buildApplyScript(plan: EditPlan): string {
       var now = __readUndoIndex();
       var steps = planUndoStart !== null && now !== null ? now - planUndoStart : null;
       var changed = results.length > 0 || (steps !== null && steps > 0) || /timeline changed/.test(message);
+      // An operation's own "Nothing was changed" is wrong once anything was applied
+      // or Premiere recorded undo entries.
+      if (changed) message = String(message).replace(/\\s*Nothing was changed\\.?/g, "");
       var summary = results.length
         ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back."
         : (changed ? (/timeline changed/.test(message) ? "" : " The timeline may have changed: Premiere recorded undo entries during the failed operation.") : (/Nothing was changed/.test(message) ? "" : " Nothing was changed."));

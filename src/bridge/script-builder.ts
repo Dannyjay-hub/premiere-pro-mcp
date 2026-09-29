@@ -652,6 +652,28 @@ function __qeTransitionObject(kind, entry) {
 // Components every clip carries (and a graphic's own layers). They are not
 // effects and are never removed.
 var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
+// Match names are the same in every host language; display names are not.
+var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": "Motion", "AE.ADBE Opacity": "Opacity" };
+
+// Built-in components can only be told apart from effects by their English
+// display names (the audio and Time Remapping match names are not known). On a
+// host whose names are localized ("Deckkraft", "Bewegung") every removal is
+// refused rather than risk removing Opacity or Motion.
+function __componentClassificationProblem(clip) {
+  var recognized = false;
+  for (var i = 0; i < clip.components.numItems; i++) {
+    var component = clip.components[i];
+    var name = String(component.displayName);
+    var match = "";
+    try { match = String(component.matchName || ""); } catch (eMatch) {}
+    if (__BUILT_IN_MATCH_NAMES[match] && __BUILT_IN_MATCH_NAMES[match] !== name) {
+      return "This Premiere host shows component names in another language (" + name + " for " + __BUILT_IN_MATCH_NAMES[match] + "), so built-in components cannot be told apart from effects reliably.";
+    }
+    if (__BUILT_IN_COMPONENTS[name]) recognized = true;
+  }
+  if (!recognized) return "None of this clip's components has a recognized built-in name (a non-English host?), so built-in components cannot be told apart from effects reliably.";
+  return null;
+}
 
 // Remove the clip components selected by wanted(displayName, index), highest
 // index first. DOM Component.remove() is used when present. EXPERIMENTAL:
@@ -660,11 +682,18 @@ var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping":
 // matched the DOM in live testing. Every target's removal path is resolved
 // before anything is removed, so a component neither path can remove refuses
 // the whole call with nothing changed.
-// Returns { removed, failures, before, remaining, verified, nothingRemoved }.
+// Returns { removed, failures, before, remaining, verified, nothingRemoved,
+// unsupported } where unsupported explains a refusal made before any removal.
 function __removeClipComponents(result, wanted) {
   var clip = result.clip;
-  var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true };
+  var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true, unsupported: null };
   var targets = [];
+  out.unsupported = __componentClassificationProblem(clip);
+  if (out.unsupported) {
+    for (var u = 0; u < clip.components.numItems; u++) out.remaining.push(String(clip.components[u].displayName));
+    out.before = out.remaining.slice();
+    return out;
+  }
   for (var b = 0; b < clip.components.numItems; b++) out.before.push(String(clip.components[b].displayName));
   for (var i = clip.components.numItems - 1; i >= 0; i--) {
     var name = String(clip.components[i].displayName);
@@ -1281,32 +1310,45 @@ function __removeClipAndPartners(result, includeLinked) {
   return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
 }
 
-// EXPERIMENTAL (undocumented QE DOM). Step Premiere's project undo stack with QE and verify every step against
-// qe.project.undoStackIndex(), which moves by exactly one per undone or redone
-// action (live 25.2). Stops at the first step that does not move the index, so
-// a stack with nothing left to undo/redo is reported instead of assumed.
+// EXPERIMENTAL (undocumented QE DOM). Step Premiere's project undo stack with
+// QE and check every step against qe.project.undoStackIndex(), which moved by
+// exactly one per undone or redone action in live 25.2 testing. The check is
+// about the stack position only; nothing reads the timeline back.
+// status: "stack_verified" (every step moved the index by one), "did_not_move"
+// (nothing left to undo/redo), "moved_unexpectedly" (the index moved by a
+// different amount or the wrong way), "index_unreadable" (a step ran but the
+// index could not be read), or "rejected" (Premiere threw). The last three may
+// have changed the project and must not be treated as "nothing happened".
 function __qeUndoSteps(direction, count) {
   app.enableQE();
   var stack = null;
   try { stack = qe.project; } catch (eQe) {}
-  if (!stack) return { ok: false, error: "QE project is unavailable, so the undo stack cannot be reached", done: 0 };
+  if (!stack) return { ok: false, status: "unavailable", error: "QE project is unavailable, so the undo stack cannot be reached. No " + direction + " was attempted.", done: 0 };
   var readIndex = function () {
     try { var v = Number(stack.undoStackIndex()); return isFinite(v) ? v : null; } catch (eIdx) { return null; }
   };
   var start = readIndex();
-  if (start === null) return { ok: false, error: "This Premiere host does not expose qe.project.undoStackIndex(), so " + direction + " cannot be verified. No " + direction + " was attempted.", done: 0 };
+  if (start === null) return { ok: false, status: "unavailable", error: "This Premiere host does not expose qe.project.undoStackIndex(), so " + direction + " cannot be checked. No " + direction + " was attempted.", done: 0 };
+  var step = direction === "undo" ? -1 : 1;
   var done = 0;
   var index = start;
   for (var i = 0; i < count; i++) {
     try {
       if (direction === "undo") stack.undo(); else stack.redo();
     } catch (eStep) {
-      return { ok: false, error: "Premiere rejected " + direction + " step " + (i + 1) + ": " + eStep.toString(), done: done, startIndex: start, index: index };
+      var afterThrow = readIndex();
+      return { ok: false, status: "rejected", done: done, startIndex: start, index: afterThrow === null ? index : afterThrow,
+        error: "Premiere rejected " + direction + " step " + (i + 1) + ": " + eStep.toString() + (done ? " (" + done + " step(s) before it were " + direction + "ne)." : ".") };
     }
     var next = readIndex();
-    if (next !== (direction === "undo" ? index - 1 : index + 1)) {
-      index = next === null ? index : next;
-      break;
+    if (next === null) {
+      return { ok: false, status: "index_unreadable", done: done, startIndex: start, index: index,
+        error: direction + " step " + (i + 1) + " ran, but Premiere's undo-stack index could not be read afterwards, so it is not known what changed. Do not retry; inspect the project." };
+    }
+    if (next === index) break;
+    if (next !== index + step) {
+      return { ok: false, status: "moved_unexpectedly", done: done, startIndex: start, index: next,
+        error: direction + " step " + (i + 1) + " moved Premiere's undo stack from " + index + " to " + next + " instead of " + (index + step) + ", so more or other actions than requested may have been " + direction + "ne. Do not retry; inspect the project." };
     }
     index = next;
     done++;
@@ -1314,13 +1356,33 @@ function __qeUndoSteps(direction, count) {
   if (done < count) {
     return {
       ok: false,
+      status: "did_not_move",
       error: done === 0
         ? "Nothing to " + direction + ": Premiere's undo stack did not move."
         : "Only " + done + " of " + count + " " + direction + " steps were available; the undo stack stopped moving.",
       done: done, startIndex: start, index: index
     };
   }
-  return { ok: true, done: done, startIndex: start, index: index };
+  return { ok: true, status: "stack_verified", done: done, startIndex: start, index: index };
+}
+
+// Result of an undo/redo tool from a __qeUndoSteps outcome. An unexpected or
+// unreadable stack move is reported as committed_unverified (success, not
+// verified), never as "nothing happened", so an agent does not retry.
+function __undoStepsResult(outcome, doneKey) {
+  var summary = { undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index, stackStatus: outcome.status,
+    scope: "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched." };
+  summary[doneKey] = outcome.done;
+  if (outcome.status === "moved_unexpectedly" || outcome.status === "index_unreadable") {
+    summary.outcome = "committed_unverified";
+    summary.stackVerified = false;
+    summary.warning = outcome.error;
+    return __result(summary);
+  }
+  if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
+  summary.stackVerified = true;
+  summary.verification = "undo-stack position only: each step moved qe.project.undoStackIndex() by one; the timeline is not read back";
+  return __result(summary);
 }
 
 // Linked partners of a clip on other tracks (its synced audio for a video
@@ -1957,6 +2019,14 @@ function __result(data) {
 }
 
 function __error(msg) {
+  // A failure can come after the command recorded undo entries; report them
+  // so the caller knows the project may have changed.
+  if (__undoStart !== null) {
+    var undoNow = __readUndoIndex();
+    if (undoNow !== null && undoNow > __undoStart) {
+      return __jsonStringify({ success: false, error: String(msg), data: { undoSteps: undoNow - __undoStart, undoStackIndex: undoNow } });
+    }
+  }
   return __jsonStringify({ success: false, error: String(msg) });
 }
 

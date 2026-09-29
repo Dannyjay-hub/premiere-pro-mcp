@@ -513,8 +513,8 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
   const clipboard = getClipboardTools(bridgeOptions);
   const advanced = getAdvancedTools(bridgeOptions);
 
-  function removalHost(names: string[], options: { qeRemoveNoop?: boolean; noQeFor?: string[]; noQeAt?: number[] } = {}) {
-    const list = names.map((displayName) => ({ displayName, matchName: displayName }));
+  function removalHost(names: string[], options: { qeRemoveNoop?: boolean; noQeFor?: string[]; noQeAt?: number[]; matchNames?: Record<string, string> } = {}) {
+    const list = names.map((displayName) => ({ displayName, matchName: options.matchNames?.[displayName] ?? displayName }));
     const components = new Proxy({}, { get: (_t, key) => (key === "numItems" ? list.length : list[Number(key)]) });
     const clip = { nodeId: "clip1", name: "Speaker", start: { ticks: "0" }, end: { ticks: "254016000000" }, components };
     const qeClip = {
@@ -591,6 +591,19 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
       error: expect.stringContaining("No matching components were removed"),
     });
     expect(names(list)).toEqual(["Opacity", "Amplify", "Tint", "Amplify"]);
+  });
+
+  it("refuses on a localized host instead of removing Opacity and Motion (German: Deckkraft, Bewegung)", async () => {
+    const german = { Deckkraft: "AE.ADBE Opacity", Bewegung: "AE.ADBE Motion", "Lumetri-Farbe": "AE.ADBE Lumetri" };
+    const list = removalHost(["Bewegung", "Deckkraft", "Zeitverzerrung", "Lumetri-Farbe"], { matchNames: german });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("another language") });
+    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_index: 3 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
+    expect(names(list)).toEqual(["Bewegung", "Deckkraft", "Zeitverzerrung", "Lumetri-Farbe"]);
+  });
+
+  it("says a silent QE no-op did not take effect, not that effects were removed", async () => {
+    removalHost(["Opacity", "Motion", "Lumetri Color"], { qeRemoveNoop: true });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("did not take effect: the clip still has Opacity, Motion, Lumetri Color") });
   });
 
   it("documents the capability boundary and the experimental QE path in each removal tool", () => {

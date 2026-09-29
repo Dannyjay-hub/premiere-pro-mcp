@@ -3,8 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * Whether scripts built during the current tool call record Premiere's undo
  * stack position (EXPERIMENTAL: qe.project.undoStackIndex, undocumented QE DOM).
- * The server turns it on only for tools that are not read-only, so inspection
- * tools never touch QE for undo tracking.
+ * The server turns it on only for calls that need the edit capability, so
+ * inspection and analysis tools never touch QE for undo tracking.
  */
 const undoTracking = new AsyncLocalStorage<boolean>();
 

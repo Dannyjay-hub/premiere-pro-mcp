@@ -73,6 +73,7 @@ import {
   isToolPermitted,
   resolveCapabilities,
 } from "./security/index.js";
+import { capabilitiesForToolInvocation } from "./security/capabilities.js";
 import { EXTENDSCRIPT_REFERENCE } from "./resources/extendscript-reference.js";
 import { getLiveContextResources } from "./resources/live-context-resources.js";
 import { PROJECT_CONTEXT_RESOURCE } from "./context/project-context-resource.js";
@@ -424,8 +425,11 @@ export function createServer(
       async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          // Only tools that may change the project record the undo position.
-          const result = await runWithUndoTracking(annotations.readOnlyHint !== true, () => guardedHandler(args as Record<string, unknown>));
+          // Only calls that need the edit capability record the undo position;
+          // the capability map classifies every tool and action, unlike the
+          // read-only naming hints.
+          const tracksUndo = capabilitiesForToolInvocation(name, args).includes("edit");
+          const result = await runWithUndoTracking(tracksUndo, () => guardedHandler(args as Record<string, unknown>));
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",

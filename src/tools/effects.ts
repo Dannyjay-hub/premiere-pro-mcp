@@ -160,9 +160,10 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
           `}
           if (__BUILT_IN_COMPONENTS[effectName]) return __error(effectName + " is a built-in clip component, not an effect, and cannot be removed.");
           var removal = __removeClipComponents(result, function (name, index) { return index === chosen; });
+          if (removal.unsupported) return __error("Capability error: " + removal.unsupported + " Nothing was removed; remove effects in Effect Controls.");
           if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for " + effectName + ". The effect was not removed; remove it in Effect Controls.");
           if (removal.failures.length) return __error("Premiere could not remove " + effectName + " from this clip; it is still present. Inspect Effect Controls.");
-          if (!removal.verified) return __error("Premiere reported removing " + effectName + " but the clip's components read back as " + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          if (!removal.verified) return __error((removal.remaining.join("|") === removal.before.join("|") ? "Premiere's removal did not take effect: the clip still has " : "Premiere's removal did not take effect as expected: the clip's components read back as ") + removal.remaining.join(", ") + ". Inspect Effect Controls.");
           return __result({ removed: true, verified: true, effect: effectName, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);

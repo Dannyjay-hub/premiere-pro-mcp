@@ -160,8 +160,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
 
     undo: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo the most recent Premiere project action(s) through QE, verified step by step against Premiere's undo-stack index. Undo history is project-wide." +
-        " Only actions Premiere records are undoable: QE edits such as razor, insert, overwrite, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Results without undoSteps (most property, marker and keyframe writes) added nothing to the undo history, and undo would reverse an earlier action instead.",
+        "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo the most recent Premiere project action(s) through QE, checked step by step against Premiere's undo-stack position (stackVerified; the timeline itself is not read back). Undo history is project-wide." +
+        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Results without undoSteps (most property, marker and keyframe writes) added nothing to the undo history, and undo would reverse an earlier action instead.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -172,7 +172,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           expected_undo_stack_index: {
             type: "number",
             description:
-              "Optional safety guard: the undoStackIndex a tool result reported right after the call you want to reverse. The step is refused, with nothing changed, if Premiere's undo stack has moved since.",
+              "Optional safety guard: the undoStackIndex a tool result reported right after the call you want to reverse. The step is refused, with nothing changed, when Premiere's undo-stack position differs from it. This compares the position only: if actions were undone and new ones recorded since, the position can match again and undo would reverse the newer action.",
           },
         },
       },
@@ -192,15 +192,11 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           if (expectedIndex !== null) {
             var currentIndex = __readUndoIndex();
             if (currentIndex !== expectedIndex) {
-              return __jsonStringify({ success: false, error: "Premiere's undo stack is at " + currentIndex + ", not the expected " + expectedIndex + ": other actions were recorded since that call, so undo was not attempted.", data: { undoStackIndex: currentIndex, expectedUndoStackIndex: expectedIndex } });
+              return __jsonStringify({ success: false, error: "Premiere's undo stack is at " + currentIndex + ", not the expected " + expectedIndex + ": the undo-stack position changed since that call (actions were undone or recorded), so undo was not attempted.", data: { undoStackIndex: currentIndex, expectedUndoStackIndex: expectedIndex } });
             }
           }
           var outcome = __qeUndoSteps("undo", ${count});
-          var summary = { undone: outcome.done, undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index };
-          if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
-          summary.verified = true;
-          summary.scope = "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched.";
-          return __result(summary);
+          return __undoStepsResult(outcome, "undone");
         `);
         return sendCommand(script, bridgeOptions);
       },

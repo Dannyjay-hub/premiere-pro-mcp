@@ -950,9 +950,10 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           for (var i = 0; i < result.clip.components.numItems; i++) if (result.clip.components[i].displayName === effectName) found++;
           if (!found) return __error("Effect not found: " + effectName);
           var removal = __removeClipComponents(result, function (name) { return name === effectName; });
+          if (removal.unsupported) return __error("Capability error: " + removal.unsupported + " Nothing was removed; remove effects in Effect Controls.");
           if (removal.failures.length && removal.nothingRemoved) return __error("Capability error: Premiere exposes neither Component.remove() nor a matching QE component for every " + effectName + " instance. No matching components were removed; remove them in Effect Controls.");
           if (removal.failures.length) return __error("The clip changed: Premiere removed " + removal.removed.length + " of " + found + " " + effectName + " instance(s); " + removal.failures.length + " remain. Inspect Effect Controls.");
-          if (!removal.verified) return __error("Premiere reported removing " + effectName + " but the clip's components read back as " + removal.remaining.join(", ") + ". Inspect Effect Controls.");
+          if (!removal.verified) return __error((removal.remaining.join("|") === removal.before.join("|") ? "Premiere's removal did not take effect: the clip still has " : "Premiere's removal did not take effect as expected: the clip's components read back as ") + removal.remaining.join(", ") + ". Inspect Effect Controls.");
           return __result({ removed: removal.removed.length, verified: true, effect: effectName, remaining: removal.remaining });
         `);
         return sendCommand(script, bridgeOptions);
