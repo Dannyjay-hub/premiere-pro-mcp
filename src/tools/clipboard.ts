@@ -178,7 +178,7 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
       var catalog = __getQeEffectCatalog(trackType);
       if (!catalog.ok) return null;
       for (var ei = 0; ei < catalog.effects.numItems; ei++) {
-        if (catalog.effects[ei].name === name) return catalog.effects[ei];
+        if (catalog.effects[ei].name === name) return __qeEffectObject(trackType, catalog.effects[ei]);
       }
       return null;
     }
@@ -973,7 +973,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           for (var j = 0; j < matches.length; j++) {
             var component = clip.components[matches[j]];
             if (!canRemoveComponent(component)) {
-              return __error("Premiere does not expose Component.remove() for \"" + effectName + "\". No matching components were removed. No safe targeted QE fallback exists; remove it manually in Effect Controls.");
+              return __error("Premiere does not expose Component.remove() for \\"" + effectName + "\\". No matching components were removed. No safe targeted QE fallback exists; remove it manually in Effect Controls.");
             }
           }
 
@@ -984,7 +984,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
               component.remove();
               removed++;
             } catch (e) {
-              return __error("Premiere could not remove \"" + effectName + "\" after removing " + removed + " matching component(s): " + e.toString() + ". Inspect Effect Controls before retrying.");
+              return __error("Premiere could not remove \\"" + effectName + "\\" after removing " + removed + " matching component(s): " + e.toString() + ". Inspect Effect Controls before retrying.");
             }
           }
 

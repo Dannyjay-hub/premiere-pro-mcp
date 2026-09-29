@@ -79,7 +79,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
               return __error("Could not add ${args.track_type} track(s): " + publicFailure + ". QE addTracks is unavailable on this Premiere build.");
             }
             try {
-              qeSeq.addTracks(${isVideo ? count : 0}, ${isVideo ? 0 : count}, 0, 0);
+              // addTracks(videoCount, videoInsertIndex, audioCount, audioType, audioInsertIndex, submixCount, submixType); append stereo audio.
+              qeSeq.addTracks(${isVideo ? count : 0}, seq.videoTracks.numTracks, ${isVideo ? 0 : count}, 1, seq.audioTracks.numTracks, 0, 0);
             } catch (qeError) {
               return __error("Could not add ${args.track_type} track(s): public DOM failed (" + publicFailure + ") and QE addTracks failed (" + qeError.toString() + ").");
             }
@@ -103,7 +104,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
     },
 
     delete_track: {
-      description: "Delete a video or audio track from the active sequence",
+      description:
+        "EXPERIMENTAL (undocumented QE DOM: removeVideoTrack/removeAudioTrack). Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -116,22 +118,82 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Index of the track to delete (0-based)",
           },
+          force: {
+            type: "boolean",
+            description: "Also delete a track that holds clips, removing those clips (default: false)",
+          },
         },
         required: ["track_type", "track_index"],
       },
-      handler: async (args: { track_type: string; track_index: number }) => {
+      handler: async (args: { track_type: string; track_index: number; force?: boolean }) => {
+        if (!Number.isInteger(args.track_index) || args.track_index < 0) {
+          return { success: false, error: "track_index must be a non-negative integer" };
+        }
+        const video = args.track_type === "video";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          
-          ${args.track_type === "video"
-            ? `if (${args.track_index} >= seq.videoTracks.numTracks) return __error("Track index out of range");
-               seq.deleteVideoTrackAt(${args.track_index});`
-            : `if (${args.track_index} >= seq.audioTracks.numTracks) return __error("Track index out of range");
-               seq.deleteAudioTrackAt(${args.track_index});`
+          var tracks = ${video ? "seq.videoTracks" : "seq.audioTracks"};
+          var before = tracks.numTracks;
+          if (${args.track_index} >= before) return __error("Track index out of range");
+          if (before <= 1) return __error("A sequence keeps at least one ${args.track_type} track");
+          // Identity of every track before the delete: clip IDs, custom name and
+          // lock/mute state. Premiere's default names are a prefix plus the track's
+          // position ("Video 3", "Vidéo 3") and renumber when a track goes. The
+          // prefix is learned from the tracks whose number matches their position
+          // before the delete, then that prefix is ignored at any number, before
+          // and after, so a custom name such as "Cam 4" is compared the same way
+          // on both sides even when its track moves.
+          var numberedName = function (name) {
+            var match = /^(.*[^0-9\\s])\\s*([0-9]+)$/.exec(name);
+            return match ? { prefix: match[1], number: Number(match[2]) } : null;
+          };
+          var defaultPrefixes = {};
+          for (var dp = 0; dp < tracks.numTracks; dp++) {
+            var learned = numberedName(String(tracks[dp].name || ""));
+            if (learned && learned.number === dp + 1) defaultPrefixes[learned.prefix] = true;
           }
-          
-          return __result({ deleted: true, trackType: "${args.track_type}", trackIndex: ${args.track_index} });
+          var trackSignature = function (track) {
+            var ids = [];
+            for (var c = 0; c < track.clips.numItems; c++) ids.push(String(track.clips[c].nodeId));
+            var name = String(track.name || "");
+            var numbered = numberedName(name);
+            if (numbered && defaultPrefixes[numbered.prefix]) name = "";
+            var locked = null, muted = null;
+            try { locked = !!track.isLocked(); } catch (eLocked) {}
+            try { muted = !!track.isMuted(); } catch (eMuted) {}
+            return ids.join(",") + "|" + name + "|" + locked + "|" + muted;
+          };
+          var signaturesOf = function (list) {
+            var out = [];
+            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t]));
+            return out;
+          };
+          var beforeSignatures = signaturesOf(tracks);
+          var deletedName = String(tracks[${args.track_index}].name || "");
+          var clipCount = tracks[${args.track_index}].clips.numItems;
+          if (clipCount > 0 && ${args.force === true ? "false" : "true"}) {
+            return __error("${video ? "V" : "A"}${args.track_index + 1} holds " + clipCount + " clip(s); pass force: true to delete the track and those clips.");
+          }
+          // Sequence.deleteVideoTrackAt does not exist (live 25.2); QE removes tracks.
+          app.enableQE();
+          var qeSeq = qe.project.getActiveSequence();
+          if (!qeSeq) return __error("QE could not resolve the active sequence");
+          qeSeq.${video ? "removeVideoTrack" : "removeAudioTrack"}(${args.track_index});
+          var after = (${video ? "seq.videoTracks" : "seq.audioTracks"}).numTracks;
+          if (after !== before - 1) return __error("Premiere did not remove the track (" + before + " -> " + after + " ${args.track_type} tracks)");
+          var expected = beforeSignatures.slice(0, ${args.track_index}).concat(beforeSignatures.slice(${args.track_index + 1}));
+          var afterSignatures = signaturesOf(${video ? "seq.videoTracks" : "seq.audioTracks"});
+          if (afterSignatures.join(";") !== expected.join(";")) {
+            var removedIndex = -1;
+            for (var r = 0; r < before; r++) {
+              var candidate = beforeSignatures.slice(0, r).concat(beforeSignatures.slice(r + 1));
+              if (candidate.join(";") === afterSignatures.join(";")) { removedIndex = r; break; }
+            }
+            return __jsonStringify({ success: false, error: "The timeline changed: Premiere removed a ${args.track_type} track, but not ${video ? "V" : "A"}${args.track_index + 1}" + (removedIndex >= 0 ? " (it removed ${video ? "V" : "A"}" + (removedIndex + 1) + " instead)" : " (the remaining tracks do not match any single-track removal)") + ". Inspect the sequence.", data: { timelineChanged: true, requestedTrackIndex: ${args.track_index}, removedTrackIndex: removedIndex >= 0 ? removedIndex : null } });
+          }
+          return __result({ deleted: true, verified: true, trackType: "${args.track_type}", trackIndex: ${args.track_index}, trackName: deletedName, clipsRemoved: clipCount, remainingTracks: after,
+            verification: "the remaining tracks match the track list before the delete with this track taken out (clip IDs, custom names, lock and mute state)" });
         `);
         return sendCommand(script, bridgeOptions);
       },

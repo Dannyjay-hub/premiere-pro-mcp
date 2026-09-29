@@ -132,6 +132,7 @@ export interface BuildProjectIntakeOptions {
 
 const REQUIRED_EVIDENCE = new Set(["extension", "frame_rate", "offline", "proxy", "path"]);
 const ITEM_TYPES = new Set(["clip", "bin", "sequence", "other"]);
+const NON_PICTURE_EXTENSIONS = new Set(["wav", "mp3", "aif", "aiff", "aac", "m4a", "flac", "ogg", "srt", "vtt", "scc", "stl"]);
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -541,7 +542,9 @@ export function buildProjectIntakeReport(
       }
     }
 
-    if (template.allowedFrameRates.length || isRequired(template, "frame_rate")) {
+    // Audio and caption files have no picture rate (live: music-bed.wav and an
+    // imported .srt were reported FRAME_RATE_UNSUPPORTED errors).
+    if ((template.allowedFrameRates.length || isRequired(template, "frame_rate")) && !NON_PICTURE_EXTENSIONS.has(extension ?? "")) {
       if (item.frameRateUnsupported === true) {
         requiredUnavailable.add("frame_rate");
         pushFinding(findings, {

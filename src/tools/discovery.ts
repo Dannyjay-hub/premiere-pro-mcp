@@ -74,7 +74,7 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
             var entry = {
               nodeId: item.nodeId,
               name: item.name,
-              type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 3 ? "sequence" : "unknown",
+              type: __projectItemKind(item),
               mediaPath: ""
             };
             try {
@@ -105,7 +105,7 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
               id: seq.sequenceID,
               videoTracks: seq.videoTracks.numTracks,
               audioTracks: seq.audioTracks.numTracks,
-              inPoint: __ticksToSeconds(seq.zeroPoint.ticks),
+              inPoint: __ticksToSeconds(seq.zeroPoint), // zeroPoint is a ticks string, not a Time
               end: __ticksToSeconds(seq.end)
             });
           }
@@ -305,7 +305,7 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
           var info = {
             nodeId: item.nodeId,
             name: item.name,
-            type: item.type === 1 ? "clip" : item.type === 2 ? "bin" : item.type === 3 ? "sequence" : "unknown",
+            type: __projectItemKind(item),
             mediaPath: ""
           };
           try {
@@ -355,6 +355,7 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
               settings.audioChannelType = seqSettings.audioChannelType;
               settings.audioDisplayFormat = seqSettings.audioDisplayFormat;
               settings.audioSampleRate = seqSettings.audioSampleRate;
+              settings.audioSampleRateHz = __sampleRateHz(seqSettings.audioSampleRate);
               settings.videoDisplayFormat = seqSettings.videoDisplayFormat;
               settings.videoFieldType = seqSettings.videoFieldType;
               settings.videoFrameRate = seqSettings.videoFrameRate;

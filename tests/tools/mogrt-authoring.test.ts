@@ -13,7 +13,8 @@ describe("MOGRT authoring tools", () => {
         scripts.push(script);
         return { success: true, data: { exportRequested: true, hostExportReturn: false } };
       },
-      artifactStatus: () => ({ exists: false, size_bytes: null, zip_header_valid: false }),
+      artifactStatus: () => ({ exists: true, size_bytes: 56566, zip_header_valid: true }),
+      artifactWaitMs: 0,
       operationIdFactory: () => "operation-1",
     });
 
@@ -44,11 +45,26 @@ describe("MOGRT authoring tools", () => {
     expect(scripts[0]).toContain("addToMotionGraphicsTemplate");
     expect(scripts[0]).toContain("Open a saved After Effects project inside approved_workspace_path");
     expect(scripts[0]).toContain("existing.exists");
+    // A font that is not synced from Adobe Fonts opens a modal that blocks the export (live).
+    expect(scripts[0]).toContain("app.beginSuppressDialogs()");
 
     await expect(tools.create_mogrt_recipe.handler({
       preview_token: "preview-token",
       confirm_export: true,
     })).rejects.toThrow("already used");
+  });
+
+  it("fails when After Effects writes no .mogrt (live: reported success with hostExportReturn false)", async () => {
+    const tools = getMogrtAuthoringTools(bridgeOptions, {
+      directoryExists: () => true,
+      tokenFactory: () => "t-missing",
+      send: async () => ({ success: true, data: { exportRequested: true, hostExportReturn: false } }),
+      artifactStatus: () => ({ exists: false, size_bytes: null, zip_header_valid: false }),
+      artifactWaitMs: 0,
+    });
+    await tools.preview_mogrt_recipe.handler({ template_name: "Speaker", headline: "Keynote", approved_workspace_path: "D:/Approved", output_directory: "D:/Approved/templates" });
+    await expect(tools.create_mogrt_recipe.handler({ preview_token: "t-missing", confirm_export: true }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("no valid .mogrt was written") });
   });
 
   it("fails closed when an output path leaves its approved workspace", async () => {

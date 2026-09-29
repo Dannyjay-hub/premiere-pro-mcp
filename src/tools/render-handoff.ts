@@ -46,11 +46,24 @@ function contained(root: string, candidate: string): string {
   return resolved;
 }
 
+/**
+ * The Premiere project is only compared with the project Premiere has open; the
+ * handoff never reads or writes it, so it may live outside the workspace (a
+ * user's project normally does). It must still be an absolute, existing file.
+ */
+function existingProject(candidate: string): string {
+  if (!path.isAbsolute(candidate)) throw new Error("Paths must be absolute");
+  const resolved = realpathSync(candidate);
+  if (!statSync(resolved).isFile()) throw new Error("premiere_project_path must be a project file");
+  return resolved;
+}
+
 function fingerprint(plan: Pick<Plan, "workspace" | "outputPath" | "aeProjectPath" | "premiereProjectPath">): string {
-  for (const candidate of [plan.outputPath, plan.aeProjectPath, plan.premiereProjectPath]) {
+  for (const candidate of [plan.outputPath, plan.aeProjectPath]) {
     if (contained(plan.workspace, candidate) !== candidate) throw new Error("A previewed path changed; preview again");
     if (!statSync(candidate).isFile()) throw new Error("Handoff paths must be regular files");
   }
+  if (existingProject(plan.premiereProjectPath) !== plan.premiereProjectPath) throw new Error("A previewed path changed; preview again");
   const stat = statSync(plan.outputPath, { bigint: true });
   if (stat.size <= 0n) throw new Error("Rendered media must be nonempty");
   return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
@@ -125,7 +138,7 @@ export function getRenderHandoffTools(options: BridgeOptions, dependencies: Depe
         approved_workspace_path: { type: "string", description: "Existing absolute workspace containing both saved projects and the rendered media." },
         output_path: { type: "string", description: "Existing completed .mov, .mp4, .mxf, .avi or .wav render; image sequences are not supported." },
         ae_project_path: { type: "string", description: "Exact open, saved After Effects project path." },
-        premiere_project_path: { type: "string", description: "Exact open, saved Premiere project path." },
+        premiere_project_path: { type: "string", description: "Exact open, saved Premiere project path. It may be outside approved_workspace_path: it is only compared with the project Premiere has open." },
         queue_item_index: { type: "integer", minimum: 1, maximum: 10000, description: "One-based AE render queue item index, as returned by enqueue_after_effects_render." },
         target_bin_id: { type: "string", description: "Exact node ID of an existing destination bin, never a name." },
       }, required: keys },
@@ -143,7 +156,7 @@ export function getRenderHandoffTools(options: BridgeOptions, dependencies: Depe
         const plan: Plan = {
           workspace, outputPath: contained(workspace, text(input.output_path, "output_path")),
           aeProjectPath: contained(workspace, text(input.ae_project_path, "ae_project_path")),
-          premiereProjectPath: contained(workspace, text(input.premiere_project_path, "premiere_project_path")),
+          premiereProjectPath: existingProject(text(input.premiere_project_path, "premiere_project_path")),
           queueItemIndex: index, targetBinId: text(input.target_bin_id, "target_bin_id"),
           fingerprint: "", projectId: "", binName: "", compositionId: "",
         };

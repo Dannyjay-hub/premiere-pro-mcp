@@ -129,6 +129,8 @@ type DraftCue = {
   aligned_to_shot: boolean;
   stack_slot: number;
   review_stack: boolean;
+  /** Set on the second and later parts of a split sentence: keep its casing. */
+  continuation?: boolean;
 };
 
 function fail(message: string): never {
@@ -191,6 +193,7 @@ function joinCueText(words: readonly TranscriptWord[]): string {
 }
 
 function renderCueText(cue: DraftCue, mergeGap: number): string {
+  if (cue.continuation) return cue.words.map((word) => word.text.trim()).filter(Boolean).join(" ");
   if (cue.merged_cue_count <= 1) return joinCueText(cue.words);
   const parts: string[] = [];
   let current: TranscriptWord[] = [];
@@ -302,6 +305,69 @@ function mergeMicroCues(cues: DraftCue[], minSoloSeconds: number, combineGapSeco
   return merged;
 }
 
+/**
+ * Split cues that are too long to read as one caption. Live test: a welcome
+ * speech produced 139- and 150-character cues held for 10 s. Breaks prefer the
+ * end of a clause (punctuation) once the part is reasonably full, and each part
+ * keeps its own word timings.
+ */
+const DANGLING_WORDS = new Set([
+  "a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "by", "from", "and", "or", "but", "as",
+  "that", "this", "our", "my", "your", "their", "its", "i", "we", "is", "are", "be",
+]);
+
+function splitLongCues(cues: DraftCue[], maxChars: number, maxSeconds: number): DraftCue[] {
+  const out: DraftCue[] = [];
+  for (const cue of cues) {
+    if (joinCueText(cue.words).length <= maxChars && cue.end_seconds - cue.start_seconds <= maxSeconds + EPSILON) {
+      out.push(cue);
+      continue;
+    }
+    // Aim for evenly sized parts instead of filling each to the limit, so a
+    // 140-character sentence becomes two ~70-character captions, not 83 + 57.
+    const totalChars = joinCueText(cue.words).length;
+    const parts = Math.max(Math.ceil(totalChars / maxChars), Math.ceil((cue.end_seconds - cue.start_seconds) / maxSeconds));
+    const targetChars = Math.min(maxChars, Math.ceil(totalChars / parts) + 8);
+    let part: TranscriptWord[] = [];
+    let clauseBreak = -1;
+    let first = true;
+    const flush = (words: TranscriptWord[]) => {
+      if (!words.length) return;
+      out.push({
+        ...cue,
+        words,
+        start_seconds: words[0].start_seconds,
+        end_seconds: words[words.length - 1].end_seconds,
+        continuation: cue.continuation || !first,
+      });
+      first = false;
+    };
+    for (const word of cue.words) {
+      const candidate = [...part, word];
+      const tooLong = joinCueText(candidate).length > targetChars;
+      const tooSlow = part.length > 0 && word.end_seconds - part[0].start_seconds > maxSeconds + EPSILON;
+      if (part.length && (tooLong || tooSlow)) {
+        if (clauseBreak >= 0 && joinCueText(part.slice(0, clauseBreak + 1)).length >= targetChars * 0.5) {
+          flush(part.slice(0, clauseBreak + 1));
+          part = part.slice(clauseBreak + 1);
+        } else {
+          // Never leave a caption hanging on a function word ("…welcome to").
+          let keep = part.length;
+          while (keep > 1 && DANGLING_WORDS.has(part[keep - 1].text.trim().toLowerCase())) keep -= 1;
+          flush(part.slice(0, keep));
+          part = part.slice(keep);
+        }
+        clauseBreak = -1;
+        part.forEach((kept, index) => { if (/[,.;:!?]$/.test(kept.text.trim())) clauseBreak = index; });
+      }
+      part.push(word);
+      if (/[,.;:!?]$/.test(word.text.trim())) clauseBreak = part.length - 1;
+    }
+    flush(part);
+  }
+  return out;
+}
+
 function assignStacks(cues: DraftCue[], warnings: string[]): number {
   const ordered = [...cues].sort((left, right) => left.start_seconds - right.start_seconds || left.end_seconds - right.end_seconds);
   let stacked = 0;
@@ -355,6 +421,7 @@ export function planReactionCaptions(input: Record<string, unknown>): ReactionCa
   rejectUnknownKeys(input, [
     "word_timeline", "speaker_palette", "shot_changes", "frame_rate",
     "merge_gap_seconds", "min_solo_cue_seconds", "combine_gap_seconds", "min_hold_seconds",
+    "max_cue_chars", "max_cue_seconds",
   ], "arguments");
   const timeline: WordTimeline = validateWordTimeline(input.word_timeline);
   const palette = parseSpeakerPalette(input.speaker_palette);
@@ -364,10 +431,12 @@ export function planReactionCaptions(input: Record<string, unknown>): ReactionCa
   const minSolo = boundedNumber(input.min_solo_cue_seconds, "min_solo_cue_seconds", 0.15, 3, 0.45);
   const combineGap = boundedNumber(input.combine_gap_seconds, "combine_gap_seconds", 0, 5, 0.8);
   const minHold = boundedNumber(input.min_hold_seconds, "min_hold_seconds", 0.15, 3, 0.35);
+  const maxChars = boundedNumber(input.max_cue_chars, "max_cue_chars", 16, 400, 84, true);
+  const maxSeconds = boundedNumber(input.max_cue_seconds, "max_cue_seconds", 1, 30, 6);
   const warnings: string[] = [];
 
   const grouped = groupSpeakerCues(timeline.words, mergeGap);
-  const combined = mergeMicroCues(grouped, minSolo, combineGap);
+  const combined = splitLongCues(mergeMicroCues(grouped, minSolo, combineGap), maxChars, maxSeconds);
   alignCuesToShots(combined, shots, minHold, warnings);
   const stackedOverlapCount = assignStacks(combined, warnings);
 
@@ -412,6 +481,7 @@ export function planReactionCaptions(input: Record<string, unknown>): ReactionCa
       "Overlapping different-speaker cues stack: the earlier in-point stays on the main (bottom) line; later talkers move up one slot.",
       "A caption never receives a guessed color. Missing palette entries stay uncertain until the editor names the speaker.",
       "Labeled shot changes clamp a matching speaker's in-point forward when that still leaves a readable hold.",
+      "Cues longer than max_cue_chars (default 84, two 42-character lines) or max_cue_seconds (default 6) split at word boundaries, preferring the end of a clause.",
     ],
     applied: false,
     apply_boundary: applyBoundary(),

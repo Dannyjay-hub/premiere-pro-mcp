@@ -126,9 +126,21 @@ export function buildFilmEditorialPacket(document: ProjectContextDocument, raw: 
     const source = sources.get(occurrence.sourceId);
     const item = coverage.get(occurrence.coverageId);
     const record = evidence.get(occurrence.evidenceId);
-    if (!source || !item || item.sourceId !== occurrence.sourceId || !record || record.kind !== "timeline" ||
-        record.timelineItemId !== occurrence.id || record.sourceId !== occurrence.sourceId || record.sequenceId !== occurrence.sequenceId ||
-        record.timelineRevision !== occurrence.timelineRevision || (record.sourceRevision !== undefined && record.sourceRevision !== source.sourceRevision)) throw new Error(`Occurrence identity/revision mismatch: ${occurrence.id}`);
+    // Name the failing check: the combined "identity/revision mismatch" gave callers
+    // nothing to fix (live: occurrence id must be the evidence's timelineItemId).
+    const mismatch =
+      !source ? `sourceId ${occurrence.sourceId} is not in sources`
+      : !item ? `coverageId ${occurrence.coverageId} is not in coverage`
+      : item.sourceId !== occurrence.sourceId ? `coverage ${item.id} is for source ${item.sourceId}, not ${occurrence.sourceId}`
+      : !record ? `evidenceId ${occurrence.evidenceId} is not in the captured context`
+      : record.kind !== "timeline" ? `evidence ${occurrence.evidenceId} is a ${record.kind} record, not a timeline record`
+      : record.timelineItemId !== occurrence.id ? `id must be the evidence's timelineItemId (${record.timelineItemId})`
+      : record.sourceId !== occurrence.sourceId ? `evidence source is ${record.sourceId}, not ${occurrence.sourceId}`
+      : record.sequenceId !== occurrence.sequenceId ? `evidence sequence is ${record.sequenceId}, not ${occurrence.sequenceId}`
+      : record.timelineRevision !== occurrence.timelineRevision ? `timelineRevision must be the evidence's timelineItemRevision (${record.timelineRevision})`
+      : record.sourceRevision !== undefined && record.sourceRevision !== source.sourceRevision ? `evidence sourceRevision ${record.sourceRevision} differs from the source's ${source.sourceRevision}`
+      : null;
+    if (mismatch || !source || !item || !record) throw new Error(`Occurrence identity/revision mismatch: ${occurrence.id}: ${mismatch}`);
     validRange(occurrence.sourceRange, occurrence.id, source.durationFrames);
     validRange(occurrence.timelineRange, occurrence.id);
     const secondsPerFrame = occurrence.timebase.denominator / occurrence.timebase.numerator;

@@ -170,3 +170,4 @@ describe("SERVER_VERSION", () => {
     expect(SERVER_VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
+

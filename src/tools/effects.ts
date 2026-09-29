@@ -52,7 +52,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === effectName) {
-                qeEffect = effects[i];
+                qeEffect = __qeEffectObject("video", effects[i]);
                 break;
               }
             }
@@ -107,7 +107,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === effectName) {
-                qeEffect = effects[i];
+                qeEffect = __qeEffectObject("audio", effects[i]);
                 break;
               }
             }
@@ -155,7 +155,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
               if (!component || typeof component.remove !== "function") {
                 return {
                   removed: false,
-                  error: "Premiere does not expose Component.remove() for \"" + effectName + "\". The effect was not removed. No safe targeted QE fallback exists; remove it manually in Effect Controls."
+                  error: "Premiere does not expose Component.remove() for \\"" + effectName + "\\". The effect was not removed. No safe targeted QE fallback exists; remove it manually in Effect Controls."
                 };
               }
               component.remove();
@@ -163,7 +163,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             } catch (e) {
               return {
                 removed: false,
-                error: "Premiere could not remove \"" + effectName + "\": " + e.toString() + ". The effect may still be present; inspect Effect Controls."
+                error: "Premiere could not remove \\"" + effectName + "\\": " + e.toString() + ". The effect may still be present; inspect Effect Controls."
               };
             }
           }
@@ -339,7 +339,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             var effects = effectCatalog.effects;
             for (var i = 0; i < effects.numItems; i++) {
               if (effects[i].name === "Lumetri Color") {
-                qeClip.addVideoEffect(effects[i]);
+                qeClip.addVideoEffect(__qeEffectObject("video", effects[i]));
                 break;
               }
             }
@@ -373,7 +373,8 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
     },
 
     apply_lut: {
-      description: "Apply a LUT file to a clip via Lumetri Color",
+      description:
+        "Unavailable on the CEP backend: Premiere's scripting API cannot load a LUT file into Lumetri Color. Its Input LUT and Look parameters are menu indexes over a curated set of bundled looks, and writing a file path to the LUT asset parameters is accepted but not rendered (seen on Premiere Pro 25.2.3, macOS, by comparing exported frames with the same LUT applied by ffmpeg; other builds were not tested). Fails before changing the clip. Apply the LUT in Lumetri Color > Creative > Look (Browse...) instead.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -389,61 +390,12 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
         required: ["node_id", "lut_path"],
       },
       handler: async (args: { node_id: string; lut_path: string }) => {
-        const script = buildToolScript(`
-          app.enableQE();
-          var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          
-          var clip = result.clip;
-          
-          // Find or apply Lumetri Color
-          var lumetriComp = null;
-          for (var i = 0; i < clip.components.numItems; i++) {
-            if (clip.components[i].displayName === "Lumetri Color") {
-              lumetriComp = clip.components[i];
-              break;
-            }
-          }
-          
-          if (!lumetriComp) {
-            var qeSeq = qe.project.getActiveSequence();
-            if (!qeSeq) return __error("No active sequence (QE); nothing was changed.");
-            var qeTrack = qeSeq.getVideoTrackAt(result.trackIndex);
-            // QE track items include gaps, so the DOM clip index is not a QE index.
-            var qeClip = __findQeClipByDomClip(qeTrack, clip);
-            if (!qeClip) return __error("Could not match the QE clip for " + clip.name + " by timeline start; nothing was changed.");
-            var effectCatalog = __getQeEffectCatalog("video");
-            if (!effectCatalog.ok) return __error(effectCatalog.error);
-            var effects = effectCatalog.effects;
-            for (var i = 0; i < effects.numItems; i++) {
-              if (effects[i].name === "Lumetri Color") {
-                qeClip.addVideoEffect(effects[i]);
-                break;
-              }
-            }
-            // Re-find the component
-            for (var i = 0; i < clip.components.numItems; i++) {
-              if (clip.components[i].displayName === "Lumetri Color") {
-                lumetriComp = clip.components[i];
-                break;
-              }
-            }
-          }
-          
-          if (!lumetriComp) return __error("Could not apply Lumetri Color effect");
-          
-          // Set the LUT path
-          for (var p = 0; p < lumetriComp.properties.numItems; p++) {
-            var prop = lumetriComp.properties[p];
-            if (prop.displayName === "Input LUT") {
-              prop.setValue("${escapeForExtendScript(args.lut_path)}", true);
-              break;
-            }
-          }
-          
-          return __result({ lutApplied: true, clipName: clip.name, lutPath: "${escapeForExtendScript(args.lut_path)}" });
-        `);
-        return sendCommand(script, bridgeOptions);
+        void args;
+        return {
+          success: false,
+          error:
+            "Premiere's scripting API cannot apply a LUT file: Lumetri's Input LUT and Look are menu indexes, and a file path written to the LUT asset parameters is accepted but not rendered (seen on Premiere Pro 25.2.3, macOS; other builds were not tested). Nothing was changed. Apply the LUT in Lumetri Color > Creative > Look > Browse..., or use color_correct for exposure, contrast, temperature, tint, and saturation.",
+        };
       },
     },
 
@@ -579,7 +531,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
           var found = false;
           for (var i = 0; i < effects.numItems; i++) {
             if (effects[i].name === "Warp Stabilizer") {
-              qeClip.addVideoEffect(effects[i]);
+              qeClip.addVideoEffect(__qeEffectObject("video", effects[i]));
               found = true;
               break;
             }

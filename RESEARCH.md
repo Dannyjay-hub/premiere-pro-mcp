@@ -436,12 +436,63 @@ untouched.
 35. ✅ **`get/set_workspace`** — (workspace.ts)
 36. ✅ **LLM instructions resource** — `config://premiere-instructions` + `config://extendscript-reference`
 
+### Verified behaviour on Premiere Pro 25.2 and After Effects 25.1 (2026-09)
+
+Found by running every registered tool live against real footage (a 121.6 s, 25 fps
+event recap) and checking results independently — exported frames against the source
+with SSIM, audio by transcription and EBU R128, EDL timecodes by hand, and saved
+project files — rather than trusting tool readback. Each item is fixed in the tools and
+covered by a fake-host test.
+
+- **Undo is scriptable through QE.** `app.project.undo` does not exist, but
+  `qe.project.undo()`/`redo()` work and `qe.project.undoStackIndex()` moves by exactly
+  one per step, so undo can be verified. Most DOM property and marker writes add no
+  undo entries; QE edits add several (a razor plus relink added 6–8).
+- **Lift is `qeSeq.left()`.** `qeSeq.lift()` does not exist; `extract()` does.
+- **Clip removal does not ripple.** `TrackItem.remove(true, …)` leaves the gap (as on
+  26.x) and never takes the linked partner; ripple removals reuse the explicit
+  sync-locked ripple from `ripple_delete`.
+- **QE track items include empty gaps**, so QE lookups by DOM clip index hit the gap
+  after any gap on the track; rename uses the writable `TrackItem.name` instead.
+- **Tracks are removed with `qeSeq.removeVideoTrack(i)`/`removeAudioTrack(i)`**;
+  `Sequence.deleteVideoTrackAt` does not exist.
+- **Colour parameters** return `getValue()` as a packed 64-bit integer a JS double
+  cannot hold; `getColorValue()` returns `[a, r, g, b]`.
+- **`videoPixelAspectRatio` is read-only** and reads as `"1:1"`.
+- **Auto Reframe keeps the source height** (9:16 of 1080p gives 607×1080); setting
+  the requested frame size afterwards is honoured and Auto Reframe refits.
+- **The work area cannot be set by script**; export ranges use
+  `app.encoder.ENCODE_IN_TO_OUT` with sequence in/out.
+- **AME folder codes decide the container.** Presets named "H264 …" in the
+  `…_4D6F6F56` ("MooV") folder write QuickTime; the H.264 MP4 exporter is
+  `…_48323634`. `seq.getExportFileExtension(preset)` reports the real extension.
+- **`app.encoder.encodeFile`** takes `(input, output, preset, removeUponCompletion[,
+  startTime, stopTime])`; an extra work-area argument throws "Illegal Parameter type".
+- **Scratch disks** take `ScratchDiskType.*` constants (plain strings are ignored,
+  `project.setScratchDiskPath` throws) and are only readable from the saved `.prproj`.
+- **Project Manager options live on `app.projectManager.options`**, the destination
+  must exist, `process()` returns 0 on success, and output lands in `Copied_<project>/`.
+- **Multiple open projects:** `project.saveAs` opens the copy and closes the original;
+  `openDocument` returns false for an already-open project, and `openSequence` on one
+  of its sequences brings it to the front. `openFCPXML(xml, dir)` treats its second
+  argument as a folder prefix.
+- **`new Folder(path).exists` is true for files**; `Folder(path) instanceof Folder`
+  (without `new`) tells them apart.
+- **`export_as_fcp_xml` writes FCP7 `xmeml`**, with media as `<file><pathurl>`.
+- **Scene edit detection** puts Segmentation markers on the source project item, not
+  the sequence, duplicates them on every run, and blocks Premiere for the analysis.
+- **After Effects:** `exportAsMotionGraphicsTemplate` stops on a modal warning when a
+  text font is not from Adobe Fonts (suppressing dialogs cancels the export), and on
+  success leaves its scripting objects invalid, so nothing may touch the comp after it;
+  `RenderQueueItem` has no `index`.
+
 ### New modules added
 - **workspace.ts** (2 tools) — get_workspaces, set_workspace
 - **captions.ts** (1 tool) — create_caption_track
 - **playback.ts** (4 tools) — play_timeline, stop_playback, play_source_monitor, get_source_monitor_position
 - **project-manager.ts** (1 tool) — consolidate_and_transfer
 - **health.ts** (1 tool) — ping
+- **stock-titles.ts** (2 tools) — list_stock_titles, add_title (Premiere's bundled title templates with the text baked into a copy, since their text is not scriptable)
 
 ### Remaining unimplemented (low-value or risky)
 - `app.newProject()` — Requires UXP or has severe limitations in ExtendScript

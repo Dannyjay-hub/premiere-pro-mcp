@@ -123,10 +123,10 @@ describe("issue #541 — import_fcp_xml does not treat an empty folder as verifi
       path: "/tmp/cut.xml",
       project_path: "/tmp/dest.prproj",
     });
-    expect(script).toContain("new Folder(\"/tmp/dest.prproj\")");
+    expect(script).toContain("__isDirectory(\"/tmp/dest.prproj\")");
     expect(script).toContain("exists as a directory");
-    expect(script).toContain("openedMatches");
-    expect(script).toContain("verified: destExistsAsFile && openedMatches");
+    expect(script).toContain("savedIsFile");
+    expect(script).toContain("could not be saved to /tmp/dest.prproj");
   });
 });
 

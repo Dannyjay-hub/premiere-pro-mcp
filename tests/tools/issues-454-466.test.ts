@@ -68,11 +68,11 @@ describe("issue #458 — import_fcp_xml supplies both openFCPXML arguments", () 
       project_path: "/tmp/imported.prproj",
     });
 
-    expect(script).toContain('app.openFCPXML("/tmp/edit.xml", "/tmp/imported.prproj");');
+    expect(script).toContain('app.openFCPXML("/tmp/edit.xml", "/tmp/");');
     expect(script).toContain('var xmlFile = new File("/tmp/edit.xml");');
     expect(script).toContain("if (!xmlFile.exists)");
     expect(script).toContain("A project already exists at /tmp/imported.prproj");
-    expect(script).toContain("verified: destExistsAsFile && openedMatches");
+    expect(script).toContain("imported.saveAs(\"/tmp/imported.prproj\")");
   });
 });
 

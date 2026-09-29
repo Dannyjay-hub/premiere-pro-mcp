@@ -165,6 +165,8 @@ function watchResponseFile(resFile: string, listener: ResponseListener): () => v
 export interface BridgeOptions {
   tempDir?: string;
   timeoutMs?: number;
+  /** Host application named in timeout guidance (default "Premiere Pro"). */
+  hostLabel?: string;
   /**
    * Host-specific bootstrap contract. Premiere is the default; companion
    * bridges (such as After Effects) supply their own narrow helper surface.
@@ -176,6 +178,12 @@ export interface BridgeOptions {
    * A missing heartbeat remains compatible with older installed connectors.
    */
   failFastOnUnreadyHeartbeat?: boolean;
+  /**
+   * Treat a missing heartbeat as "connector not running" and fail at once.
+   * For connectors that always publish one (the bundled After Effects panel),
+   * so a closed host is reported immediately instead of after the full timeout.
+   */
+  requireHeartbeat?: boolean;
 }
 
 export interface BridgeHelpers {
@@ -467,19 +475,26 @@ export function getBridgeLiveness(
   }
 }
 
-function heartbeatFailure(liveness: BridgeLiveness): CommandResult | null {
+function heartbeatFailure(liveness: BridgeLiveness, hostLabel = "Premiere Pro", requireHeartbeat = false): CommandResult | null {
   if (liveness.state === "waiting") {
     return {
       success: false,
       error:
-        "The CEP connector is open but not running. In Premiere Pro, open Window > Extensions > MCP Bridge, wait for it to finish starting, then retry once.",
+        `The CEP connector is open but not running. In ${hostLabel}, open Window > Extensions > MCP Bridge, wait for it to finish starting, then retry once.`,
     };
   }
   if (liveness.state === "stale") {
     return {
       success: false,
       error:
-        "The CEP connector heartbeat is stale. Reopen Window > Extensions > MCP Bridge in Premiere Pro, dismiss any blocking dialog, and retry once after it reports running.",
+        `The CEP connector heartbeat is stale. Reopen Window > Extensions > MCP Bridge in ${hostLabel}, dismiss any blocking dialog, and retry once after it reports running.`,
+    };
+  }
+  if (requireHeartbeat && liveness.state === "unknown") {
+    return {
+      success: false,
+      error:
+        `${hostLabel} is not running its MCP connector (no heartbeat). Open ${hostLabel}, then Window > Extensions > MCP Bridge, and retry. No command was sent.`,
     };
   }
   return null;
@@ -528,8 +543,8 @@ async function sendCommandUnchecked(
   const timeoutMs = options?.timeoutMs || DEFAULT_TIMEOUT_MS;
   ensurePrivateBridgeDirectory(tempDir);
 
-  if (options?.failFastOnUnreadyHeartbeat) {
-    const failure = heartbeatFailure(getBridgeLiveness(options));
+  if (options?.failFastOnUnreadyHeartbeat || options?.requireHeartbeat) {
+    const failure = heartbeatFailure(getBridgeLiveness(options), options.hostLabel, options.requireHeartbeat === true);
     if (failure) return failure;
   }
 
@@ -546,7 +561,7 @@ async function sendCommandUnchecked(
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
 
-    return await pollForResponse(resFile, busyFile, timeoutMs);
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -599,8 +614,8 @@ async function sendRawCommandUnchecked(
   const timeoutMs = options?.timeoutMs || DEFAULT_TIMEOUT_MS;
   ensurePrivateBridgeDirectory(tempDir);
 
-  if (options?.failFastOnUnreadyHeartbeat) {
-    const failure = heartbeatFailure(getBridgeLiveness(options));
+  if (options?.failFastOnUnreadyHeartbeat || options?.requireHeartbeat) {
+    const failure = heartbeatFailure(getBridgeLiveness(options), options.hostLabel, options.requireHeartbeat === true);
     if (failure) return failure;
   }
 
@@ -614,7 +629,7 @@ async function sendRawCommandUnchecked(
     writeFileSync(stagedCmdFile, `${ensureHelpers(tempDir, options?.helpers)}
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
-    return await pollForResponse(resFile, busyFile, timeoutMs);
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -623,10 +638,14 @@ ${script}`, "utf-8");
   }
 }
 
+/** A busy file unchanged for this long past the deadline means the CEP panel is stuck. */
+const STUCK_BUSY_MS = 10_000;
+
 async function pollForResponse(
   resFile: string,
   busyFile: string,
-  timeoutMs: number
+  timeoutMs: number,
+  hostLabel = "Premiere Pro",
 ): Promise<CommandResult> {
   const start = Date.now();
   // The CEP plugin writes busy_<id>.json every ~2s while evalScript is in flight.
@@ -636,15 +655,21 @@ async function pollForResponse(
   // misreporting "is the plugin running?".
   const hardCapMs = Math.max(timeoutMs * 4, 120_000);
   let sawBusy = false;
+  let busyAgeMs = 0;
   let lastResponseParseError: string | undefined;
 
-  const busyIsFresh = (): boolean => {
+  // fresh: refreshed within STUCK_BUSY_MS; stuck: present but unchanged for
+  // longer (a crashed panel leaves its busy file behind); absent/unknown: gone,
+  // or unreadable. A stuck busy file is never deleted: if the panel is only
+  // slow, removing it could run the command twice.
+  const busyState = (): "fresh" | "stuck" | "absent" | "unknown" => {
     try {
-      if (!existsSync(busyFile)) return false;
+      if (!existsSync(busyFile)) return "absent";
       sawBusy = true;
-      return Date.now() - statSync(busyFile).mtimeMs < 6_000;
+      busyAgeMs = Date.now() - statSync(busyFile).mtimeMs;
+      return busyAgeMs < STUCK_BUSY_MS ? "fresh" : "stuck";
     } catch {
-      return false;
+      return "unknown";
     }
   };
 
@@ -685,6 +710,13 @@ async function pollForResponse(
           const result = JSON.parse(raw) as CommandResult;
           if (typeof result !== "object" || result === null || typeof result.success !== "boolean") {
             lastResponseParseError = "Failed to parse response: missing boolean success field";
+          } else if (result.success && typeof result.data === "string" && /^EvalScript error/i.test(result.data)) {
+            // Older connectors wrapped CEP's script-crash message as successful data.
+            finish({
+              success: false,
+              error: `${hostLabel} could not run the generated script (${result.data}). No result was produced; treat the command as failed.`,
+            });
+            return;
           } else {
             finish(result);
             return;
@@ -699,9 +731,21 @@ async function pollForResponse(
 
       const elapsed = Date.now() - start;
       if (elapsed >= timeoutMs) {
-        const stillBusy = busyIsFresh();
-        if (stillBusy && elapsed <= hardCapMs) {
+        // Keep waiting (up to the hard cap) only while the panel keeps
+        // refreshing its busy file. One that has not changed for STUCK_BUSY_MS
+        // means the panel is stuck or gone; fail now instead of waiting hours.
+        const busy = busyState();
+        if (busy === "fresh" && elapsed <= hardCapMs) {
           scheduleFallback();
+          return;
+        }
+        if (busy === "stuck") {
+          finish({
+            success: false,
+            error:
+              `The CEP panel appears stuck: its busy marker for this command has not changed for ${Math.round(busyAgeMs / 1000)} s. ` +
+              `Reload it in ${hostLabel} (Window > Extensions > MCP Bridge). The command may or may not have run; check ${hostLabel} before retrying.`,
+          });
           return;
         }
         if (lastResponseParseError) {
@@ -711,11 +755,11 @@ async function pollForResponse(
         finish({
           success: false,
           error: sawBusy
-            ? `Premiere accepted the script but did not finish within ${elapsed}ms. ` +
-              `A modal dialog inside Premiere Pro is likely blocking the scripting engine — ` +
-              `check the Premiere window and dismiss any open dialog. ` +
+            ? `${hostLabel} accepted the script but did not finish within ${elapsed}ms. ` +
+              `A modal dialog or a long analysis inside ${hostLabel} is likely blocking the scripting engine — ` +
+              `check the ${hostLabel} window and dismiss any open dialog. ` +
               `(The result, if any, will be discarded.)`
-            : `Command timed out after ${timeoutMs}ms. Is the CEP plugin running in Premiere Pro?`,
+            : `Command timed out after ${timeoutMs}ms. Is the MCP connector panel running in ${hostLabel}?`,
         });
         return;
       }

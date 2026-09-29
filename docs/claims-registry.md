@@ -24,5 +24,19 @@ not be made until evidence exists.
    fact or a governed README claim. Website copy is guarded in the site
    repository.
 
+## Outcome states in tool results
+
+Public copy that quotes a tool result must keep its outcome state. A green
+test proves package behavior only; none of these states is a host claim by
+itself.
+
+| State | Meaning |
+| --- | --- |
+| `verified` | Premiere's readback confirmed the requested state after the call. |
+| `committed` | Premiere accepted the change; the tool does not claim a readback. |
+| `committed_unverified` | Premiere accepted the change, but readback was unavailable or incomplete, so it is not reported as verified. |
+| `template_verified` | The content was verified in the file handed to Premiere (for example the text baked into a copied `.mogrt` by `add_title`), not in Premiere's own readback, because the host exposes none. Confirm rendered output separately, for example with `export_frame`. |
+| failed | A structured error with `success: false`; never reported as success. |
+
 The registry is not a launch checklist. Distribution and host-proof gates are
 maintained separately in [distribution-readiness.md](distribution-readiness.md).

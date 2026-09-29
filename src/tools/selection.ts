@@ -320,7 +320,7 @@ export function getSelectionTools(bridgeOptions: BridgeOptions) {
               var track = tracks[t];
               for (var c = 0; c < track.clips.numItems; c++) {
                 try {
-                  if (track.clips[c].isDisabled()) {
+                  if (__isClipDisabled(track.clips[c])) {
                     track.clips[c].setSelected(true, true);
                     count++;
                   }

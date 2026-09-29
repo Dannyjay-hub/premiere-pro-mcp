@@ -109,6 +109,68 @@ describe("file bridge fallback and cleanup branches", () => {
     });
   });
 
+  it("fails at once instead of waiting for the hard cap when the busy file has not changed for 10 s (crashed panel)", async () => {
+    fs.exists.mockImplementation((path) => {
+      const value = String(path);
+      if (value.includes("res_")) return false;
+      if (value.includes("busy_")) return true;
+      return true;
+    });
+    const staleSince = Date.now() - 60_000;
+    fs.stat.mockImplementation(((path) => ({
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+      mode: 0o700,
+      mtimeMs: String(path).includes("busy_") ? staleSince : Date.now(),
+      size: 64,
+    })) as unknown as typeof statSync);
+    const response = sendCommand("var stuck = true;", { tempDir: "/tmp/stuck-busy-bridge", timeoutMs: 100 });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(response).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("CEP panel appears stuck"),
+    });
+  });
+
+  it("keeps waiting past the timeout while the busy file is still being refreshed", async () => {
+    let responded = false;
+    fs.exists.mockImplementation((path) => {
+      const value = String(path);
+      if (value.includes("res_")) return responded;
+      if (value.includes("busy_")) return !responded;
+      return true;
+    });
+    fs.stat.mockImplementation((() => ({
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+      mode: 0o700,
+      mtimeMs: Date.now(),
+      size: 64,
+    })) as unknown as typeof statSync);
+    fs.read.mockReturnValue('{"success":true,"data":{"imported":5}}');
+
+    const response = sendCommand("var longImport = true;", { tempDir: "/tmp/fresh-busy-bridge", timeoutMs: 100 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    responded = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(response).resolves.toMatchObject({ success: true, data: { imported: 5 } });
+  });
+
+  it("names the configured host in the no-connector timeout", async () => {
+    fs.exists.mockImplementation((path) => !String(path).includes("res_") && !String(path).includes("busy_"));
+    fs.stat.mockImplementation((() => ({
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+      mode: 0o700,
+      mtimeMs: Date.now(),
+    })) as unknown as typeof statSync);
+    const response = sendCommand("var ae = true;", { tempDir: "/tmp/ae-bridge", timeoutMs: 50, hostLabel: "After Effects" });
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(response).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("Is the MCP connector panel running in After Effects?"),
+    });
+  });
+
   it("ignores unrelated watch events and disables a failed watcher", async () => {
     let responseExists = false;
     let change: ((event: string, filename: string | Buffer | null) => void) | undefined;

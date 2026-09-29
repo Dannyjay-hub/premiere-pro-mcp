@@ -672,7 +672,7 @@ describe("sendCommand", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("timed out");
-    expect(result.error).toContain("CEP plugin");
+    expect(result.error).toContain("MCP connector panel running in Premiere Pro");
   });
 
   it("fails health-style commands before publication when a current connector is waiting", async () => {
@@ -706,6 +706,17 @@ describe("sendCommand", () => {
       tempDir: "/tmp/test-bridge",
       failFastOnUnreadyHeartbeat: true,
     })).resolves.toMatchObject({ success: false, error: expect.stringContaining("heartbeat is stale") });
+    expect(mockedRenameSync).not.toHaveBeenCalled();
+  });
+
+  it("fails at once when a connector that always publishes a heartbeat has none (live: AE tools waited 30 s)", async () => {
+    mockedExistsSync.mockImplementation(() => false);
+
+    await expect(sendCommand("var ae = true;", {
+      tempDir: "/tmp/test-bridge",
+      hostLabel: "After Effects",
+      requireHeartbeat: true,
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("After Effects is not running its MCP connector") });
     expect(mockedRenameSync).not.toHaveBeenCalled();
   });
 

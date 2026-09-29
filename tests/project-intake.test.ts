@@ -274,3 +274,20 @@ describe("project intake engine", () => {
     );
   });
 });
+
+describe("frame-rate policy only applies to picture media", () => {
+  it("does not flag audio or caption files for frame rate (live: a .wav and an .srt were errors)", () => {
+    const report = buildProjectIntakeReport({
+      project: { id: "project-audio" },
+      truncated: false,
+      unavailableEvidence: [],
+      items: [
+        { id: "music", name: "music-bed.wav", type: "clip", mediaPath: "/m/music-bed.wav" },
+        { id: "subs", name: "recap.srt", type: "clip", mediaPath: "/m/recap.srt" },
+        { id: "shot", name: "shot.mov", type: "clip", mediaPath: "/m/shot.mov" },
+      ],
+    }, { ...template, allowedExtensions: [], proxyPolicy: "ignore", approvedPathPrefixes: [], organizationRules: [], requiredBins: [], allowedFrameRates: [24] });
+    const frameRateFindings = report.findings.filter((finding) => finding.code.startsWith("FRAME_RATE"));
+    expect(frameRateFindings.map((finding) => finding.itemId)).toEqual(["shot"]);
+  });
+});

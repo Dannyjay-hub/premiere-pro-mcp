@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `list_stock_titles` lists Premiere's bundled title templates, and `add_title` places a stock title with the text baked into a copy of the template, reading each line back from its own layer. (#648)
+
+### Changed
+
+- `export_sequence` refuses an `output_path` that already exists unless `overwrite: true`, checks that the preset's extension matches the output file (the default H.264 preset writes `.mov`), supports in/out ranges, and verifies a non-empty file was written. (#648)
+- `apply_lut` refuses instead of reporting `lutApplied: true`: Premiere 25.2.3 did not render a LUT set by path, and the old result had no readback. (#648)
+- `delete_project_item` removes items through a temporary bin. It refuses when the item is used in a sequence unless `confirm_remove_from_sequences: true`, refuses when a bin with the temporary name exists, and reads back that both are gone. `organize_project_items_uxp` remove is named as the preferred route. (#648)
+- A CEP command whose busy file stops changing now fails with "CEP panel appears stuck; reload it in Premiere" once its timeout passes; the busy file is never deleted automatically. (#648)
+
+### Fixed
+
+- `remove_from_timeline` and edit plans ripple through Premiere's sync-locked ripple instead of `TrackItem.remove(true, …)`, which never rippled and left gaps and stray audio while reporting success. Every linked partner is checked for locks before anything is removed. (#648)
+- Linked audio and video stay in sync across razor, trim, slip, roll, slide, and duration edits: partner positions are snapshotted before any write, and a trim or duration change applies the main clip's offset to each partner from that snapshot. (#648)
+- `lift_selection` used a QE method that does not exist; `delete_track` now identifies default track names in any language; `consolidate_and_transfer`, both scratch-disk setters, `import_fcp_xml`, the proxy toggle, `encode_file`, and the After Effects MOGRT export work on 25.2. (#648)
+- `normalize_loudness_file` uses two-pass linear loudnorm at the source sample rate instead of single-pass, which missed its target by 1.6 LU and resampled to 96 kHz. (#648)
+- Two regexes in generated ExtendScript lost their `\s` escapes, so a clip's own frame size was never read (anchor points on a 4K clip in a 1080p sequence used the sequence size) and default track-name matching was loose. `set_clip_properties_batch` also writes Scale Width when Uniform Scale is off, so scaling no longer stretches the picture. (#648 review)
+
 ## [1.18.6] - 2026-09-29
 
 ### Fixed

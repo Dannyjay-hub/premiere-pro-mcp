@@ -20,6 +20,8 @@ describe("After Effects bridge", () => {
     expect(sendCommand).toHaveBeenCalledWith("return __aeResult({});", expect.objectContaining({
       tempDir: getAfterEffectsTempDir(),
       helpers: AFTER_EFFECTS_BRIDGE_HELPERS,
+      // Timeouts must point at the AE connector, not Premiere's.
+      hostLabel: "After Effects",
     }));
     expect(AFTER_EFFECTS_BRIDGE_HELPERS.source).toContain("__aeResult");
     expect(AFTER_EFFECTS_BRIDGE_HELPERS.source).not.toContain("__findSequence");
