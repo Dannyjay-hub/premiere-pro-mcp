@@ -7,6 +7,11 @@ import type { UxpWebSocketBridge } from "../../src/bridge/uxp-websocket-bridge.j
 // handler that reads an argument its schema does not declare can never receive
 // it: the tool would silently run with its default. Keep handlers and schemas
 // in step.
+//
+// Best-effort: this scans only each handler's own source text. It does not see
+// arguments read inside helpers the handler passes `args` to (for example
+// parseMediaReportPaging), so declare those arguments by hand and cover them
+// in the helper's own tests.
 const tools = collectTools(
   { tempDir: "/tmp/handler-schema-arguments" },
   resolveCapabilities("inspect,edit,export,filesystem,unsafe-script"),
