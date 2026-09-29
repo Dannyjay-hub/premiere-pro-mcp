@@ -790,6 +790,18 @@ export function getCompetitorGapTools(
                 resolved.scale = findProperty(found.clip, "Motion", "AE.ADBE Motion", "Scale");
                 if (!resolved.scale) return __error("Motion Scale is unavailable on batch item " + i + ". No batch mutation was attempted.");
                 try { resolved.old.scale = resolved.scale.getValue(); } catch (scaleReadError) { return __error("Scale could not be read on batch item " + i + ". No batch mutation was attempted."); }
+                // With Uniform Scale off, "Scale" is the height alone, so write the
+                // width too or the picture stretches (same rule as __setMotionScale).
+                var uniformProperty = findProperty(found.clip, "Motion", "AE.ADBE Motion", "Uniform Scale");
+                var uniformOn = true;
+                if (uniformProperty) {
+                  try { var uniformValue = uniformProperty.getValue(); uniformOn = uniformValue === true || uniformValue === 1; } catch (uniformReadError) { return __error("Uniform Scale could not be read on batch item " + i + ". No batch mutation was attempted."); }
+                }
+                if (!uniformOn) {
+                  resolved.scaleWidth = findProperty(found.clip, "Motion", "AE.ADBE Motion", "Scale Width");
+                  if (!resolved.scaleWidth) return __error("Uniform Scale is off but Motion has no Scale Width on batch item " + i + ", so it cannot be scaled evenly. No batch mutation was attempted.");
+                  try { resolved.old.scaleWidth = resolved.scaleWidth.getValue(); } catch (scaleWidthReadError) { return __error("Scale Width could not be read on batch item " + i + ". No batch mutation was attempted."); }
+                }
               }
               if (spec.positionX !== null || spec.positionY !== null) {
                 resolved.position = findProperty(found.clip, "Motion", "AE.ADBE Motion", "Position");
@@ -816,6 +828,7 @@ export function getCompetitorGapTools(
               var prior = prepared[ri];
               try { if (prior.opacity) prior.opacity.setValue(prior.old.opacity, true); } catch (restoreOpacityError) {}
               try { if (prior.scale) prior.scale.setValue(prior.old.scale, true); } catch (restoreScaleError) {}
+              try { if (prior.scaleWidth) prior.scaleWidth.setValue(prior.old.scaleWidth, true); } catch (restoreScaleWidthError) {}
               try { if (prior.position) prior.position.setValue(prior.old.position, true); } catch (restorePositionError) {}
               try { if (prior.rotation) prior.rotation.setValue(prior.old.rotation, true); } catch (restoreRotationError) {}
             }
@@ -826,6 +839,7 @@ export function getCompetitorGapTools(
             try {
               if (update.opacity) update.opacity.setValue(spec.opacity, true);
               if (update.scale) update.scale.setValue(spec.scale, true);
+              if (update.scaleWidth) update.scaleWidth.setValue(spec.scale, true);
               if (update.position) update.position.setValue([
                 spec.positionX === null ? update.old.position[0] : spec.positionX * update.positionScale.x,
                 spec.positionY === null ? update.old.position[1] : spec.positionY * update.positionScale.y
@@ -838,6 +852,7 @@ export function getCompetitorGapTools(
             var mismatch = false;
             try { if (update.opacity && Math.abs(Number(update.opacity.getValue()) - Number(spec.opacity)) > 0.0001) mismatch = true; } catch (readOpacityError) { mismatch = true; }
             try { if (update.scale && Math.abs(Number(update.scale.getValue()) - Number(spec.scale)) > 0.0001) mismatch = true; } catch (readScaleError) { mismatch = true; }
+            try { if (update.scaleWidth && Math.abs(Number(update.scaleWidth.getValue()) - Number(spec.scale)) > 0.0001) mismatch = true; } catch (readScaleWidthError) { mismatch = true; }
             try {
               if (update.position) {
                 var actualPosition = update.position.getValue();

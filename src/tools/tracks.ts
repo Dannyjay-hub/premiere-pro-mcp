@@ -145,7 +145,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           // and after, so a custom name such as "Cam 4" is compared the same way
           // on both sides even when its track moves.
           var numberedName = function (name) {
-            var match = /^(.*[^0-9\s])\s*([0-9]+)$/.exec(name);
+            var match = /^(.*[^0-9\\s])\\s*([0-9]+)$/.exec(name);
             return match ? { prefix: match[1], number: Number(match[2]) } : null;
           };
           var defaultPrefixes = {};

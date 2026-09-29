@@ -22,7 +22,8 @@ import { getInspectionTools } from "../../src/tools/inspection.js";
 const mockedSendCommand = vi.mocked(sendCommand);
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/project-file", timeoutMs: 5000 };
 const workspace = mkdtempSync(join(tmpdir(), "project-file-"));
-afterAll(() => rmSync(workspace, { recursive: true, force: true }));
+// Windows can briefly hold handles on files the test just read; retry the cleanup.
+afterAll(() => rmSync(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 beforeEach(() => vi.clearAllMocks());
 
 // Shape of a Premiere 25.2 project's ScratchDiskSettings block.
