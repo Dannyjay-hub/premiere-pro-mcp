@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- User text containing U+2028, U+2029 or other control characters (for example a clip or marker name pasted from a document) no longer breaks the generated ExtendScript. ES3 treats U+2028/U+2029 as line terminators, so Premiere rejected the whole script with "EvalScript error"; `escapeForExtendScript` now writes them as `\uXXXX` escapes.
 - `stop_playback` accepts `target: "timeline" | "source"`. Premiere's ExtendScript and UXP APIs have no documented call that stops only the Source Monitor, so `target: "source"` now returns an error and stops nothing, instead of the argument being ignored and the timeline stopped. (#642)
 - `export_as_project` and `export_as_fcp_xml` no longer report `exported: true` after a host call that writes no file. They require a real parent directory, then fail when the output is missing, empty, or identical to a pre-existing file. (#673)
 - EXPERIMENTAL (QE DOM): `remove_effect`, `remove_effect_by_name`, and `remove_all_effects` could not remove anything on Premiere 25.2, which has no DOM `Component.remove()`. They now fall back to QE removal, resolve every target's removal path before removing anything, never remove built-in components (Motion, Opacity, Volume, Channel Volume), and verify the result against the clip's component list. On hosts whose built-in component names are localized they refuse with nothing removed until the match names are known (#674). (#654)
