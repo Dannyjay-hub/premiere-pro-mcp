@@ -679,14 +679,18 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             return __error("This Premiere host does not expose a writable sequence pixel-aspect-ratio setting. No sequence settings were changed.");
           }
 
-          // Premiere reports the ratio as "num:den" (for example "1:1"); compare numerically
-          // so a request that already matches succeeds even where the setting is read-only.
+          // Hosts format the ratio differently ("1", "1.0", "1:1", "1.42222"), so
+          // compare the numeric value instead of the string (#642).
+          var parseRatio = function (value) {
+            var text = String(value);
+            var pair = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[:\\/]\\s*([0-9]+(?:\\.[0-9]+)?)\\s*$/.exec(text);
+            if (pair) return Number(pair[2]) > 0 ? Number(pair[1]) / Number(pair[2]) : NaN;
+            return parseFloat(text);
+          };
+          // A request that already matches succeeds even where the setting is read-only.
           var currentText = String(currentRatio);
-          var ratioParts = currentText.split(":");
-          var currentValue = ratioParts.length === 2
-            ? parseFloat(ratioParts[0]) / parseFloat(ratioParts[1])
-            : parseFloat(currentText);
-          if (isFinite(currentValue) && Math.abs(currentValue - parseFloat(requestedRatio)) < 0.0001) {
+          var currentValue = parseRatio(currentText);
+          if (isFinite(currentValue) && Math.abs(currentValue - parseRatio(requestedRatio)) <= 0.001) {
             return __result({ ratio: requestedRatio, hostRatio: currentText, sequence: seq.name, alreadySet: true, verified: true });
           }
 
@@ -719,14 +723,6 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           } catch (eObserved) {
             return __error("Premiere did not expose the applied sequence pixel-aspect ratio for verification: " + eObserved.toString());
           }
-          // Hosts format the ratio differently ("1", "1.0", "1:1", "1.42222"), so
-          // compare the numeric value instead of the string (#642).
-          var parseRatio = function (value) {
-            var text = String(value);
-            var pair = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[:\\/]\\s*([0-9]+(?:\\.[0-9]+)?)\\s*$/.exec(text);
-            if (pair) return Number(pair[2]) > 0 ? Number(pair[1]) / Number(pair[2]) : NaN;
-            return parseFloat(text);
-          };
           var requestedValue = parseRatio(requestedRatio);
           var observedValue = parseRatio(observedRatio);
           if (!isFinite(observedValue) || Math.abs(observedValue - requestedValue) > 0.001) {

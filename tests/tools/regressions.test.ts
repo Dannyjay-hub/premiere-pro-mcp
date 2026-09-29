@@ -687,7 +687,7 @@ describe("issue #335 — pixel aspect ratio must fail closed on unsupported CEP 
     }
     const wrong = await executePixelAspectRatioScript({
       name: "Wrong",
-      getSettings: vi.fn().mockReturnValueOnce({ videoPixelAspectRatio: "1.0" }).mockReturnValueOnce({ videoPixelAspectRatio: "0.9091" }),
+      getSettings: vi.fn().mockReturnValueOnce({ videoPixelAspectRatio: "0.9" }).mockReturnValueOnce({ videoPixelAspectRatio: "0.9091" }),
       setSettings: () => true,
     }, "1.0");
     expect(wrong).toMatchObject({ success: false, error: expect.stringContaining("reads back as 0.9091") });
