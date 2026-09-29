@@ -24,7 +24,8 @@ const utility = getUtilityTools(bridgeOptions);
 let dir = "";
 
 beforeEach(() => { vi.clearAllMocks(); dir = mkdtempSync(join(tmpdir(), "scratch-")); });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+// Windows can briefly hold handles on files the test just read; retry the cleanup.
+afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 const ELEMENTS: Record<string, string> = {
   FirstVideoCaptureFolder: "CapturedVideoLocation0",
