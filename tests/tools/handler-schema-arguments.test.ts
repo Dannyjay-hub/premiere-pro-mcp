@@ -22,7 +22,7 @@ function argumentsRead(source: string): string[] {
   const names = new Set<string>();
   const parameter = /^\s*(?:async\s*)?(?:function\s*\w*\s*)?\(\s*([A-Za-z_$][\w$]*)/.exec(source)?.[1];
   if (parameter) {
-    const escaped = parameter.replace(/\$/g, "\\$");
+    const escaped = parameter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     for (const match of source.matchAll(new RegExp(`\\b${escaped}\\??\\.([A-Za-z_][\\w]*)`, "g"))) names.add(match[1]);
     for (const match of source.matchAll(new RegExp(`\\b${escaped}\\[\\s*["'\`]([^"'\`]+)["'\`]\\s*\\]`, "g"))) names.add(match[1]);
   }
