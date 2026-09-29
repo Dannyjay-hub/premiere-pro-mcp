@@ -42,7 +42,7 @@ function ffmpegHost(outputPath: string, options: { measured?: string; writes?: b
     if (stage === "measure") return { stdout: "", stderr: FIRST_PASS };
     if (stage === "apply") {
       if (options.writes !== false) writeFileSync(outputPath, "normalized-audio");
-      return { stdout: "", stderr: FIRST_PASS.replace("}", ',\n\t"normalization_type" : "linear"\n}') };
+      return { stdout: "", stderr: FIRST_PASS.replace(/\}\s*$/, ',\n\t"normalization_type" : "linear"\n}') };
     }
     return { stdout: "", stderr: options.measured ?? measuredSummary() };
   });

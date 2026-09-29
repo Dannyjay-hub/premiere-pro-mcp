@@ -32,7 +32,7 @@ function host(options: { existing?: string[] } = {}) {
     getFiles(mask?: string) {
       const children = [...fs.keys()].filter((p) => p.startsWith(`${this.path}/`) && !p.slice(this.path.length + 1).includes("/"));
       return children
-        .filter((p) => !mask || p.endsWith(mask.replace("*", "")))
+        .filter((p) => !mask || p.endsWith(mask.replaceAll("*", "")))
         .map((p) => (fs.get(p)!.dir ? new FolderEntry(p) : new File(p)));
     }
   }
