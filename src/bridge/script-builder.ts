@@ -652,34 +652,37 @@ function __qeTransitionObject(kind, entry) {
 // Components every clip carries (and a graphic's own layers). They are not
 // effects and are never removed.
 var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
-// Match names are the same in every host language; display names are not.
-var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": "Motion", "AE.ADBE Opacity": "Opacity" };
+// Match names do not change with the host language. Seen live on Premiere
+// 25.2.3 (#674): video "AE.ADBE Opacity", "AE.ADBE Motion"; graphics
+// "AE.ADBE Graphic Group" (Vector Motion), "AE.ADBE Text"; audio "Internal
+// Volume Mono|Stereo|5.1" and "Internal Channel Volume Stereo|5.1" (a mono clip
+// has no Channel Volume). Time Remapping and shape layers were not listed on
+// that build; their likely names are included because treating a component as
+// built-in only ever prevents a removal.
+var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": true, "AE.ADBE Opacity": true, "AE.ADBE Graphic Group": true, "AE.ADBE Text": true, "AE.ADBE Time Remapping": true };
 
-// Built-in components can only be told apart from effects by their English
-// display names (the audio and Time Remapping match names are not known). On a
-// host whose names are localized ("Deckkraft", "Bewegung") every removal is
-// refused rather than risk removing Opacity or Motion.
-function __componentClassificationProblem(clip, trackType) {
-  var recognized = false;
-  var names = {};
+function __componentMatchName(component) {
+  try { return String(component.matchName || ""); } catch (eMatch) { return ""; }
+}
+
+// Built-in by match name (any host language), by Premiere's "Internal ..."
+// audio intrinsics, by graphic/shape layer match names, or by English name.
+function __isBuiltInComponent(component) {
+  var match = __componentMatchName(component);
+  if (__BUILT_IN_MATCH_NAMES[match] || /^Internal /.test(match) || /^AE\.ADBE (Vector|Shape|Graphic)/.test(match)) return true;
+  return !!__BUILT_IN_COMPONENTS[String(component.displayName)];
+}
+
+// A component can only be classified when it reports a match name or carries a
+// built-in's English name. Otherwise (no match name, non-English name) removal
+// is refused rather than risk removing Opacity or Motion.
+function __componentClassificationProblem(clip) {
   for (var i = 0; i < clip.components.numItems; i++) {
     var component = clip.components[i];
-    var name = String(component.displayName);
-    var match = "";
-    try { match = String(component.matchName || ""); } catch (eMatch) {}
-    if (__BUILT_IN_MATCH_NAMES[match] && __BUILT_IN_MATCH_NAMES[match] !== name) {
-      return "This Premiere host shows component names in another language (" + name + " for " + __BUILT_IN_MATCH_NAMES[match] + "), so built-in components cannot be told apart from effects reliably.";
+    if (!__componentMatchName(component) && !__BUILT_IN_COMPONENTS[String(component.displayName)]) {
+      return "Premiere reports no match name for the component " + String(component.displayName) + ", so it cannot be told apart from a built-in component reliably.";
     }
-    if (__BUILT_IN_COMPONENTS[name]) recognized = true;
-    names[name] = true;
   }
-  // Audio clips have no Motion/Opacity match names to cross-check, and one
-  // audio built-in can keep its English name while the others are localized.
-  // Require both Volume and Channel Volume under their English names.
-  if (trackType === "audio" && !(names["Volume"] && names["Channel Volume"])) {
-    return "This audio clip does not show both Volume and Channel Volume under their English names (a non-English host?), so its built-in components cannot be told apart from effects reliably.";
-  }
-  if (!recognized) return "None of this clip's components has a recognized built-in name (a non-English host?), so built-in components cannot be told apart from effects reliably.";
   return null;
 }
 
@@ -696,7 +699,7 @@ function __removeClipComponents(result, wanted) {
   var clip = result.clip;
   var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true, unsupported: null };
   var targets = [];
-  out.unsupported = __componentClassificationProblem(clip, result.trackType);
+  out.unsupported = __componentClassificationProblem(clip);
   if (out.unsupported) {
     for (var u = 0; u < clip.components.numItems; u++) out.remaining.push(String(clip.components[u].displayName));
     out.before = out.remaining.slice();
@@ -705,7 +708,7 @@ function __removeClipComponents(result, wanted) {
   for (var b = 0; b < clip.components.numItems; b++) out.before.push(String(clip.components[b].displayName));
   for (var i = clip.components.numItems - 1; i >= 0; i--) {
     var name = String(clip.components[i].displayName);
-    if (__BUILT_IN_COMPONENTS[name]) continue;
+    if (__isBuiltInComponent(clip.components[i])) continue;
     if (wanted(name, i)) targets.push({ index: i, name: name, component: clip.components[i] });
   }
   var qeClip = null;

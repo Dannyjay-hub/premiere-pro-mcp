@@ -947,7 +947,12 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           var effectName = "${escapeForExtendScript(args.effect_name)}";
           if (__BUILT_IN_COMPONENTS[effectName]) return __error(effectName + " is a built-in clip component, not an effect, and cannot be removed.");
           var found = 0;
-          for (var i = 0; i < result.clip.components.numItems; i++) if (result.clip.components[i].displayName === effectName) found++;
+          var builtIn = 0;
+          for (var i = 0; i < result.clip.components.numItems; i++) {
+            if (result.clip.components[i].displayName !== effectName) continue;
+            if (__isBuiltInComponent(result.clip.components[i])) builtIn++; else found++;
+          }
+          if (!found && builtIn) return __error(effectName + " is a built-in clip component, not an effect, and cannot be removed.");
           if (!found) return __error("Effect not found: " + effectName);
           var removal = __removeClipComponents(result, function (name) { return name === effectName; });
           if (removal.unsupported) return __error("Capability error: " + removal.unsupported + " Nothing was removed; remove effects in Effect Controls.");
