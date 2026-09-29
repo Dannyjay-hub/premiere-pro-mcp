@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Tools now reject unknown top-level arguments instead of ignoring them. A misspelled or renamed argument (for example `item_ID` for `item_id`, or `time_seconds` for `start_seconds`) used to be dropped silently, and the tool ran with its default. The call now fails before anything is sent to Premiere, and the error names the unknown arguments and lists the ones the tool accepts. Clients or saved prompts that send extra or renamed fields must be updated. Tools whose schema already sets `additionalProperties` or `patternProperties` are unchanged, and UXP tools already rejected unknown properties. A catalog test fails if a handler reads an argument its schema does not declare.
+
 ## [1.18.6] - 2026-09-29
 
 ### Fixed
