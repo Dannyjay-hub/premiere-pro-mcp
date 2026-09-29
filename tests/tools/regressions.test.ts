@@ -644,19 +644,60 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
     expect(names(list)).toEqual(["Opacity", "Amplify", "Tint", "Amplify"]);
   });
 
-  it("refuses on a localized host instead of removing Opacity and Motion (German: Deckkraft, Bewegung)", async () => {
+  // Match names seen live on Premiere 25.2.3 (#674); display names are localized.
+  it("refuses on a localized host until every built-in match name is confirmed (German)", async () => {
     const german = { Deckkraft: "AE.ADBE Opacity", Bewegung: "AE.ADBE Motion", "Lumetri-Farbe": "AE.ADBE Lumetri" };
+    const list = removalHost(["Deckkraft", "Bewegung", "Lumetri-Farbe"], { matchNames: german });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("shows built-in components under localized names") });
+    expect(names(list)).toEqual(["Deckkraft", "Bewegung", "Lumetri-Farbe"]);
+  });
+
+  it("never removes a localized built-in whose match name is not confirmed (Time Remapping)", async () => {
+    const german = { Deckkraft: "AE.ADBE Opacity", Bewegung: "AE.ADBE Motion", Zeitverzerrung: "ADBE Time Remapping", "Lumetri-Farbe": "AE.ADBE Lumetri" };
     const list = removalHost(["Bewegung", "Deckkraft", "Zeitverzerrung", "Lumetri-Farbe"], { matchNames: german });
-    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("another language") });
-    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_index: 3 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false });
+    await expect(clipboard.remove_effect_by_name.handler({ node_id: "clip1", effect_name: "Zeitverzerrung" })).resolves.toMatchObject({ success: false });
     expect(names(list)).toEqual(["Bewegung", "Deckkraft", "Zeitverzerrung", "Lumetri-Farbe"]);
   });
 
-  it("refuses on an audio clip unless both Volume and Channel Volume keep their English names", async () => {
-    // Only one audio built-in is recognized by its English name; the others are localized.
-    const list = removalHost(["Volume", "Volume des canaux", "Panoramique", "Réduction du bruit"], { trackType: "audio" });
-    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Volume and Channel Volume") });
-    expect(names(list)).toEqual(["Volume", "Volume des canaux", "Panoramique", "Réduction du bruit"]);
+  it("refuses to remove a localized built-in picked by index", async () => {
+    const list = removalHost(["Deckkraft", "Bewegung", "Lumetri-Farbe"], { matchNames: { Deckkraft: "AE.ADBE Opacity", Bewegung: "AE.ADBE Motion", "Lumetri-Farbe": "AE.ADBE Lumetri" } });
+    await expect(effects.remove_effect.handler({ node_id: "clip1", effect_index: 0 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("built-in") });
+    await expect(clipboard.remove_effect_by_name.handler({ node_id: "clip1", effect_name: "Bewegung" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("built-in") });
+    expect(names(list)).toEqual(["Deckkraft", "Bewegung", "Lumetri-Farbe"]);
+  });
+
+  it("removes effects from a mono audio clip, which has Volume but no Channel Volume (live 25.2.3)", async () => {
+    const list = removalHost(["Volume", "DeNoise"], { trackType: "audio", matchNames: { Volume: "Internal Volume Mono", DeNoise: "AE.ADBE DeNoise" } });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { verified: true, removedEffects: ["DeNoise"] } });
+    expect(names(list)).toEqual(["Volume"]);
+  });
+
+  it("removes effects from an English 5.1 clip by its Internal match names", async () => {
+    const surround = { Volume: "Internal Volume 5.1", "Channel Volume": "Internal Channel Volume 5.1", DeNoise: "AE.ADBE DeNoise" };
+    const list = removalHost(["Volume", "Channel Volume", "DeNoise"], { trackType: "audio", matchNames: surround });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { removedEffects: ["DeNoise"] } });
+    expect(names(list)).toEqual(["Volume", "Channel Volume"]);
+  });
+
+  it("refuses on a localized audio host, since Panner's match name is not confirmed (French 5.1)", async () => {
+    const french = { Volume: "Internal Volume 5.1", "Volume des canaux": "Internal Channel Volume 5.1", "Réduction du bruit": "AE.ADBE DeNoise" };
+    const list = removalHost(["Volume", "Volume des canaux", "Réduction du bruit"], { trackType: "audio", matchNames: french });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("localized names (Volume des canaux)") });
+    expect(names(list)).toEqual(["Volume", "Volume des canaux", "Réduction du bruit"]);
+  });
+
+  it("keeps a graphic's own layers (Vector Motion, Text) by match name", async () => {
+    const graphic = { "Vector Motion": "AE.ADBE Graphic Group", Text: "AE.ADBE Text", Opacity: "AE.ADBE Opacity", Motion: "AE.ADBE Motion", Tint: "AE.ADBE Tint" };
+    const list = removalHost(["Opacity", "Motion", "Vector Motion", "Text", "Tint"], { matchNames: graphic });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { removedEffects: ["Tint"] } });
+    expect(names(list)).toEqual(["Opacity", "Motion", "Vector Motion", "Text"]);
+  });
+
+  it("refuses, removing nothing, when a component reports no match name and a non-English name", async () => {
+    const list = removalHost(["Deckkraft", "Lumetri-Farbe"], { matchNames: { Deckkraft: "", "Lumetri-Farbe": "AE.ADBE Lumetri" } });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("no match name") });
+    expect(names(list)).toEqual(["Deckkraft", "Lumetri-Farbe"]);
   });
 
   it("removes audio effects when the audio built-ins are recognized", async () => {

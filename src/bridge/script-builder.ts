@@ -652,34 +652,53 @@ function __qeTransitionObject(kind, entry) {
 // Components every clip carries (and a graphic's own layers). They are not
 // effects and are never removed.
 var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
-// Match names are the same in every host language; display names are not.
-var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": "Motion", "AE.ADBE Opacity": "Opacity" };
+// Match names do not change with the host language. Seen live on Premiere
+// 25.2.3 (#674): video "AE.ADBE Opacity", "AE.ADBE Motion"; graphics
+// "AE.ADBE Graphic Group" (Vector Motion), "AE.ADBE Text"; audio "Internal
+// Volume Mono|Stereo|5.1" and "Internal Channel Volume Stereo|5.1" (a mono clip
+// has no Channel Volume). Time Remapping and shape layers were not listed on
+// that build; their likely names are included because treating a component as
+// built-in only ever prevents a removal.
+var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": true, "AE.ADBE Opacity": true, "AE.ADBE Graphic Group": true, "AE.ADBE Text": true, "AE.ADBE Time Remapping": true };
 
-// Built-in components can only be told apart from effects by their English
-// display names (the audio and Time Remapping match names are not known). On a
-// host whose names are localized ("Deckkraft", "Bewegung") every removal is
-// refused rather than risk removing Opacity or Motion.
-function __componentClassificationProblem(clip, trackType) {
-  var recognized = false;
-  var names = {};
+function __componentMatchName(component) {
+  try { return String(component.matchName || ""); } catch (eMatch) { return ""; }
+}
+
+// Built-in by match name (any host language), by Premiere's "Internal ..."
+// audio intrinsics, by graphic/shape layer match names, or by English name.
+function __isBuiltInComponent(component) {
+  var match = __componentMatchName(component);
+  if (__BUILT_IN_MATCH_NAMES[match] || /^Internal /.test(match) || /^AE\\.ADBE (Vector|Shape|Graphic)/.test(match)) return true;
+  return !!__BUILT_IN_COMPONENTS[String(component.displayName)];
+}
+
+// Match names confirmed live (#674). Unlike the guessed entries above, these
+// prove the host language: one of them showing a non-English display name
+// means the built-ins are localized.
+function __isConfirmedBuiltInMatchName(match) {
+  return match === "AE.ADBE Motion" || match === "AE.ADBE Opacity" || match === "AE.ADBE Graphic Group" ||
+    match === "AE.ADBE Text" || /^Internal /.test(match);
+}
+
+// A component can only be classified when it reports a match name or carries a
+// built-in's English name. On a localized host, the match names of Time
+// Remapping, Panner and shape layers are not confirmed, so an unknown match
+// name could be one of them: refuse rather than risk removing it (#674).
+function __componentClassificationProblem(clip) {
+  var localized = null;
   for (var i = 0; i < clip.components.numItems; i++) {
     var component = clip.components[i];
+    var match = __componentMatchName(component);
     var name = String(component.displayName);
-    var match = "";
-    try { match = String(component.matchName || ""); } catch (eMatch) {}
-    if (__BUILT_IN_MATCH_NAMES[match] && __BUILT_IN_MATCH_NAMES[match] !== name) {
-      return "This Premiere host shows component names in another language (" + name + " for " + __BUILT_IN_MATCH_NAMES[match] + "), so built-in components cannot be told apart from effects reliably.";
+    if (!match && !__BUILT_IN_COMPONENTS[name]) {
+      return "Premiere reports no match name for the component " + name + ", so it cannot be told apart from a built-in component reliably.";
     }
-    if (__BUILT_IN_COMPONENTS[name]) recognized = true;
-    names[name] = true;
+    if (__isConfirmedBuiltInMatchName(match) && !__BUILT_IN_COMPONENTS[name]) localized = name;
   }
-  // Audio clips have no Motion/Opacity match names to cross-check, and one
-  // audio built-in can keep its English name while the others are localized.
-  // Require both Volume and Channel Volume under their English names.
-  if (trackType === "audio" && !(names["Volume"] && names["Channel Volume"])) {
-    return "This audio clip does not show both Volume and Channel Volume under their English names (a non-English host?), so its built-in components cannot be told apart from effects reliably.";
+  if (localized !== null) {
+    return "This Premiere host shows built-in components under localized names (" + localized + "). The match names of Time Remapping, Panner and shape layers are not confirmed yet, so an effect cannot be told apart from them reliably (#674).";
   }
-  if (!recognized) return "None of this clip's components has a recognized built-in name (a non-English host?), so built-in components cannot be told apart from effects reliably.";
   return null;
 }
 
@@ -696,7 +715,7 @@ function __removeClipComponents(result, wanted) {
   var clip = result.clip;
   var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true, unsupported: null };
   var targets = [];
-  out.unsupported = __componentClassificationProblem(clip, result.trackType);
+  out.unsupported = __componentClassificationProblem(clip);
   if (out.unsupported) {
     for (var u = 0; u < clip.components.numItems; u++) out.remaining.push(String(clip.components[u].displayName));
     out.before = out.remaining.slice();
@@ -705,7 +724,7 @@ function __removeClipComponents(result, wanted) {
   for (var b = 0; b < clip.components.numItems; b++) out.before.push(String(clip.components[b].displayName));
   for (var i = clip.components.numItems - 1; i >= 0; i--) {
     var name = String(clip.components[i].displayName);
-    if (__BUILT_IN_COMPONENTS[name]) continue;
+    if (__isBuiltInComponent(clip.components[i])) continue;
     if (wanted(name, i)) targets.push({ index: i, name: name, component: clip.components[i] });
   }
   var qeClip = null;
@@ -2110,6 +2129,11 @@ export function buildScript(code: string): string {
 /**
  * Escape a string for safe embedding in ExtendScript.
  */
+// Control characters and the U+2028/U+2029 line separators, which ES3 does not
+// allow raw inside a string literal. Built from a string so no tool parses the
+// separators inside a regex literal.
+const UNSAFE_LITERAL_CHARACTERS = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029]", "g");
+
 export function escapeForExtendScript(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
@@ -2117,7 +2141,12 @@ export function escapeForExtendScript(value: string): string {
     .replace(/'/g, "\\'")
     .replace(/\n/g, "\\n")
     .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t");
+    .replace(/\t/g, "\\t")
+    // ES3 treats U+2028 and U+2029 as line terminators, so a raw one inside a
+    // string literal is a syntax error and Premiere rejects the whole script
+    // (live 25.2.3: a marker named "Line<U+2028>break" failed with "EvalScript
+    // error"). Other control characters are escaped too.
+    .replace(UNSAFE_LITERAL_CHARACTERS, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 /**

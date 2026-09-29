@@ -1,10 +1,53 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
+/** Reject values that would otherwise be written into the generated script unchecked. */
+function markerArgumentError(args: { time_seconds?: unknown; color?: unknown; duration_seconds?: unknown }): string | null {
+  if (typeof args.time_seconds !== "number" || !Number.isFinite(args.time_seconds) || args.time_seconds < 0) {
+    return "time_seconds must be a finite, non-negative number of seconds.";
+  }
+  if (args.color !== undefined && (typeof args.color !== "number" || !Number.isInteger(args.color) || args.color < 0 || args.color > 7)) {
+    return "color must be an integer marker color index from 0 to 7.";
+  }
+  if (args.duration_seconds !== undefined && (typeof args.duration_seconds !== "number" || !Number.isFinite(args.duration_seconds) || args.duration_seconds < 0)) {
+    return "duration_seconds must be a finite, non-negative number of seconds.";
+  }
+  return null;
+}
+
+/** ExtendScript object literal of the requested marker fields; user text is escaped. */
+function markerWanted(args: { name?: string; comments?: string; color?: number }, end?: number): string {
+  const fields: string[] = [];
+  if (args.name) fields.push(`name: "${escapeForExtendScript(args.name)}"`);
+  if (args.comments) fields.push(`comments: "${escapeForExtendScript(args.comments)}"`);
+  if (args.color !== undefined) fields.push(`color: ${args.color}`);
+  if (end !== undefined) fields.push(`end: ${end}`);
+  return `{ ${fields.join(", ")} }`;
+}
+
+// Read a marker's fields back and list what differs from the request.
+const MARKER_READBACK = `
+          function __markerMismatches(marker, wanted) {
+            var problems = [];
+            if (wanted.name !== undefined && String(marker.name) !== wanted.name) problems.push("name reads back as " + marker.name);
+            if (wanted.comments !== undefined && String(marker.comments) !== wanted.comments) problems.push("comments read back as " + marker.comments);
+            if (wanted.color !== undefined) {
+              var color = null;
+              try { color = marker.getColorByIndex(); } catch (eColor) {}
+              if (color !== null && Number(color) !== wanted.color) problems.push("color index reads back as " + color);
+            }
+            if (wanted.end !== undefined) {
+              var end = parseFloat(marker.end.seconds);
+              if (!(Math.abs(end - wanted.end) < 0.01)) problems.push("end reads back as " + end + "s");
+            }
+            return problems;
+          }
+`;
+
 export function getMarkerTools(bridgeOptions: BridgeOptions) {
   return {
     add_marker: {
-      description: "Add a marker to the active sequence or a clip",
+      description: "Add a marker to the active sequence or a clip and read its name, comments, color and duration back.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -43,6 +86,9 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
         duration_seconds?: number;
         node_id?: string;
       }) => {
+        const invalid = markerArgumentError(args);
+        if (invalid) return { success: false, error: invalid };
+        const wanted = markerWanted(args, args.duration_seconds ? args.time_seconds + args.duration_seconds : undefined);
         const markerTarget = args.node_id
           ? `var clipResult = __findClip("${escapeForExtendScript(args.node_id)}");
              if (!clipResult) return __error("Clip not found");
@@ -61,10 +107,16 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
           ${args.comments ? `marker.comments = "${escapeForExtendScript(args.comments)}";` : ""}
           ${args.color !== undefined ? `marker.setColorByIndex(${args.color});` : ""}
           ${args.duration_seconds ? `marker.end = ${args.time_seconds + args.duration_seconds};` : ""}
-          
+          ${MARKER_READBACK}
+          var problems = __markerMismatches(marker, ${wanted});
+          if (problems.length) {
+            return __jsonStringify({ success: false, error: "The marker was created at ${args.time_seconds}s, but " + problems.join("; ") + ".", data: { timelineChanged: true } });
+          }
           return __result({
             added: true,
+            verified: true,
             timeSeconds: ${args.time_seconds},
+            endSeconds: parseFloat(marker.end.seconds),
             name: marker.name,
             comments: marker.comments
           });
@@ -90,6 +142,8 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
         required: ["time_seconds"],
       },
       handler: async (args: { time_seconds: number; node_id?: string }) => {
+        const invalid = markerArgumentError(args);
+        if (invalid) return { success: false, error: invalid };
         const markerTarget = args.node_id
           ? `var clipResult = __findClip("${escapeForExtendScript(args.node_id)}");
              if (!clipResult) return __error("Clip not found");
@@ -123,7 +177,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
     },
 
     update_marker: {
-      description: "Update an existing marker's properties",
+      description: "Update the name, comments or color of the sequence marker at a time and read them back.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -133,11 +187,14 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
           },
           name: { type: "string", description: "New name" },
           comments: { type: "string", description: "New comments" },
-          color: { type: "number", description: "New color index" },
+          color: { type: "number", description: "New color index (0=Green, 1=Red, 2=Purple, 3=Orange, 4=Yellow, 5=White, 6=Blue, 7=Cyan)" },
         },
         required: ["time_seconds"],
       },
       handler: async (args: { time_seconds: number; name?: string; comments?: string; color?: number }) => {
+        const invalid = markerArgumentError(args);
+        if (invalid) return { success: false, error: invalid };
+        const wanted = markerWanted(args);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -159,7 +216,12 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
           }
           
           if (!found) return __error("No marker found at " + ${args.time_seconds} + "s");
-          return __result({ updated: true, timeSeconds: ${args.time_seconds} });
+          ${MARKER_READBACK}
+          var problems = __markerMismatches(marker, ${wanted});
+          if (problems.length) {
+            return __jsonStringify({ success: false, error: "The marker at ${args.time_seconds}s changed, but " + problems.join("; ") + ".", data: { timelineChanged: true } });
+          }
+          return __result({ updated: true, verified: true, timeSeconds: ${args.time_seconds}, name: marker.name, comments: marker.comments });
         `);
         return sendCommand(script, bridgeOptions);
       },
