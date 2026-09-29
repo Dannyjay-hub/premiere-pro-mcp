@@ -1573,7 +1573,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           expected_undo_stack_index: {
             type: "number",
             description:
-              "Optional safety guard: the undoStackIndexAfter reported by the undo you want to redo. The step is refused, with nothing changed, when Premiere's undo-stack position differs from it. This compares the position only: if actions were undone and new ones recorded since, the position can match again and undo would reverse the newer action.",
+              "Optional safety guard: the undoStackIndexAfter reported by the undo you want to redo. The step is refused, with nothing changed, when Premiere's undo-stack position differs from it. This compares the position only: if other actions were undone and redone, or new ones recorded, since, the position can match again and redo would re-apply a different action than the one you undid (a new action also clears Premiere's redo history).",
           },
         },
       },

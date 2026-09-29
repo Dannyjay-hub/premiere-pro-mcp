@@ -659,8 +659,9 @@ var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": "Motion", "AE.ADBE Opacity": "O
 // display names (the audio and Time Remapping match names are not known). On a
 // host whose names are localized ("Deckkraft", "Bewegung") every removal is
 // refused rather than risk removing Opacity or Motion.
-function __componentClassificationProblem(clip) {
+function __componentClassificationProblem(clip, trackType) {
   var recognized = false;
+  var names = {};
   for (var i = 0; i < clip.components.numItems; i++) {
     var component = clip.components[i];
     var name = String(component.displayName);
@@ -670,6 +671,13 @@ function __componentClassificationProblem(clip) {
       return "This Premiere host shows component names in another language (" + name + " for " + __BUILT_IN_MATCH_NAMES[match] + "), so built-in components cannot be told apart from effects reliably.";
     }
     if (__BUILT_IN_COMPONENTS[name]) recognized = true;
+    names[name] = true;
+  }
+  // Audio clips have no Motion/Opacity match names to cross-check, and one
+  // audio built-in can keep its English name while the others are localized.
+  // Require both Volume and Channel Volume under their English names.
+  if (trackType === "audio" && !(names["Volume"] && names["Channel Volume"])) {
+    return "This audio clip does not show both Volume and Channel Volume under their English names (a non-English host?), so its built-in components cannot be told apart from effects reliably.";
   }
   if (!recognized) return "None of this clip's components has a recognized built-in name (a non-English host?), so built-in components cannot be told apart from effects reliably.";
   return null;
@@ -688,7 +696,7 @@ function __removeClipComponents(result, wanted) {
   var clip = result.clip;
   var out = { removed: [], failures: [], before: [], remaining: [], verified: false, nothingRemoved: true, unsupported: null };
   var targets = [];
-  out.unsupported = __componentClassificationProblem(clip);
+  out.unsupported = __componentClassificationProblem(clip, result.trackType);
   if (out.unsupported) {
     for (var u = 0; u < clip.components.numItems; u++) out.remaining.push(String(clip.components[u].displayName));
     out.before = out.remaining.slice();
@@ -1336,8 +1344,18 @@ function __qeUndoSteps(direction, count) {
     try {
       if (direction === "undo") stack.undo(); else stack.redo();
     } catch (eStep) {
+      // The step may have moved the stack before throwing; check before
+      // reporting it as rejected.
       var afterThrow = readIndex();
-      return { ok: false, status: "rejected", done: done, startIndex: start, index: afterThrow === null ? index : afterThrow,
+      if (afterThrow === null) {
+        return { ok: false, status: "index_unreadable", done: done, startIndex: start, index: index,
+          error: direction + " step " + (i + 1) + " threw (" + eStep.toString() + ") and Premiere's undo-stack index could not be read afterwards, so it is not known what changed. Do not retry; inspect the project." };
+      }
+      if (afterThrow !== index) {
+        return { ok: false, status: "moved_unexpectedly", done: done, startIndex: start, index: afterThrow,
+          error: direction + " step " + (i + 1) + " threw (" + eStep.toString() + ") but Premiere's undo stack moved from " + index + " to " + afterThrow + ", so more actions than reported may have been " + direction + "ne. Do not retry; inspect the project." };
+      }
+      return { ok: false, status: "rejected", done: done, startIndex: start, index: index,
         error: "Premiere rejected " + direction + " step " + (i + 1) + ": " + eStep.toString() + (done ? " (" + done + " step(s) before it were " + direction + "ne)." : ".") };
     }
     var next = readIndex();
@@ -1373,10 +1391,13 @@ function __undoStepsResult(outcome, doneKey) {
   var summary = { undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index, stackStatus: outcome.status,
     scope: "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched." };
   summary[doneKey] = outcome.done;
-  if (outcome.status === "moved_unexpectedly" || outcome.status === "index_unreadable") {
+  // Anything that may have moved the stack, including a run that stopped part
+  // way after undoing some steps, is committed_unverified with a do-not-retry
+  // warning, so an agent does not undo more of the user's work.
+  if (outcome.status === "moved_unexpectedly" || outcome.status === "index_unreadable" || (!outcome.ok && outcome.done > 0)) {
     summary.outcome = "committed_unverified";
     summary.stackVerified = false;
-    summary.warning = outcome.error;
+    summary.warning = outcome.error + (/Do not retry/.test(outcome.error) ? "" : " " + outcome.done + " step(s) were " + (doneKey === "redone" ? "redone" : "undone") + ". Do not retry the whole count; inspect the project first.");
     return __result(summary);
   }
   if (!outcome.ok) return __jsonStringify({ success: false, error: outcome.error, data: summary });
@@ -2024,7 +2045,8 @@ function __error(msg) {
   if (__undoStart !== null) {
     var undoNow = __readUndoIndex();
     if (undoNow !== null && undoNow > __undoStart) {
-      return __jsonStringify({ success: false, error: String(msg), data: { undoSteps: undoNow - __undoStart, undoStackIndex: undoNow } });
+      var recorded = undoNow - __undoStart;
+      return __jsonStringify({ success: false, error: String(msg) + " Premiere recorded " + recorded + " undo entr" + (recorded === 1 ? "y" : "ies") + " during this command, so the project may have changed.", data: { undoSteps: recorded, undoStackIndex: undoNow, timelineChanged: true } });
     }
   }
   return __jsonStringify({ success: false, error: String(msg) });

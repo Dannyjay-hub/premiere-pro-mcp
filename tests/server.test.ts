@@ -24,6 +24,11 @@ const { getDiscoveryTools } = vi.hoisted(() => ({
       parameters: { type: "object", properties: {} },
       handler: async () => ({ success: true, data: { tracking: (await import("../src/bridge/undo-tracking.js")).undoTrackingEnabled() } }),
     },
+    import_mock_undo_tracking: {
+      description: "Filesystem-class mock (import_* tools add project items)",
+      parameters: { type: "object", properties: {} },
+      handler: async () => ({ success: true, data: { tracking: (await import("../src/bridge/undo-tracking.js")).undoTrackingEnabled() } }),
+    },
     set_mock_undo_tracking: {
       description: "Mutating mock",
       parameters: { type: "object", properties: {} },
@@ -196,6 +201,8 @@ describe("undo tracking is scoped to tools that change the project", () => {
       const write = await client.callTool({ name: "set_mock_undo_tracking", arguments: {} });
       expect(read.structuredContent).toMatchObject({ data: { tracking: false } });
       expect(write.structuredContent).toMatchObject({ data: { tracking: true } });
+      const imported = await client.callTool({ name: "import_mock_undo_tracking", arguments: {} });
+      expect(imported.structuredContent).toMatchObject({ data: { tracking: true } });
     } finally {
       await client.close();
       await server.close();

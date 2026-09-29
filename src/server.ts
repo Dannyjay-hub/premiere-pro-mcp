@@ -425,10 +425,11 @@ export function createServer(
       async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          // Only calls that need the edit capability record the undo position;
-          // the capability map classifies every tool and action, unlike the
-          // read-only naming hints.
-          const tracksUndo = capabilitiesForToolInvocation(name, args).includes("edit");
+          // Every call that may change the project records the undo position:
+          // anything that needs more than inspect (edit, and also filesystem or
+          // export tools such as import_*, relink_*, consolidate_* that add
+          // project items). Only inspect-only calls skip it.
+          const tracksUndo = capabilitiesForToolInvocation(name, args).some((capability) => capability !== "inspect");
           const result = await runWithUndoTracking(tracksUndo, () => guardedHandler(args as Record<string, unknown>));
           telemetry.capture("mcp_tool_call", {
             tool: name,

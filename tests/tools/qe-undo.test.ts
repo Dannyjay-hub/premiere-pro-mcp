@@ -62,12 +62,14 @@ describe("undo, redo and multiple_undo step QE's undo stack and check its positi
     });
   });
 
-  it("multiple_undo stops and fails honestly when the stack runs out", async () => {
+  it("multiple_undo that runs out part way reports the committed steps as committed_unverified, not a plain failure", async () => {
     undoHost(2, 5);
     await expect(targeting.multiple_undo.handler({ count: 3 })).resolves.toMatchObject({
-      success: false,
-      error: expect.stringContaining("Only 2 of 3 undo steps"),
-      data: { undone: 2, undoStackIndexAfter: 0, stackStatus: "did_not_move" },
+      success: true,
+      data: {
+        undone: 2, undoStackIndexAfter: 0, stackStatus: "did_not_move", outcome: "committed_unverified", stackVerified: false,
+        warning: expect.stringMatching(/Only 2 of 3 undo steps.*Do not retry/),
+      },
     });
   });
 
@@ -121,13 +123,41 @@ describe("an undo that moves the stack unexpectedly is never reported as nothing
     });
   });
 
-  it("a step Premiere rejects after earlier steps reports how many ran", async () => {
+  it("a step Premiere rejects after earlier steps is committed_unverified with the count that ran", async () => {
     let calls = 0;
     const stack = undoHost(10, 10, { undo: () => { calls += 1; if (calls === 2) throw new Error("busy"); stack.index -= 1; return true; } });
     await expect(targeting.multiple_undo.handler({ count: 3 })).resolves.toMatchObject({
+      success: true,
+      data: { stackStatus: "rejected", undone: 1, undoStackIndexAfter: 9, outcome: "committed_unverified", warning: expect.stringContaining("Do not retry") },
+    });
+  });
+
+  it("a step that undoes and then throws is reported as an unexpected move, not a rejection", async () => {
+    let calls = 0;
+    const stack = undoHost(10, 10, { undo: () => { calls += 1; stack.index -= 1; if (calls === 2) throw new Error("busy"); return true; } });
+    await expect(targeting.multiple_undo.handler({ count: 3 })).resolves.toMatchObject({
+      success: true,
+      data: { stackStatus: "moved_unexpectedly", undone: 1, undoStackIndexAfter: 8, outcome: "committed_unverified", warning: expect.stringContaining("Do not retry") },
+    });
+  });
+
+  it("a step that throws with an unreadable index afterwards is index_unreadable", async () => {
+    let broken = false;
+    const stack = undoHost(10, 10, {
+      undoStackIndex: () => { if (broken) throw new Error("gone"); return stack.index; },
+      undo: () => { broken = true; throw new Error("busy"); },
+    });
+    await expect(project.undo.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { stackStatus: "index_unreadable", outcome: "committed_unverified" },
+    });
+  });
+
+  it("a first step Premiere rejects without moving the stack is a plain failure", async () => {
+    undoHost(10, 10, { undo: () => { throw new Error("busy"); } });
+    await expect(project.undo.handler({})).resolves.toMatchObject({
       success: false,
-      error: expect.stringContaining("1 step(s) before it were undone"),
-      data: { stackStatus: "rejected", undone: 1, undoStackIndexAfter: 9 },
+      data: { stackStatus: "rejected", undone: 0 },
     });
   });
 });
@@ -149,10 +179,10 @@ describe("results report the undo steps a command added", () => {
   it("tags a failure that came after undo entries were recorded", () => {
     const stack = { index: 401, undoStackIndex: () => stack.index };
     const bump = () => { stack.index += 2; };
-    expect(exec("qe.project.bump(); return __error(\"second write failed\");", Object.assign(stack, { bump }))).toEqual({
+    expect(exec("qe.project.bump(); return __error(\"second write failed; nothing was changed.\");", Object.assign(stack, { bump }))).toEqual({
       success: false,
-      error: "second write failed",
-      data: { undoSteps: 2, undoStackIndex: 403 },
+      error: "second write failed; nothing was changed. Premiere recorded 2 undo entries during this command, so the project may have changed.",
+      data: { undoSteps: 2, undoStackIndex: 403, timelineChanged: true },
     });
     expect(exec("return __error(\"refused\");", { undoStackIndex: () => 5 })).toEqual({ success: false, error: "refused" });
   });
@@ -182,11 +212,14 @@ describe("results report the undo steps a command added", () => {
     expect(runWithUndoTracking(true, () => buildScript("return 1;"))).toContain("__readUndoIndex()");
   });
 
-  it("read-only CEP tools that the naming hints miss do not need edit, so they are not tracked", () => {
-    for (const name of ["ping", "has_proxy", "is_work_area_enabled", "analyze_loudness", "detect_beats", "validate_export_preset", "verify_delivery_file"]) {
-      expect(capabilitiesForToolInvocation(name, {}), name).not.toContain("edit");
+  it("tracks every call that needs more than inspect, including imports; inspect-only tools are not tracked", () => {
+    const tracked = (name: string) => capabilitiesForToolInvocation(name, {}).some((capability) => capability !== "inspect");
+    for (const name of ["ping", "has_proxy", "is_work_area_enabled", "verify_premiere_connection", "match_frame", "get_active_sequence"]) {
+      expect(tracked(name), name).toBe(false);
     }
-    expect(capabilitiesForToolInvocation("trim_clip", {})).toContain("edit");
+    for (const name of ["trim_clip", "import_mogrt", "import_media", "relink_media", "consolidate_duplicates", "apply_lut"]) {
+      expect(tracked(name), name).toBe(true);
+    }
   });
 
   it("undo refuses, without undoing, when the stack position differs from the guard", async () => {

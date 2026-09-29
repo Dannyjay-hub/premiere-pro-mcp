@@ -58,9 +58,11 @@ export const UNSAFE_TOOL_NAMES = new Set(["execute_extendscript", "send_raw_scri
 const INSPECT_TOOL_NAMES = new Set([
   "ping",
   "get_capabilities",
-  // Read-only CEP queries whose names miss the read prefixes.
+  // Read-only queries whose names miss the read prefixes.
   "has_proxy",
   "is_work_area_enabled",
+  "verify_premiere_connection",
+  "match_frame",
   "preview_edit_plan",
   "preview_transcript_edit_uxp",
   "plan_transcript_rough_cut_uxp",

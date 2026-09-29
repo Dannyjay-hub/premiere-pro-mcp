@@ -513,7 +513,7 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
   const clipboard = getClipboardTools(bridgeOptions);
   const advanced = getAdvancedTools(bridgeOptions);
 
-  function removalHost(names: string[], options: { qeRemoveNoop?: boolean; noQeFor?: string[]; noQeAt?: number[]; matchNames?: Record<string, string> } = {}) {
+  function removalHost(names: string[], options: { qeRemoveNoop?: boolean; noQeFor?: string[]; noQeAt?: number[]; matchNames?: Record<string, string>; trackType?: "video" | "audio" } = {}) {
     const list = names.map((displayName) => ({ displayName, matchName: options.matchNames?.[displayName] ?? displayName }));
     const components = new Proxy({}, { get: (_t, key) => (key === "numItems" ? list.length : list[Number(key)]) });
     const clip = { nodeId: "clip1", name: "Speaker", start: { ticks: "0" }, end: { ticks: "254016000000" }, components };
@@ -527,7 +527,10 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
       removeEffects: () => { throw new Error("broad removeEffects must not be used"); },
     };
     const qeTrack = { numItems: 1, getItemAt: () => qeClip };
-    const seq = { sequenceID: "s", videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } };
+    const track = { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } };
+    const seq = options.trackType === "audio"
+      ? { sequenceID: "s", videoTracks: { numTracks: 0 }, audioTracks: track }
+      : { sequenceID: "s", videoTracks: track, audioTracks: { numTracks: 0 } };
     mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
       app: { enableQE: () => {}, project: { activeSequence: seq } },
       qe: { project: { getActiveSequence: () => ({ getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack }) } },
@@ -599,6 +602,19 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
     await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("another language") });
     await expect(effects.remove_effect.handler({ node_id: "clip1", effect_index: 3 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
     expect(names(list)).toEqual(["Bewegung", "Deckkraft", "Zeitverzerrung", "Lumetri-Farbe"]);
+  });
+
+  it("refuses on an audio clip unless both Volume and Channel Volume keep their English names", async () => {
+    // Only one audio built-in is recognized by its English name; the others are localized.
+    const list = removalHost(["Volume", "Volume des canaux", "Panoramique", "Réduction du bruit"], { trackType: "audio" });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Volume and Channel Volume") });
+    expect(names(list)).toEqual(["Volume", "Volume des canaux", "Panoramique", "Réduction du bruit"]);
+  });
+
+  it("removes audio effects when the audio built-ins are recognized", async () => {
+    const list = removalHost(["Volume", "Channel Volume", "Panner", "DeNoise"], { trackType: "audio" });
+    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { verified: true } });
+    expect(names(list)).toEqual(["Volume", "Channel Volume", "Panner"]);
   });
 
   it("says a silent QE no-op did not take effect, not that effects were removed", async () => {
