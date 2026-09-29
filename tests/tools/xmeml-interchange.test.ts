@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { getInterchangeAnalysisTools } from "../../src/tools/interchange-analysis.js";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
@@ -10,7 +11,8 @@ type Result = { success: boolean; error?: string; data?: Record<string, unknown>
 
 /** Shape of Premiere 25.2's export_as_fcp_xml output: FCP7 xmeml, first <file> declares, later ones reference. */
 function premiereXmeml(mediaPath: string) {
-  const url = `file://localhost${mediaPath.replace(/ /g, "%20")}`;
+  // Premiere writes file://localhost/<path>; pathToFileURL keeps Windows drive paths valid.
+  const url = pathToFileURL(mediaPath).href.replace(/^file:\/\/\//, "file://localhost/");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
 <xmeml version="4">

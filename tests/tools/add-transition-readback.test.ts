@@ -28,7 +28,7 @@ const t = (seconds: number) => ({ ticks: String(Math.round(seconds * TICKS)) });
  * transition relative to the cut, mirroring live Premiere 25.2 behavior: a
  * 1 s (25-frame) Cross Dissolve centered on the 6 s cut lands at 5.52-6.52 s.
  */
-function hostWith(place: (cutSeconds: number) => [number, number]) {
+function hostWith(place: (cutSeconds: number) => [number, number], existing: Array<[number, number]> = []) {
   const clips = [[0, 6], [6, 12], [12, 18]].map(([start, end], index) => ({ nodeId: `n${index + 1}`, name: `clip${index}`, start: t(start), end: t(end) }));
   const domTransitions: Array<{ start: { ticks: string }; end: { ticks: string } }> = [];
   const domTrack = {
@@ -37,10 +37,17 @@ function hostWith(place: (cutSeconds: number) => [number, number]) {
       get numItems() { return domTransitions.length; },
     } as Record<string | number, unknown>,
   };
+  for (const [start, end] of existing) {
+    const placed = { start: t(start), end: t(end) };
+    domTrack.transitions[domTransitions.length] = placed;
+    domTransitions.push(placed);
+  }
+  let calls = 0;
   const qeClips = clips.map((clip) => ({
     type: "Clip",
     start: clip.start,
     addTransition: () => {
+      calls += 1;
       const cutSeconds = parseFloat(clip.start.ticks) / TICKS;
       const [start, end] = place(cutSeconds);
       const placed = { start: t(start), end: t(end) };
@@ -61,6 +68,7 @@ function hostWith(place: (cutSeconds: number) => [number, number]) {
     },
   };
   mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))));
+  return { calls: () => calls };
 }
 
 const add = (cut: number) =>
@@ -85,7 +93,7 @@ describe("add_transition readback", () => {
     hostWith(() => [1, 2]);
     await expect(add(6)).resolves.toMatchObject({
       success: false,
-      error: expect.stringContaining("did not find it at the requested cut point"),
+      error: expect.stringContaining("did not find a new one at the requested cut point"),
     });
   });
 });
@@ -114,3 +122,27 @@ describe("batch_add_transitions with an existing transition", () => {
     expect(result).toMatchObject({ success: true, data: { added: 1, alreadyPresent: 1, verified: true } });
   });
 });
+
+describe("transition readback ignores transitions that were already there", () => {
+  it("add_transition refuses a cut that already has a transition instead of verifying the old one", async () => {
+    const host = hostWith((cut) => [cut - 0.5, cut + 0.5], [[5.5, 6.5]]);
+    await expect(add(6)).resolves.toMatchObject({ success: false, error: expect.stringContaining("already covers the cut") });
+    expect(host.calls()).toBe(0);
+  });
+
+  it("add_transition_to_clip refuses an edge that already has a transition", async () => {
+    const host = hostWith((cut) => [cut - 0.5, cut + 0.5], [[11.5, 12.5]]);
+    await expect(tools.add_transition_to_clip.handler({ node_id: "n2", transition_name: "Cross Dissolve", position: "both" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("already covers the clip end") });
+    expect(host.calls()).toBe(0);
+  });
+
+  it("add_transition_to_clip fails when the only transition at the edge is not new", async () => {
+    // Premiere adds its transition at the wrong edge (the clip end); the clip start
+    // had nothing before, so only a new transition there may verify.
+    hostWith((cut) => [cut + 5.5, cut + 6.5]);
+    await expect(tools.add_transition_to_clip.handler({ node_id: "n2", transition_name: "Cross Dissolve", position: "start" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("new transition at each requested clip edge") });
+  });
+});
+

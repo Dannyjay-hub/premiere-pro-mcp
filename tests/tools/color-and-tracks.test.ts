@@ -67,10 +67,14 @@ describe("colour parameters", () => {
 });
 
 describe("delete_track", () => {
-  function trackHost(clipCounts: number[]) {
-    const list = clipCounts.map((n, i) => ({ name: `Video ${i + 1}`, clips: { numItems: n } }));
+  function trackHost(clipCounts: number[], options: { names?: string[]; qeOffByOne?: boolean } = {}) {
+    const list = clipCounts.map((n, i) => {
+      const clips: Record<string | number, unknown> = { numItems: n };
+      for (let c = 0; c < n; c++) clips[c] = { nodeId: `t${i}c${c}` };
+      return { name: options.names?.[i] ?? `Video ${i + 1}`, clips, isLocked: () => false, isMuted: () => false };
+    });
     const videoTracks = new Proxy({}, { get: (_t, k) => (k === "numTracks" ? list.length : list[Number(k)]) });
-    const qeSeq = { removeVideoTrack: (index: number) => { list.splice(index, 1); } };
+    const qeSeq = { removeVideoTrack: (index: number) => { list.splice(options.qeOffByOne ? index + 1 : index, 1); } };
     run({ app: { enableQE: () => {}, project: { activeSequence: { videoTracks, audioTracks: { numTracks: 1 } } } }, qe: { project: { getActiveSequence: () => qeSeq } } });
     return list;
   }
@@ -89,5 +93,24 @@ describe("delete_track", () => {
     expect(list).toHaveLength(2);
     await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 0, force: true }))
       .resolves.toMatchObject({ success: true, data: { clipsRemoved: 5 } });
+  });
+
+  it("fails, saying the timeline changed, when Premiere removes a different track", async () => {
+    const list = trackHost([0, 2, 0], { qeOffByOne: true });
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 0 }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("timeline changed"), data: { removedTrackIndex: 1 } });
+    expect(list).toHaveLength(2);
+  });
+
+  it("tells empty tracks apart by their custom names", async () => {
+    trackHost([0, 0, 0], { names: ["Graphics", "B-roll", "Titles"], qeOffByOne: true });
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 0 }))
+      .resolves.toMatchObject({ success: false, data: { removedTrackIndex: 1 } });
+  });
+
+  it("ignores default names, which follow the track's position", async () => {
+    trackHost([1, 0, 2]);
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 1 }))
+      .resolves.toMatchObject({ success: true, data: { verified: true } });
   });
 });

@@ -131,7 +131,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -225,7 +225,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -316,7 +316,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -403,7 +403,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -476,7 +476,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -555,7 +555,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }
@@ -617,7 +617,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var prop = null;
           for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
               prop = comp.properties[p];
               break;
             }

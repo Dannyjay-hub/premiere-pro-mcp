@@ -105,7 +105,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
 
     delete_track: {
       description:
-        "Delete a video or audio track from the active sequence through QE and verify the track count dropped. Refuses a track that still holds clips unless force is true.",
+        "Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -137,6 +137,26 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           var before = tracks.numTracks;
           if (${args.track_index} >= before) return __error("Track index out of range");
           if (before <= 1) return __error("A sequence keeps at least one ${args.track_type} track");
+          // Identity of every track before the delete: clip IDs, custom name and
+          // lock/mute state. Default names ("Video 3") follow the track's position,
+          // so they are left out of the comparison.
+          var trackSignature = function (track) {
+            var ids = [];
+            for (var c = 0; c < track.clips.numItems; c++) ids.push(String(track.clips[c].nodeId));
+            var name = String(track.name || "");
+            if (/^(Video|Audio) [0-9]+$/.test(name)) name = "";
+            var locked = null, muted = null;
+            try { locked = !!track.isLocked(); } catch (eLocked) {}
+            try { muted = !!track.isMuted(); } catch (eMuted) {}
+            return ids.join(",") + "|" + name + "|" + locked + "|" + muted;
+          };
+          var signaturesOf = function (list) {
+            var out = [];
+            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t]));
+            return out;
+          };
+          var beforeSignatures = signaturesOf(tracks);
+          var deletedName = String(tracks[${args.track_index}].name || "");
           var clipCount = tracks[${args.track_index}].clips.numItems;
           if (clipCount > 0 && ${args.force === true ? "false" : "true"}) {
             return __error("${video ? "V" : "A"}${args.track_index + 1} holds " + clipCount + " clip(s); pass force: true to delete the track and those clips.");
@@ -148,7 +168,18 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           qeSeq.${video ? "removeVideoTrack" : "removeAudioTrack"}(${args.track_index});
           var after = (${video ? "seq.videoTracks" : "seq.audioTracks"}).numTracks;
           if (after !== before - 1) return __error("Premiere did not remove the track (" + before + " -> " + after + " ${args.track_type} tracks)");
-          return __result({ deleted: true, verified: true, trackType: "${args.track_type}", trackIndex: ${args.track_index}, clipsRemoved: clipCount, remainingTracks: after });
+          var expected = beforeSignatures.slice(0, ${args.track_index}).concat(beforeSignatures.slice(${args.track_index + 1}));
+          var afterSignatures = signaturesOf(${video ? "seq.videoTracks" : "seq.audioTracks"});
+          if (afterSignatures.join(";") !== expected.join(";")) {
+            var removedIndex = -1;
+            for (var r = 0; r < before; r++) {
+              var candidate = beforeSignatures.slice(0, r).concat(beforeSignatures.slice(r + 1));
+              if (candidate.join(";") === afterSignatures.join(";")) { removedIndex = r; break; }
+            }
+            return __jsonStringify({ success: false, error: "The timeline changed: Premiere removed a ${args.track_type} track, but not ${video ? "V" : "A"}${args.track_index + 1}" + (removedIndex >= 0 ? " (it removed ${video ? "V" : "A"}" + (removedIndex + 1) + " instead)" : " (the remaining tracks do not match any single-track removal)") + ". Inspect the sequence.", data: { timelineChanged: true, requestedTrackIndex: ${args.track_index}, removedTrackIndex: removedIndex >= 0 ? removedIndex : null } });
+          }
+          return __result({ deleted: true, verified: true, trackType: "${args.track_type}", trackIndex: ${args.track_index}, trackName: deletedName, clipsRemoved: clipCount, remainingTracks: after,
+            verification: "the remaining tracks match the track list before the delete with this track taken out (clip IDs, custom names, lock and mute state)" });
         `);
         return sendCommand(script, bridgeOptions);
       },

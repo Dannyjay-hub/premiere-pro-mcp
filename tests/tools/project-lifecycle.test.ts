@@ -121,7 +121,8 @@ describe("project lifecycle tools", () => {
 
 describe("import_fcp_xml", () => {
   /** Live 25.2: openFCPXML opens <tmp>/<xml name>.prproj and leaves an empty FOLDER at project_path. */
-  function xmlHost(options: { opens?: boolean } = {}) {
+  function xmlHost(options: { opens?: boolean; importsTo?: string } = {}) {
+    const importsTo = options.importsTo ?? "/tmp/T/cut.prproj";
     const files = new Set(["/p/cut.xml"]);
     const folders = new Set<string>();
     const open: Array<Record<string, unknown>> = [{ path: "/p/Main.prproj", sequences: { numSequences: 0 } }];
@@ -132,12 +133,16 @@ describe("import_fcp_xml", () => {
       openFCPXML: (_xml: string, dest: string) => {
         folders.add(dest);
         if (options.opens === false) return;
-        const imported: Record<string, unknown> = { path: "/tmp/T/cut.prproj", sequences: { numSequences: 1, 0: seq } };
+        files.add(importsTo);
+        const imported: Record<string, unknown> = { path: importsTo, sequences: { numSequences: 1, 0: seq } };
         imported.saveAs = (target: string) => { if (folders.has(target)) throw new Error("is a folder"); files.add(target); imported.path = target; };
         open.push(imported);
       },
     };
-    function File(this: { exists: boolean }, path: string) { this.exists = files.has(path) || folders.has(path); }
+    function File(this: { exists: boolean; remove: () => boolean }, path: string) {
+      this.exists = files.has(path) || folders.has(path);
+      this.remove = () => files.delete(path);
+    }
     // ExtendScript: new Folder(file).exists is true for a file too; Folder(path) without new returns a File for a file.
     function Folder(this: { exists: boolean; getFiles: () => unknown[]; remove: () => boolean } | undefined, path: string): unknown {
       if (!(this instanceof Folder)) {
@@ -150,6 +155,7 @@ describe("import_fcp_xml", () => {
       this.remove = () => folders.delete(path);
       return this;
     }
+    (Folder as unknown as { temp: unknown }).temp = { fsName: "/tmp/T", fullName: "/tmp/T" };
     mockedSendCommand.mockImplementation(async (script: string) =>
       JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, File, Folder }))));
     return { files, folders };
@@ -164,6 +170,21 @@ describe("import_fcp_xml", () => {
     });
     expect(files.has("/p/From XML.prproj")).toBe(true);
     expect(folders.has("/p/From XML.prproj")).toBe(false);
+    expect(result.data).toMatchObject({ intermediateRemoved: true, intermediateKeptAt: null });
+    expect(files.has("/tmp/T/cut.prproj")).toBe(false);
+  });
+
+  it("never deletes an intermediate project outside the temp or destination folder", async () => {
+    const { files } = xmlHost({ importsTo: "/Users/me/Projects/cut.prproj" });
+    const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
+    expect(result).toMatchObject({ success: true, data: { intermediateRemoved: false, intermediateKeptAt: "/Users/me/Projects/cut.prproj" } });
+    expect(files.has("/Users/me/Projects/cut.prproj")).toBe(true);
+  });
+
+  it("does not treat a lookalike folder as the temp folder", async () => {
+    const { files } = xmlHost({ importsTo: "/tmp/T-other/cut.prproj" });
+    await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" });
+    expect(files.has("/tmp/T-other/cut.prproj")).toBe(true);
   });
 
   it("fails when Premiere opens nothing", async () => {

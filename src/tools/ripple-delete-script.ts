@@ -49,6 +49,7 @@ export function rippleDeleteScriptBody(options: {
           function addPart(type, idx, isTarget) {
             var dt = domTrackFor(type, idx);
             if (!dt) return;
+            for (var ap = 0; ap < parts.length; ap++) if (parts[ap].type === type && parts[ap].index === idx) return;
             parts.push({ type: type, index: idx, domTrack: dt, isTarget: isTarget });
           }
 
@@ -83,9 +84,16 @@ export function rippleDeleteScriptBody(options: {
             }
             if (sla) addPart("audio", ti, false);
           }
+          // A linked partner is removed with the clip, as in Premiere, so its
+          // track closes up too even when that track is not sync-locked.
+          for (lpi = 0; lpi < linkedPartners.length; lpi++) addPart(linkedPartners[lpi].trackType, linkedPartners[lpi].trackIndex, false);
           `
-              : ""
+              : `
+          // own_track: only the clip's own track changes; linked partners stay.
+          `
           }
+          var linkedPartnersKept = [];
+          ${scope === "own_track" ? `for (lpi = 0; lpi < linkedPartners.length; lpi++) linkedPartnersKept.push({ nodeId: String(linkedPartners[lpi].clip.nodeId), track: linkedPartners[lpi].trackType + " " + linkedPartners[lpi].trackIndex, name: linkedPartners[lpi].clip.name });` : ""}
 
           // A locked participating track cannot be edited; shifting the others
           // without it would silently desync, so refuse rather than half-ripple.
@@ -178,6 +186,7 @@ export function rippleDeleteScriptBody(options: {
             gapSeconds: __ticksToSeconds(shiftT),
             tracksAffected: planSummary,
             alsoRemoves: insidersReport,
+            linkedPartnersKept: linkedPartnersKept,
             note: "Validation passed. Re-run without dry_run to remove the clip and close the gap." + (insiders.length ? " NOTE: " + insiders.length + " clip(s) on other tracks sit inside the range and WILL ALSO BE REMOVED (range_content: delete)." : "")
           });
           `
@@ -281,6 +290,7 @@ export function rippleDeleteScriptBody(options: {
             clipsShifted: moved,
             tracksAffected: planSummary,
             alsoRemoved: removedInRange,
+            linkedPartnersKept: linkedPartnersKept,
             scope: "${scope}",
             rangeContent: "${rangeDelete ? "delete" : "refuse"}"
           });

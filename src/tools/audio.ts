@@ -51,10 +51,18 @@ export interface BeatMeasurement {
   durationSeconds: number;
 }
 
+/** The decoded audio holds no usable beat (too short, or no repeating pulse). */
+export class NoBeatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoBeatError";
+  }
+}
+
 /** Estimate a steady beat grid from signed 16-bit mono samples at a low analysis rate. */
 export function analyzeBeatPcm(samples: Int16Array, sampleRate: number): BeatMeasurement {
   if (!Number.isFinite(sampleRate) || sampleRate < 20 || samples.length < sampleRate * 2) {
-    throw new Error("Beat analysis requires at least two seconds of finite-rate audio");
+    throw new NoBeatError("Beat analysis requires at least two seconds of finite-rate audio");
   }
   const hop = Math.max(1, Math.round(sampleRate / 20));
   const envelope: number[] = [];
@@ -98,7 +106,7 @@ export function analyzeBeatPcm(samples: Int16Array, sampleRate: number): BeatMea
   selfScore /= onset.length;
   const confidence = Math.max(0, Math.min(1, selfScore > 0 ? bestScore / selfScore : 0));
   if (!Number.isFinite(confidence) || confidence < 0.05) {
-    throw new Error("No repeating beat evidence was detected in the decoded media");
+    throw new NoBeatError("No repeating beat evidence was detected in the decoded media");
   }
   const bpm = 60 * envelopeRate / bestLag;
   let bestOffset = 0;
@@ -811,41 +819,48 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         if (!existsSync(mediaPath) || !statSync(mediaPath).isFile()) {
           return { success: false, error: `Media file not found on disk: ${mediaPath}` };
         }
+        let bytes: Buffer;
         try {
           const result = await execFileAsync("ffmpeg", [
             "-nostdin", "-hide_banner", "-loglevel", "error", "-i", mediaPath,
             "-t", "1800", "-vn", "-sn", "-dn", "-ac", "1", "-ar", "200", "-f", "s16le", "pipe:1",
           ], { encoding: "buffer", timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 }) as unknown as { stdout: Buffer };
-          const bytes = result.stdout;
-          const samples = new Int16Array(bytes.length >> 1);
-          for (let index = 0; index < samples.length; index++) samples[index] = bytes.readInt16LE(index * 2);
-          const measurement = analyzeBeatPcm(samples, 200);
-          const truncated = measurement.beatTimesSeconds.length > maxBeats;
-          return {
-            success: true,
-            data: {
-              ...measurement,
-              halfTimeBpm: Number((measurement.bpm / 2).toFixed(1)),
-              doubleTimeBpm: Number((measurement.bpm * 2).toFixed(1)),
-              reliable: measurement.confidence >= 0.35,
-              beatTimesSeconds: measurement.beatTimesSeconds.slice(0, maxBeats),
-              beatTimesTruncated: truncated,
-              verificationScope: "Local decoded-media estimate only. Low confidence and half/double-time ambiguity require human musical review; no markers, cuts, or Premiere changes are made.",
-            },
-          };
+          bytes = result.stdout;
         } catch (error) {
           const failure = error as { code?: string; killed?: boolean; stderr?: Buffer | string; message?: string };
           const detail = Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf8") : (failure.stderr ?? failure.message ?? "");
-          if (failure.code === undefined && !failure.killed && failure.stderr === undefined) {
-            // The media decoded; the beat analysis itself found no steady pulse.
-            return { success: false, error: `No steady beat found: ${failure.message ?? "unknown analysis error"}. The media decoded fine; it may be speech, a quiet or ambient bed, or free-tempo music.` };
-          }
           return { success: false, error: failure.code === "ENOENT"
             ? "ffmpeg was not found on PATH; install FFmpeg to analyze beats."
             : failure.killed
             ? `ffmpeg timed out after ${FFMPEG_TIMEOUT_MS / 1000}s during beat analysis.`
             : `ffmpeg could not decode media for beat analysis: ${String(detail).trim() || "unknown error"}` };
         }
+        let measurement: BeatMeasurement;
+        try {
+          const samples = new Int16Array(bytes.length >> 1);
+          for (let index = 0; index < samples.length; index++) samples[index] = bytes.readInt16LE(index * 2);
+          measurement = analyzeBeatPcm(samples, 200);
+        } catch (error) {
+          // Only the analysis' own "no beat" outcomes are a musical result; any
+          // other exception is a real failure and is reported as one.
+          if (error instanceof NoBeatError) {
+            return { success: false, error: `No steady beat found: ${error.message}. The media decoded fine; it may be speech, a quiet or ambient bed, or free-tempo music.` };
+          }
+          return { success: false, error: `Beat analysis failed: ${error instanceof Error ? error.message : String(error)}` };
+        }
+        const truncated = measurement.beatTimesSeconds.length > maxBeats;
+        return {
+          success: true,
+          data: {
+            ...measurement,
+            halfTimeBpm: Number((measurement.bpm / 2).toFixed(1)),
+            doubleTimeBpm: Number((measurement.bpm * 2).toFixed(1)),
+            reliable: measurement.confidence >= 0.35,
+            beatTimesSeconds: measurement.beatTimesSeconds.slice(0, maxBeats),
+            beatTimesTruncated: truncated,
+            verificationScope: "Local decoded-media estimate only. Low confidence and half/double-time ambiguity require human musical review; no markers, cuts, or Premiere changes are made.",
+          },
+        };
       },
     },
 

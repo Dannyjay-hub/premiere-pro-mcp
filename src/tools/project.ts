@@ -881,12 +881,26 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           if (!imported) return __error("Premiere returned without an error but opened no new project for ${xmlPath}; nothing was imported.");
           var importedAt = String(imported.path);
           var intermediateRemoved = false;
+          var intermediateKeptAt = null;
           if (__normProjectPath(importedAt) !== __normProjectPath("${projectPath}")) {
             if (__isDirectory("${projectPath}") && Folder("${projectPath}").getFiles().length === 0) Folder("${projectPath}").remove();
             try { imported.saveAs("${projectPath}"); } catch (saveError) {}
             // saveAs swaps the open project; look it up again rather than trusting the old object.
             imported = __findOpenProject("${projectPath}") || imported;
-            if (!__findOpenProject(importedAt)) {
+            // Only delete Premiere's intermediate copy when it sits where this call
+            // told Premiere to write (the system temp folder or the destination
+            // folder); anything else is left on disk and reported.
+            var intermediateNorm = __normProjectPath(importedAt);
+            var ownedRoots = [__normProjectPath(Folder.temp.fsName), __normProjectPath(Folder.temp.fullName), __normProjectPath("${projectFolder}")];
+            var intermediateOwned = false;
+            if (/\\.prproj$/.test(intermediateNorm) && intermediateNorm.indexOf("/../") < 0) {
+              for (var ri = 0; ri < ownedRoots.length; ri++) {
+                if (ownedRoots[ri] && intermediateNorm.indexOf(ownedRoots[ri].replace(/\\/$/, "") + "/") === 0) intermediateOwned = true;
+              }
+            }
+            if (!intermediateOwned) {
+              intermediateKeptAt = importedAt;
+            } else if (!__findOpenProject(importedAt)) {
               var intermediate = new File(importedAt);
               if (intermediate.exists) intermediateRemoved = intermediate.remove();
             }
@@ -913,6 +927,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             projectPath: String(imported.path),
             premiereImportPath: importedAt,
             intermediateRemoved: intermediateRemoved,
+            intermediateKeptAt: intermediateKeptAt,
             sequences: sequences,
             activeProjectPath: app.project ? String(app.project.path) : null,
             openProjects: __openProjectPaths(),

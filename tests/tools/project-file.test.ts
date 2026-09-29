@@ -15,7 +15,7 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 }));
 
 import { sendCommand } from "../../src/bridge/file-bridge.js";
-import { readScratchDisks } from "../../src/tools/project-file.js";
+import { readProjectSection, readScratchDisks } from "../../src/tools/project-file.js";
 import { getUtilityTools } from "../../src/tools/utility.js";
 import { getInspectionTools } from "../../src/tools/inspection.js";
 
@@ -41,17 +41,45 @@ describe("readScratchDisks", () => {
       AutoSaveLocation0: "/Volumes/Fast &amp; Big/AutoSave",
       CapsuleMediaLocation0: "SameAsProject",
     });
-    expect(readScratchDisks(path)).toEqual({
+    return expect(readScratchDisks(path)).resolves.toEqual({
       videoPreviews: { setting: "SameAsProject", path: workspace },
       autoSave: { setting: "/Volumes/Fast & Big/AutoSave", path: "/Volumes/Fast & Big/AutoSave" },
       motionGraphicsTemplateMedia: { setting: "SameAsProject", path: workspace },
     });
   });
 
-  it("fails clearly when the project has no scratch disk block", () => {
+  it("fails clearly when the project has no scratch disk block", async () => {
     const path = join(workspace, "empty.prproj");
     writeFileSync(path, gzipSync(Buffer.from("<PremiereData/>")));
-    expect(() => readScratchDisks(path)).toThrow(/no ScratchDiskSettings/);
+    await expect(readScratchDisks(path)).rejects.toThrow(/no ScratchDiskSettings/);
+  });
+
+  it("reads an uncompressed project too", async () => {
+    const path = join(workspace, "plain.prproj");
+    writeFileSync(path, "<PremiereData><ScratchDiskSettings Version=\"4\"><AutoSaveLocation0>/a</AutoSaveLocation0></ScratchDiskSettings></PremiereData>");
+    await expect(readScratchDisks(path)).resolves.toEqual({ autoSave: { setting: "/a", path: "/a" } });
+  });
+});
+
+describe("readProjectSection", () => {
+  it("stops once the section closes instead of inflating the whole project", async () => {
+    // Everything after the section is 64 MiB of zeros that never needs inflating.
+    const xml = Buffer.concat([
+      Buffer.from("<PremiereData><ScratchDiskSettings Version=\"4\"><AutoSaveLocation0>/a</AutoSaveLocation0></ScratchDiskSettings>"),
+      Buffer.alloc(64 * 1024 * 1024, 0x20),
+      Buffer.from("</PremiereData>"),
+    ]);
+    const path = join(workspace, "big.prproj");
+    writeFileSync(path, gzipSync(xml));
+    const started = Date.now();
+    await expect(readProjectSection(path, "ScratchDiskSettings")).resolves.toContain("<AutoSaveLocation0>/a</AutoSaveLocation0>");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("returns null for a tag that only appears as a prefix of another", async () => {
+    const path = join(workspace, "prefix.prproj");
+    writeFileSync(path, gzipSync(Buffer.from("<PremiereData><ScratchDiskSettingsX/></PremiereData>")));
+    await expect(readProjectSection(path, "ScratchDiskSettings")).resolves.toBeNull();
   });
 });
 

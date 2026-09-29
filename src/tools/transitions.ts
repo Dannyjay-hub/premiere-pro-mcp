@@ -95,6 +95,10 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           var frameTicks = parseFloat(seq.timebase);
           if (!frameTicks || isNaN(frameTicks)) return __error("The active sequence did not expose a valid timebase for transition duration.");
           var durationFrames = Math.max(1, Math.round(__secondsToTicks(${duration}) / frameTicks));
+          if (__newTransitionCovers(domTrack, {}, cutTicks, frameTicks)) {
+            return __error("A transition already covers the cut at ${args.cut_point_seconds}s on this track; no transition was attempted.");
+          }
+          var transitionKeysBefore = __transitionKeys(domTrack);
           var transitionCountBefore = domTrack.transitions.numItems;
           try {
             // QE transition writes belong to the clip. The legacy method takes
@@ -108,23 +112,11 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           if (domTrack.transitions.numItems <= transitionCountBefore) {
             return __error("QE clip addTransition returned without adding a transition to the track.");
           }
-          var transitionAtCut = false;
-          for (var t = 0; t < domTrack.transitions.numItems; t++) {
-            var placedTransition = domTrack.transitions[t];
-            var transitionStart = parseFloat(placedTransition.start.ticks);
-            var transitionEnd = parseFloat(placedTransition.end.ticks);
-            // Accept any transition that covers the cut. Premiere cannot center an
-            // odd frame count on a cut (a 25-frame dissolve splits 12/13), so the
-            // midpoint can sit half a frame off; clips without handles can also
-            // push the transition entirely to one side of the cut.
-            var edgeTolerance = frameTicks / 2 + 1;
-            if (!isNaN(transitionStart) && !isNaN(transitionEnd) &&
-                transitionStart - edgeTolerance <= cutTicks && cutTicks <= transitionEnd + edgeTolerance) {
-              transitionAtCut = true;
-              break;
-            }
+          // Only a transition this call added counts; clips without handles can
+          // push it entirely to one side of the cut, so covering is enough.
+          if (!__newTransitionCovers(domTrack, transitionKeysBefore, cutTicks, frameTicks)) {
+            return __error("Premiere added a transition, but DOM readback did not find a new one at the requested cut point.");
           }
-          if (!transitionAtCut) return __error("Premiere added a transition, but DOM readback did not find it at the requested cut point.");
 
           return __result({
             added: true,
@@ -207,10 +199,19 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           var frameTicks = parseFloat(seq.timebase);
           if (!frameTicks || isNaN(frameTicks)) return __error("The active sequence did not expose a valid timebase for transition duration.");
           var transitionCountBefore = domTrack.transitions.numItems;
+          var transitionKeysBefore = __transitionKeys(domTrack);
           var durationFrames = Math.max(1, Math.round(__secondsToTicks(${duration}) / frameTicks));
           var clip = result.clip;
           var position = "${position}";
           var requestedCount = position === "both" ? 2 : 1;
+          var clipStartTicks = parseFloat(clip.start.ticks);
+          var clipEndTicks = parseFloat(clip.end.ticks);
+          if ((position === "start" || position === "both") && __newTransitionCovers(domTrack, {}, clipStartTicks, frameTicks)) {
+            return __error("A transition already covers the clip start; no transition was attempted.");
+          }
+          if ((position === "end" || position === "both") && __newTransitionCovers(domTrack, {}, clipEndTicks, frameTicks)) {
+            return __error("A transition already covers the clip end; no transition was attempted.");
+          }
           
           if (position === "start" || position === "both") {
             try {
@@ -234,22 +235,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           if (verifiedCount < requestedCount) {
             return __error("QE clip addTransition returned, but Premiere added " + verifiedCount + " of " + requestedCount + " requested transition(s) to the track.");
           }
-          var startVerified = position !== "start" && position !== "both";
-          var endVerified = position !== "end" && position !== "both";
-          var clipStartTicks = parseFloat(clip.start.ticks);
-          var clipEndTicks = parseFloat(clip.end.ticks);
-          for (var vt = 0; vt < domTrack.transitions.numItems; vt++) {
-            var verifiedTransition = domTrack.transitions[vt];
-            var verifiedStart = parseFloat(verifiedTransition.start.ticks);
-            var verifiedEnd = parseFloat(verifiedTransition.end.ticks);
-            if (isNaN(verifiedStart) || isNaN(verifiedEnd)) continue;
-            // Cover the edge rather than centre on it: Premiere cannot centre an odd
-            // frame count (a 25-frame dissolve splits 12/13) and adds tick drift.
-            var edgeTolerance = frameTicks / 2 + 1;
-            if (verifiedStart - edgeTolerance <= clipStartTicks && clipStartTicks <= verifiedEnd + edgeTolerance) startVerified = true;
-            if (verifiedStart - edgeTolerance <= clipEndTicks && clipEndTicks <= verifiedEnd + edgeTolerance) endVerified = true;
-          }
-          if (!startVerified || !endVerified) return __error("Premiere added the requested transition count, but DOM readback did not find a transition at each requested clip edge.");
+          var startVerified = (position !== "start" && position !== "both") || __newTransitionCovers(domTrack, transitionKeysBefore, clipStartTicks, frameTicks);
+          var endVerified = (position !== "end" && position !== "both") || __newTransitionCovers(domTrack, transitionKeysBefore, clipEndTicks, frameTicks);
+          if (!startVerified || !endVerified) return __error("Premiere added the requested transition count, but DOM readback did not find a new transition at each requested clip edge.");
           
           return __result({
             added: true,
@@ -320,7 +308,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           if (!frameTicks || isNaN(frameTicks)) return __error("The active sequence did not expose a valid timebase for transition duration.");
           var durationFrames = Math.max(1, Math.round(__secondsToTicks(${duration}) / frameTicks));
           var transitionCountBefore = track.transitions.numItems;
+          var transitionKeysBefore = __transitionKeys(track);
           var requestedCount = 0;
+          var requestedCuts = [];
           var failures = [];
           
           // A cut that already has a transition is left as it is: Premiere will
@@ -343,6 +333,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             if (Math.abs(parseFloat(outgoingClip.end.ticks) - parseFloat(incomingClip.start.ticks)) >= 1) continue;
             if (cutHasTransition(parseFloat(incomingClip.start.ticks))) { alreadyPresent++; continue; }
             requestedCount++;
+            requestedCuts.push({ index: c, ticks: parseFloat(incomingClip.start.ticks) });
             var qeClip = __findQeClipByDomClip(qeTrack, incomingClip);
             if (!qeClip || typeof qeClip.addTransition !== "function") {
               failures.push("cut " + c + ": target QE clip does not expose addTransition");
@@ -359,21 +350,10 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           if (verifiedCount !== requestedCount) {
             return __error("QE clip addTransition verified " + verifiedCount + " of " + requestedCount + " requested transitions" + (failures.length ? ": " + failures.join("; ") : "."));
           }
-          for (var cutIndex = 0; cutIndex < track.clips.numItems - 1; cutIndex++) {
-            var leftClip = track.clips[cutIndex];
-            var rightClip = track.clips[cutIndex + 1];
-            var expectedCut = parseFloat(rightClip.start.ticks);
-            if (Math.abs(parseFloat(leftClip.end.ticks) - expectedCut) >= 1) continue;
-            var foundAtCut = false;
-            for (var transitionIndex = 0; transitionIndex < track.transitions.numItems; transitionIndex++) {
-              var readTransition = track.transitions[transitionIndex];
-              var readStart = parseFloat(readTransition.start.ticks);
-              var readEnd = parseFloat(readTransition.end.ticks);
-              // Cover the cut rather than centre on it: Premiere cannot centre an odd
-              // frame count (a 25-frame dissolve splits 12/13) and adds tick drift.
-              if (!isNaN(readStart) && !isNaN(readEnd) && readStart - (frameTicks / 2 + 1) <= expectedCut && expectedCut <= readEnd + (frameTicks / 2 + 1)) { foundAtCut = true; break; }
+          for (var rc = 0; rc < requestedCuts.length; rc++) {
+            if (!__newTransitionCovers(track, transitionKeysBefore, requestedCuts[rc].ticks, frameTicks)) {
+              return __error("Premiere added the requested transition count, but DOM readback did not find a new transition at cut " + requestedCuts[rc].index + ".");
             }
-            if (!foundAtCut) return __error("Premiere added the requested transition count, but DOM readback did not find a transition at cut " + cutIndex + ".");
           }
           
           return __result({

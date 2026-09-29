@@ -108,7 +108,6 @@ const FILESYSTEM_TOOL_NAMES = new Set([
   "preview_mogrt_recipe",
   "verify_mogrt_artifact",
   "apply_lut",
-  "set_scratch_disk_path",
   "verify_delivery_file",
   "verify_delivery_conformance",
   "detect_silence",
@@ -163,6 +162,12 @@ const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[
   // Premiere writes XMP changes into the source media file on disk (verified:
   // set_xmp_metadata rewrote a user's MP4 metadata block), so this is a file write.
   set_xmp_metadata: ["edit", "filesystem"],
+  // Changes the project and writes files: add_title bakes a .mogrt copy under
+  // the user's app-data folder; the scratch-disk setters point Premiere at
+  // folders it will write to and can save the project to verify them.
+  add_title: ["edit", "filesystem"],
+  set_project_scratch_disk: ["edit", "filesystem"],
+  set_scratch_disk_path: ["edit", "filesystem"],
 };
 
 const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, readonly Capability[]>>>> = {

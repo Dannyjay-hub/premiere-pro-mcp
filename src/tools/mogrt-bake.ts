@@ -24,6 +24,8 @@ import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib"
 
 const MAX_TEMPLATE_BYTES = 64 * 1024 * 1024;
 const MAX_ENTRY_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+const MAX_ENTRIES = 4096;
 const TEXT_CONTROL_TYPE = 6;
 const SOURCE_TEXT_BLOB = /(<StartKeyframeValue[^>]*>)([A-Za-z0-9+/=\s]+)(<\/StartKeyframeValue>)/g;
 const UTF16_MTEXT = Buffer.from("mText", "utf16le");
@@ -89,9 +91,22 @@ export function readZipEntry(archive: Buffer, entryName: string, maxBytes = MAX_
   return entry ? entryData(archive, entry, maxBytes) : null;
 }
 
-/** Read every entry of a zip archive, in archive order. */
-export function readZipEntries(archive: Buffer, maxEntryBytes = MAX_ENTRY_BYTES): ZipEntry[] {
-  return centralDirectory(archive).map((entry) => ({ name: entry.name, data: entryData(archive, entry, maxEntryBytes) }));
+/**
+ * Read every entry of a zip archive, in archive order. Each entry is capped at
+ * maxEntryBytes and all of them together at maxTotalBytes, so a small archive
+ * of many highly compressed entries cannot inflate without bound.
+ */
+export function readZipEntries(archive: Buffer, maxEntryBytes = MAX_ENTRY_BYTES, maxTotalBytes = MAX_TOTAL_BYTES): ZipEntry[] {
+  const entries = centralDirectory(archive);
+  if (entries.length > MAX_ENTRIES) throw new Error(`Zip archive has ${entries.length} entries; at most ${MAX_ENTRIES} are read`);
+  const declared = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (declared > maxTotalBytes) throw new Error(`Zip entries total ${declared} bytes, over the ${maxTotalBytes}-byte limit`);
+  let total = 0;
+  return entries.map((entry) => {
+    const data = entryData(archive, entry, Math.max(1, Math.min(maxEntryBytes, maxTotalBytes - total)));
+    total += data.length;
+    return { name: entry.name, data };
+  });
 }
 
 let crcTable: Uint32Array | undefined;

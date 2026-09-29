@@ -8,7 +8,8 @@ import { readScratchDisks } from "./project-file.js";
 
 // Shared set-up for lift/extract: resolve the sequence in/out range, refuse a
 // range that spans the whole sequence (Premiere reports cleared marks as
-// 0..end), and note whether any unlocked clip overlaps the range.
+// 0..end), and record what each targeted, unlocked track holds in the range.
+// Lift and Extract act only on targeted tracks, so only those are verified.
 const IN_OUT_EDIT_PREAMBLE = `
           app.enableQE();
           var seq = app.project.activeSequence;
@@ -27,26 +28,70 @@ const IN_OUT_EDIT_PREAMBLE = `
           if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
             return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");
           }
-          var __inOutUndoIndex = function () {
-            try { var v = Number(qe.project.undoStackIndex()); return isFinite(v) ? v : null; } catch (eIdx) { return null; }
+          // Every clip's ID and span, to tell whether a failed edit changed anything.
+          var timelineSignature = function () {
+            var parts = [];
+            var groups = [["V", seq.videoTracks], ["A", seq.audioTracks]];
+            for (var g = 0; g < groups.length; g++) {
+              for (var t = 0; t < groups[g][1].numTracks; t++) {
+                var clips = groups[g][1][t].clips;
+                for (var c = 0; c < clips.numItems; c++) parts.push(groups[g][0] + t + ":" + clips[c].nodeId + "@" + clips[c].start.ticks + "-" + clips[c].end.ticks);
+              }
+            }
+            return parts.join(";");
           };
-          var beforeIndex = __inOutUndoIndex();
-          var rangeHadClips = false;
+          var measure = function (track) {
+            var covered = 0, overlap = 0;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var cs = parseFloat(track.clips[c].start.ticks), ce = parseFloat(track.clips[c].end.ticks);
+              covered += ce - cs;
+              overlap += Math.max(0, Math.min(ce, outTicks) - Math.max(cs, inTicks));
+            }
+            return { covered: covered, overlap: overlap };
+          };
+          var targeted = [];
           var anyLocked = false;
-          var survey = function (tracks) {
+          var unreadable = [];
+          var survey = function (tracks, kind) {
             for (var t = 0; t < tracks.numTracks; t++) {
               var locked = false;
               try { locked = !!tracks[t].isLocked(); } catch (eLock) {}
               if (locked) { anyLocked = true; continue; }
+              var isTarget = null;
+              try { isTarget = tracks[t].isTargeted() === true; } catch (eTarget) { isTarget = null; }
+              if (isTarget === null) { unreadable.push(kind + (t + 1)); continue; }
+              if (!isTarget) continue;
+              var m = measure(tracks[t]);
+              var after = [];
               for (var c = 0; c < tracks[t].clips.numItems; c++) {
                 var clip = tracks[t].clips[c];
-                if (parseFloat(clip.start.ticks) < outTicks - halfFrame && parseFloat(clip.end.ticks) > inTicks + halfFrame) rangeHadClips = true;
+                if (parseFloat(clip.start.ticks) >= outTicks - halfFrame) after.push({ nodeId: String(clip.nodeId), start: parseFloat(clip.start.ticks) });
               }
+              targeted.push({ label: kind + (t + 1), track: tracks[t], covered: m.covered, overlap: m.overlap, after: after });
             }
           };
-          survey(seq.videoTracks);
-          survey(seq.audioTracks);
-          if (!rangeHadClips) return __error("Nothing to remove: no clips on unlocked tracks overlap the in/out range. No clips were changed.");
+          survey(seq.videoTracks, "V");
+          survey(seq.audioTracks, "A");
+          if (unreadable.length) return __error("Could not read whether " + unreadable.join(", ") + " are targeted, so the tracks Premiere will edit are unknown. No clips were changed.");
+          var rangeHadClips = false;
+          for (var tt = 0; tt < targeted.length; tt++) if (targeted[tt].overlap > halfFrame) rangeHadClips = true;
+          if (!rangeHadClips) return __error("Nothing to remove: no clips on targeted, unlocked tracks overlap the in/out range (Lift and Extract only edit targeted tracks; see set_target_track). No clips were changed.");
+          var signatureBefore = timelineSignature();
+          // After the edit, each targeted track must hold exactly the range's content less.
+          var coverageProblems = function () {
+            var problems = [];
+            for (var p = 0; p < targeted.length; p++) {
+              var now = measure(targeted[p].track).covered;
+              var expectedCovered = targeted[p].covered - targeted[p].overlap;
+              if (Math.abs(now - expectedCovered) > halfFrame * 2) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
+            }
+            return problems;
+          };
+          var failAfterEdit = function (message, data) {
+            var changed = timelineSignature() !== signatureBefore;
+            data.timelineChanged = changed;
+            return __jsonStringify({ success: false, error: (changed ? "The timeline changed, but " : "Nothing was changed: ") + message, data: data });
+          };
 `;
 
 const MEDIA_REPORT_DEFAULT_LIMIT = 100;
@@ -949,7 +994,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "Lift (remove without closing the gap) the content between the sequence in/out points on every unlocked track, then verify the range is empty. Requires sequence in/out marks that do not span the whole sequence.",
+        "Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are left alone, as in Premiere.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -959,38 +1004,31 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           try {
             qeSeq[liftName]();
           } catch (eLift) {
-            return __error("Lift failed: " + eLift.toString());
+            return failAfterEdit("Premiere's lift failed: " + eLift.toString(), {});
           }
-          var afterIndex = __inOutUndoIndex();
           var leftovers = [];
-          var scan = function (tracks, kind) {
-            for (var t = 0; t < tracks.numTracks; t++) {
-              var track = tracks[t];
-              var locked = false;
-              try { locked = !!track.isLocked(); } catch (eLock) {}
-              if (locked) continue;
-              for (var c = 0; c < track.clips.numItems; c++) {
-                var clip = track.clips[c];
-                var cs = parseFloat(clip.start.ticks), ce = parseFloat(clip.end.ticks);
-                if (cs < outTicks - halfFrame && ce > inTicks + halfFrame) {
-                  leftovers.push({ track: kind + (t + 1), name: clip.name, startSeconds: __ticksToSeconds(String(cs)), endSeconds: __ticksToSeconds(String(ce)) });
-                }
+          for (var p = 0; p < targeted.length; p++) {
+            var track = targeted[p].track;
+            for (var c = 0; c < track.clips.numItems; c++) {
+              var clip = track.clips[c];
+              var cs = parseFloat(clip.start.ticks), ce = parseFloat(clip.end.ticks);
+              if (cs < outTicks - halfFrame && ce > inTicks + halfFrame) {
+                leftovers.push({ track: targeted[p].label, name: clip.name, startSeconds: __ticksToSeconds(String(cs)), endSeconds: __ticksToSeconds(String(ce)) });
               }
             }
-          };
-          scan(seq.videoTracks, "V");
-          scan(seq.audioTracks, "A");
-          if (leftovers.length) {
-            return __jsonStringify({ success: false, error: "Premiere's lift left clips inside the in/out range.", data: { leftovers: leftovers } });
           }
+          if (leftovers.length) return failAfterEdit("Premiere's lift left clips inside the in/out range on targeted tracks.", { leftovers: leftovers });
+          var problems = coverageProblems();
+          if (problems.length) return failAfterEdit("Premiere's lift removed more or less than the in/out range: " + problems.join("; ") + ".", { problems: problems });
+          var edited = [];
+          for (var e = 0; e < targeted.length; e++) edited.push(targeted[e].label);
           return __result({
             lifted: true,
             inSeconds: inSeconds,
             outSeconds: outSeconds,
             gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            tracksEdited: edited,
             sequenceEndSeconds: __ticksToSeconds(seq.end),
-            undoStackIndexBefore: beforeIndex,
-            undoStackIndexAfter: afterIndex,
             verified: true
           });
         `);
@@ -1000,7 +1038,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "Extract (remove and close the gap) the content between the sequence in/out points on every unlocked track, then verify the sequence shortened by the range. Requires sequence in/out marks that do not span the whole sequence.",
+        "Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are only shifted by Premiere when sync-locked; they are not verified.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1009,27 +1047,34 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           try {
             qeSeq.extract();
           } catch (eExtract) {
-            return __error("Extract failed: " + eExtract.toString());
+            return failAfterEdit("Premiere's extract failed: " + eExtract.toString(), {});
           }
+          var shift = outTicks - inTicks;
+          var problems = coverageProblems();
+          for (var p = 0; p < targeted.length; p++) {
+            var track = targeted[p].track;
+            for (var m = 0; m < targeted[p].after.length; m++) {
+              var want = targeted[p].after[m];
+              var found = null;
+              for (var c = 0; c < track.clips.numItems; c++) if (String(track.clips[c].nodeId) === want.nodeId) { found = track.clips[c]; break; }
+              if (!found) { problems.push(targeted[p].label + ": a clip after the range is missing"); continue; }
+              var moved = want.start - parseFloat(found.start.ticks);
+              if (Math.abs(moved - shift) > halfFrame * 2) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
+            }
+          }
+          if (problems.length) return failAfterEdit("Premiere's extract did not close the in/out range as expected: " + problems.join("; ") + ".", { problems: problems });
           var endAfter = parseFloat(seq.end);
-          var afterIndex = __inOutUndoIndex();
-          var removed = Math.min(outTicks, endBefore) - inTicks;
-          var shortenedBy = endBefore - endAfter;
-          var expectFullRipple = !anyLocked;
-          if (expectFullRipple ? Math.abs(shortenedBy - removed) > halfFrame : shortenedBy < -halfFrame) {
-            return __jsonStringify({ success: false, error: "Premiere's extract did not close the in/out range as expected.", data: {
-              sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)), sequenceEndAfterSeconds: __ticksToSeconds(String(endAfter)),
-              expectedShortenSeconds: __ticksToSeconds(String(removed)), undoStackIndexBefore: beforeIndex, undoStackIndexAfter: afterIndex } });
-          }
+          var edited = [];
+          for (var e = 0; e < targeted.length; e++) edited.push(targeted[e].label);
           return __result({
             extracted: true,
             inSeconds: inSeconds,
             outSeconds: outSeconds,
-            removedSeconds: __ticksToSeconds(String(shortenedBy)),
+            removedSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            tracksEdited: edited,
+            sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)),
             sequenceEndSeconds: __ticksToSeconds(String(endAfter)),
             lockedTracksKept: anyLocked,
-            undoStackIndexBefore: beforeIndex,
-            undoStackIndexAfter: afterIndex,
             verified: true
           });
         `);
@@ -1590,7 +1635,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         try {
           return {
             success: true,
-            data: { source: "saved_project_file", projectPath, disks: readScratchDisks(projectPath) },
+            data: { source: "saved_project_file", projectPath, disks: await readScratchDisks(projectPath) },
           };
         } catch (error) {
           return {

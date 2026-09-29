@@ -76,7 +76,7 @@ export async function applyScratchDisks(
   }
   let saved: Record<string, { setting: string; path: string }>;
   try {
-    saved = readScratchDisks(hostData.projectPath);
+    saved = await readScratchDisks(hostData.projectPath);
   } catch (error) {
     return { success: false, error: `Scratch disks were set and the project saved, but the saved file could not be read: ${error instanceof Error ? error.message : String(error)}` };
   }

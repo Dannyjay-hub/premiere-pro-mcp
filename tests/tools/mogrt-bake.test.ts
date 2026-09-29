@@ -125,3 +125,18 @@ describe("bakePremiereTitle", () => {
     expect(readPremiereTitleText(path)).toEqual(["Real Stock Title"]);
   });
 });
+
+describe("readZipEntries size limits", () => {
+  const archive = writeZip([
+    { name: "a.bin", data: Buffer.alloc(3000, 0x41) },
+    { name: "b.bin", data: Buffer.alloc(3000, 0x42) },
+  ]);
+
+  it("reads entries within the total cap", () => {
+    expect(readZipEntries(archive, 4096, 8192).map((entry) => entry.data.length)).toEqual([3000, 3000]);
+  });
+
+  it("refuses entries whose total exceeds the cap, even when each is under the per-entry cap", () => {
+    expect(() => readZipEntries(archive, 4096, 5000)).toThrow(/over the 5000-byte limit/);
+  });
+});

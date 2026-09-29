@@ -78,7 +78,7 @@ describe("trim edits keep linked audio in sync", () => {
     const { video, audio } = host();
     const result = await tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
     expect(result.success).toBe(true);
-    expect(result.data?.linkedPartnersEdited).toEqual([{ nodeId: "a1", trackType: "audio", trackIndex: 0 }]);
+    expect(result.data?.linkedPartnersEdited).toEqual([{ nodeId: "a1", trackType: "audio", trackIndex: 0, verified: true }]);
     expect(video[1].snapshot()).toEqual([10, 30, 11, 31]);
     expect(audio[1].snapshot()).toEqual(video[1].snapshot());
   });
@@ -110,11 +110,12 @@ describe("trim edits keep linked audio in sync", () => {
     expect(audio[1].snapshot()[2]).toBe(10);
   });
 
-  it("reports a partial edit when the linked partner cannot follow", async () => {
+  it("says the timeline changed when a partner that passed its check is then rejected by Premiere", async () => {
     host({ audioRejectsInPoint: true });
     const result = await tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/slip was applied to the clip but not to its linked audio clip on track 1.*Use Undo/);
+    expect(result.error).toMatch(/slip was applied to the clip but not to its linked audio clip on track 1.*timeline changed and was not rolled back/);
+    expect(result.data).toMatchObject({ timelineChanged: true, failedPartner: { nodeId: "a1" } });
   });
 });
 
@@ -204,5 +205,75 @@ describe("rename_clip", () => {
     await expect(tools.rename_clip.handler({ node_id: "v1", new_name: "Speaker close-up" }))
       .resolves.toMatchObject({ success: true, data: { renamed: true, verified: true, newName: "Speaker close-up" } });
     expect(video[1].name).toBe("Speaker close-up");
+  });
+});
+
+describe("linked edits check every partner before changing anything", () => {
+  const timeline = getTimelineTools(bridgeOptions);
+  const snap = (list: ReturnType<typeof host>["video"]) => list.map((clip) => clip.snapshot());
+
+  it.each([
+    ["trim_clip (partner is retimed)", (h: ReturnType<typeof host>) => {
+      h.audio[1].outPoint = { ticks: String(50 * TICKS) };
+      h.audio[1].getSpeed = () => 2;
+    }, () => timeline.trim_clip.handler({ node_id: "v1", new_out_seconds: 29 })],
+    ["set_clip_duration (partner would overlap its next clip)", (h: ReturnType<typeof host>) => {
+      h.audio[1].start = { ticks: String(11 * TICKS) };
+    }, () => timeline.set_clip_duration.handler({ node_id: "v1", duration_seconds: 19.5 })],
+    ["roll_edit (partner has a gap at the cut)", (h: ReturnType<typeof host>) => {
+      h.audio[1].end = { ticks: String(28 * TICKS) };
+    }, () => tools.roll_edit.handler({ node_id: "v1", offset_seconds: 0.5 })],
+  ])("%s refuses without touching the picture", async (_name, setup, call) => {
+    const h = host();
+    setup(h);
+    const before = [snap(h.video), snap(h.audio)];
+    const result = await call() as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Nothing was changed") });
+    expect([snap(h.video), snap(h.audio)]).toEqual(before);
+  });
+
+  it("slip_edit refuses when the partner's source range cannot move", async () => {
+    const { video, audio } = host();
+    audio[1].inPoint = { ticks: "0" };
+    const before = [snap(video), snap(audio)];
+    await expect(tools.slip_edit.handler({ node_id: "v1", offset_seconds: -1 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Nothing was changed") });
+    expect([snap(video), snap(audio)]).toEqual(before);
+  });
+
+  it("does not report verified when a partner's result is committed_unverified", async () => {
+    const { audio } = host();
+    // Shortening keeps the partner's keyframe scan unreadable after the write.
+    let reads = 0;
+    Object.defineProperty(audio[1], "components", { get: () => { reads += 1; if (reads > 2) throw new Error("components unreadable"); return { numItems: 0 }; } });
+    const result = await timeline.set_clip_duration.handler({ node_id: "v1", duration_seconds: 15 }) as Result;
+    expect(result).toMatchObject({ success: true, data: { verified: false, outcome: "committed_unverified", linkedPartnersEdited: [{ nodeId: "a1", verified: false }] } });
+  });
+});
+
+describe("trim_clip will not extend into a neighbour", () => {
+  const timeline = getTimelineTools(bridgeOptions);
+
+  it("refuses a tail extension that would overlap the next clip", async () => {
+    const { video } = host();
+    video[1].end = { ticks: String(25 * TICKS) };
+    video[1].outPoint = { ticks: String(25 * TICKS) };
+    const result = await timeline.trim_clip.handler({ node_id: "v1", new_out_seconds: 32, include_linked: false }) as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("would overlap the next clip") });
+    expect(video[1].snapshot()).toEqual([10, 25, 10, 25]);
+  });
+
+  it("refuses a head extension that would overlap the previous clip", async () => {
+    const { video } = host();
+    const result = await timeline.trim_clip.handler({ node_id: "v1", new_in_seconds: 8, include_linked: false }) as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("would overlap the previous clip") });
+    expect(video[1].snapshot()).toEqual([10, 30, 10, 30]);
+  });
+
+  it("extends into free space", async () => {
+    const { video } = host();
+    video[1].end = { ticks: String(25 * TICKS) };
+    video[1].outPoint = { ticks: String(25 * TICKS) };
+    await expect(timeline.trim_clip.handler({ node_id: "v1", new_out_seconds: 28, include_linked: false })).resolves.toMatchObject({ success: true });
+    expect(video[1].snapshot()).toEqual([10, 28, 10, 28]);
   });
 });

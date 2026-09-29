@@ -378,7 +378,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
 
     trim_clip: {
       description:
-        "Trim exactly one source in/out point and verify the corresponding visible timeline edge. Refuses retimed clips and, by default, trims that would leave effect keyframes outside the visible clip. To set a clip's timeline length or extend a still image, use set_clip_duration.",
+        "Trim exactly one source in/out point and verify the corresponding visible timeline edge. Refuses retimed clips, extensions that would overlap the neighbouring clip on the same track, and, by default, trims that would leave effect keyframes outside the visible clip. Linked audio/video partners get the same trim by default (include_linked); every clip is checked before any is changed. To set a clip's timeline length or extend a still image, use set_clip_duration.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -447,7 +447,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
         }
 
         const script = buildToolScript(`
-          function __editOne(result, nodeId) {
+          function __editOne(result, nodeId, checkOnly) {
 
             var clip = result.clip;
 
@@ -516,6 +516,29 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             if (beforeKeyframes.outside.length && "${keyframePolicy}" === "reject") {
               return __editFail("Refusing trim before mutation: " + beforeKeyframes.outside.length + " effect keyframe(s) would remain outside the visible clip. Use keyframe_policy: preserve only if retaining those keyframes is intentional, or adjust them explicitly with the keyframe tools.");
             }
+
+            // Moving an edge outwards must not run into a neighbour on the same
+            // track (Premiere's start/end setters would overlap or overwrite it).
+            var trimStartTicks = parseFloat(clip.start.ticks);
+            var trimEndTicks = parseFloat(clip.end.ticks);
+            var newStartTicks = trimStartTicks + ${args.new_in_seconds !== undefined ? "(__secondsToTicks(targetIn) - parseFloat(clip.inPoint.ticks))" : "0"};
+            var newEndTicks = trimEndTicks + ${args.new_out_seconds !== undefined ? "(__secondsToTicks(targetOut) - parseFloat(clip.outPoint.ticks))" : "0"};
+            if (newStartTicks < -1) return __editFail("The requested in point would move the clip start before the beginning of the sequence; trim was not attempted.");
+            var trimSequence = app.project.activeSequence;
+            var trimTrack = trimSequence ? (result.trackType === "video" ? trimSequence.videoTracks : trimSequence.audioTracks)[result.trackIndex] : null;
+            for (var ni = 0; trimTrack && ni < trimTrack.clips.numItems; ni++) {
+              var neighbour = trimTrack.clips[ni];
+              if (String(neighbour.nodeId) === String(clip.nodeId)) continue;
+              var neighbourStart = parseFloat(neighbour.start.ticks);
+              var neighbourEnd = parseFloat(neighbour.end.ticks);
+              if (neighbourEnd <= trimStartTicks + 1 && newStartTicks < neighbourEnd - 1) {
+                return __editFail("Refusing to extend the head: the new start (" + __ticksToSeconds(newStartTicks) + "s) would overlap the previous clip '" + neighbour.name + "' on " + result.trackType + " track " + (result.trackIndex + 1) + ", which ends at " + __ticksToSeconds(neighbourEnd) + "s. Trim was not attempted.");
+              }
+              if (neighbourStart >= trimEndTicks - 1 && newEndTicks > neighbourStart + 1) {
+                return __editFail("Refusing to extend the tail: the new end (" + __ticksToSeconds(newEndTicks) + "s) would overlap the next clip '" + neighbour.name + "' on " + result.trackType + " track " + (result.trackIndex + 1) + ", which starts at " + __ticksToSeconds(neighbourStart) + "s. Trim was not attempted.");
+              }
+            }
+            if (checkOnly) return __editOk({ checked: true });
 
             // Capture original ticks as strings. Do not keep the Time object
             // references — Premiere can mutate the same instance on write.
@@ -654,22 +677,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found: " + "${escapeForExtendScript(args.node_id)}");
-          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
-          var main;
-          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
-          if (!main.ok) return __error(main.error);
-          var linkedEdited = [];
-          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
-            var partner = partners[partnerIndex];
-            var partnerResult;
-            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
-            if (!partnerResult.ok) {
-              return __error("The trim was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay consistent, or retry with include_linked false.");
-            }
-            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
-          }
-          main.data.linkedPartnersEdited = linkedEdited;
-          return __result(main.data);
+          return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "trim");
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -677,7 +685,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
 
     set_clip_duration: {
       description:
-        "Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners are not adjusted. Use this instead of speed changes, which Premiere does not expose to scripting.",
+        "Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners get the same change by default (include_linked); every clip is checked before any is changed. Use this instead of speed changes, which Premiere does not expose to scripting.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -741,7 +749,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
         const nodeId = escapeForExtendScript(args.node_id);
 
         const script = buildToolScript(`
-          function __editOne(result, nodeId) {
+          function __editOne(result, nodeId, checkOnly) {
             var clip = result.clip;
             var seq = app.project.activeSequence;
             if (!seq) return __editFail("No active sequence");
@@ -810,6 +818,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               }
             }
 
+            if (checkOnly) return __editOk({ checked: true });
             if (Math.abs(targetEndTicks - endTicks) < 1) {
               return __editOk({
                 outcome: "verified",
@@ -907,8 +916,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               isStillImage: isStillImage,
               speed: speed,
               reversed: reversed,
-              keyframePolicy: "${keyframePolicy}",
-              linkedItemsAdjusted: false
+              keyframePolicy: "${keyframePolicy}"
             };
             if (shortening) {
               var afterKeys = __findOutOfRangeKeyframes(after.clip, __ticksToSeconds(afterEnd - afterStart));
@@ -923,22 +931,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${nodeId}");
           if (!target) return __error("Clip not found: " + "${nodeId}");
-          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
-          var main;
-          try { main = __editOne(target, "${nodeId}"); } catch (mainError) { main = __editFail(mainError.toString()); }
-          if (!main.ok) return __error(main.error);
-          var linkedEdited = [];
-          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
-            var partner = partners[partnerIndex];
-            var partnerResult;
-            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
-            if (!partnerResult.ok) {
-              return __error("The duration change was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay consistent, or retry with include_linked false.");
-            }
-            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
-          }
-          main.data.linkedPartnersEdited = linkedEdited;
-          return __result(main.data);
+          return __runLinkedEdit(target, "${nodeId}", ${args.include_linked === false ? "false" : "true"}, __editOne, "duration change");
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1318,7 +1311,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               for (var p = 0; p < comp.properties.numItems; p++) {
                 var prop = comp.properties[p];
                 ${args.scale !== undefined ? `
-                if (__propertyNameMatches(prop.displayName, "Scale")) {
+                if (__propertyNameMatches(prop.displayName, "Scale", comp)) {
                   prop.setValue(${args.scale}, true);
                   changes.scale = ${args.scale};
                 }` : ""}

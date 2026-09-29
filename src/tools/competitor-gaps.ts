@@ -767,7 +767,7 @@ export function getCompetitorGapTools(
               var component = clip.components[ci];
               if (!component || (component.displayName !== componentName && component.matchName !== matchName)) continue;
               for (var pi = 0; pi < component.properties.numItems; pi++) {
-                if (__propertyNameMatches(component.properties[pi].displayName, propertyName)) return component.properties[pi];
+                if (__propertyNameMatches(component.properties[pi].displayName, propertyName, component)) return component.properties[pi];
               }
             }
             return null;

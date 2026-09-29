@@ -825,7 +825,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "Motion") {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
-                if (__propertyNameMatches(clip.components[i].properties[p].displayName, "Scale")) {
+                if (__propertyNameMatches(clip.components[i].properties[p].displayName, "Scale", clip.components[i])) {
                   clip.components[i].properties[p].setValue(${args.scale}, true);
                   set = true;
                   break;

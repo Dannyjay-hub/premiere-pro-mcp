@@ -86,7 +86,7 @@ describe("trim_clip verification", () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_out_seconds: 8 });
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("var afterResult = __findClip(nodeId)");
-    expect(script).toContain("main = __editOne(target, \"abc\")");
+    expect(script).toContain("return __runLinkedEdit(target, \"abc\", true, __editOne, \"trim\")");
     expect(script).toContain("var expectedStart = before.start");
     expect(script).toContain("var expectedEnd = before.end + (actualOut - before.outPoint)");
     expect(script).toContain("visible timeline duration does not match the applied source range");

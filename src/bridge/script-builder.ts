@@ -241,12 +241,29 @@ function __motionPointScale(prop, frame) {
 
 // Premiere renames Motion "Scale" to "Scale Height" once a clip has been set
 // to non-uniform scale, and keeps that name after uniform scale is turned
-// back on (verified on 25.2). Both names refer to the same parameter.
-function __propertyNameMatches(actual, wanted) {
+// back on (verified on 25.2). The two names are the same uniform scale only
+// while the component's Uniform Scale box is on; on a non-uniformly scaled
+// clip "Scale Height" is the height alone, so the exact name is required.
+function __isUniformScale(component) {
+  if (!component || !component.properties) return false;
+  for (var i = 0; i < component.properties.numItems; i++) {
+    var prop = component.properties[i];
+    if (String(prop.displayName) !== "Uniform Scale") continue;
+    try {
+      var value = prop.getValue();
+      return value === true || value === 1;
+    } catch (eUniform) {
+      return false;
+    }
+  }
+  return false;
+}
+function __propertyNameMatches(actual, wanted, component) {
   actual = String(actual);
   wanted = String(wanted);
   if (actual === wanted) return true;
-  return (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
+  var aliased = (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
+  return aliased && __isUniformScale(component);
 }
 
 // TrackItem.isDisabled() does not exist on Premiere 25.2; the state is the
@@ -1142,6 +1159,77 @@ function __linkedPartnerClips(result) {
     partners.push(located);
   }
   return partners;
+}
+
+// Apply a per-clip edit to a clip and, when includeLinked is true, to its
+// linked audio/video partners. edit(result, nodeId, checkOnly) returns
+// __editOk/__editFail and must change nothing when checkOnly is true. Every
+// clip is checked before any is changed, so a partner that cannot follow
+// refuses the whole edit instead of leaving picture and sound out of sync
+// (most DOM writes add no undo entry, so Undo cannot be relied on). The
+// result is verified only when every clip's edit was verified.
+function __runLinkedEdit(target, nodeId, includeLinked, edit, label) {
+  var partners = includeLinked ? __linkedPartnerClips(target) : [];
+  var check;
+  try { check = edit(target, nodeId, true); } catch (eCheck) { check = __editFail(eCheck.toString()); }
+  if (!check.ok) return __error(check.error);
+  var p;
+  for (p = 0; p < partners.length; p++) {
+    var partnerCheck;
+    try { partnerCheck = edit(partners[p], String(partners[p].clip.nodeId), true); } catch (ePartnerCheck) { partnerCheck = __editFail(ePartnerCheck.toString()); }
+    if (!partnerCheck.ok) {
+      return __error("The linked " + partners[p].trackType + " clip on track " + (partners[p].trackIndex + 1) + " cannot follow the " + label + ": " + partnerCheck.error + " Nothing was changed; fix that clip or pass include_linked false (this desyncs picture and sound).");
+    }
+  }
+  var main;
+  try { main = edit(target, nodeId, false); } catch (eMain) { main = __editFail(eMain.toString()); }
+  if (!main.ok) return __error(main.error);
+  var verified = main.data.verified !== false;
+  var edited = [];
+  for (p = 0; p < partners.length; p++) {
+    var partner = partners[p];
+    var outcome;
+    try { outcome = edit(partner, String(partner.clip.nodeId), false); } catch (ePartner) { outcome = __editFail(ePartner.toString()); }
+    if (!outcome.ok) {
+      return __jsonStringify({
+        success: false,
+        error: "The " + label + " was applied to the clip" + (edited.length ? " and " + edited.length + " of its linked partner(s)" : "") + " but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + outcome.error + "). The timeline changed and was not rolled back: picture and sound are now out of sync. Inspect those clips and fix the partner by hand.",
+        data: { timelineChanged: true, clipEdited: main.data, linkedPartnersEdited: edited, failedPartner: { nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex } }
+      });
+    }
+    var partnerVerified = !!outcome.data && outcome.data.verified !== false;
+    if (!partnerVerified) verified = false;
+    edited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex, verified: partnerVerified });
+  }
+  main.data.linkedPartnersEdited = edited;
+  if (!verified) {
+    main.data.verified = false;
+    main.data.outcome = "committed_unverified";
+    if (!main.data.warning) main.data.warning = "The " + label + " was applied, but not every linked clip's result could be verified; inspect them.";
+  }
+  return __result(main.data);
+}
+
+// Start/end keys of a track's transitions, so readback can tell a transition
+// this call added from one that was already there.
+function __transitionKeys(track) {
+  var keys = {};
+  for (var i = 0; i < track.transitions.numItems; i++) keys[String(track.transitions[i].start.ticks) + "-" + String(track.transitions[i].end.ticks)] = true;
+  return keys;
+}
+// True when a transition not listed in beforeKeys covers ticks. Covering
+// rather than centring: Premiere cannot centre an odd frame count on a cut
+// (a 25-frame dissolve splits 12/13) and adds tick drift.
+function __newTransitionCovers(track, beforeKeys, ticks, frameTicks) {
+  var tolerance = frameTicks / 2 + 1;
+  for (var i = 0; i < track.transitions.numItems; i++) {
+    var transition = track.transitions[i];
+    if (beforeKeys[String(transition.start.ticks) + "-" + String(transition.end.ticks)]) continue;
+    var start = parseFloat(transition.start.ticks);
+    var end = parseFloat(transition.end.ticks);
+    if (!isNaN(start) && !isNaN(end) && start - tolerance <= ticks && ticks <= end + tolerance) return true;
+  }
+  return false;
 }
 
 function __captureLinkGroupsAt(seq, cutTicks, onlyTracks) {

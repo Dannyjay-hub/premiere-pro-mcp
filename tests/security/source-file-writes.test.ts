@@ -17,3 +17,11 @@ describe("source-file metadata writes need the filesystem capability", () => {
     expect(capabilitiesForToolInvocation("set_metadata", { item_id: "x", field_name: "Column.Intrinsic.LogNote", value: "v" })).toEqual(["edit"]);
   });
 });
+
+// add_title bakes a .mogrt copy under the user's app-data folder, and the
+// scratch-disk setters point Premiere at folders it writes to.
+describe("tools that change the project and write files need edit and filesystem", () => {
+  it.each(["add_title", "set_project_scratch_disk", "set_scratch_disk_path"])("%s", (name) => {
+    expect(capabilitiesForToolInvocation(name, {})).toEqual(["edit", "filesystem"]);
+  });
+});

@@ -765,9 +765,8 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain('typeof qeClip.addTransition !== "function"');
       expect(script).toContain('qeClip.addTransition(transitionQE, targetHead, String(durationFrames), "0", 0.5, false, true)');
       expect(script).not.toContain("qeTrack.addTransition(");
-      expect(script).toContain("transitionAtCut");
-      expect(script).toContain("transitionStart - edgeTolerance <= cutTicks && cutTicks <= transitionEnd + edgeTolerance");
-      expect(script).toContain("DOM readback did not find it at the requested cut point");
+      expect(script).toContain("__newTransitionCovers(domTrack, transitionKeysBefore, cutTicks, frameTicks)");
+      expect(script).toContain("DOM readback did not find a new one at the requested cut point");
 
       vi.clearAllMocks();
       await (tools.add_transition_to_clip.handler as any)({
@@ -781,7 +780,7 @@ describe("Tool Handler Behavior", () => {
       expect(clipScript).toContain('qeClip.addTransition(transitionQE, false, String(durationFrames), "0", 0.5, false, true)');
       expect(clipScript).toContain("startVerified");
       expect(clipScript).toContain("endVerified");
-      expect(clipScript).toContain("verifiedStart - edgeTolerance <= clipStartTicks && clipStartTicks <= verifiedEnd + edgeTolerance");
+      expect(clipScript).toContain("__newTransitionCovers(domTrack, transitionKeysBefore, clipStartTicks, frameTicks)");
       expect(clipScript).toContain("the request was partially applied");
 
       vi.clearAllMocks();
@@ -790,8 +789,8 @@ describe("Tool Handler Behavior", () => {
       expect(batchScript).toContain("__findQeClipByDomClip(qeTrack, incomingClip)");
       expect(batchScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
       expect(batchScript).toContain("verifiedCount !== requestedCount");
-      expect(batchScript).toContain("readStart - (frameTicks / 2 + 1) <= expectedCut && expectedCut <= readEnd + (frameTicks / 2 + 1)");
-      expect(batchScript).toContain("DOM readback did not find a transition at cut");
+      expect(batchScript).toContain("__newTransitionCovers(track, transitionKeysBefore, requestedCuts[rc].ticks, frameTicks)");
+      expect(batchScript).toContain("DOM readback did not find a new transition at cut");
     });
   });
 

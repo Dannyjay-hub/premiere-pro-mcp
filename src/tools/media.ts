@@ -528,7 +528,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
                 if (comp.displayName !== "Motion" && comp.matchName !== "AE.ADBE Motion") continue;
                 for (var pi = 0; pi < comp.properties.numItems; pi++) {
                   var prop = comp.properties[pi];
-                  if (__propertyNameMatches(prop.displayName, "Scale")) return prop.getValue();
+                  if (__propertyNameMatches(prop.displayName, "Scale", comp)) return prop.getValue();
                 }
               }
             } catch (e) {}

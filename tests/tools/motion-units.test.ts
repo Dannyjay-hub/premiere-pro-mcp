@@ -19,8 +19,8 @@ const tools = getTrackTargetingTools(bridgeOptions);
 beforeEach(() => vi.clearAllMocks());
 
 /** A 1920x1080 clip whose Motion uses Premiere 25.2's normalized Position and a renamed "Scale Height". */
-function host(position: number[] = [0.5, 0.5]) {
-  const props: Record<string, unknown> = { Position: position, "Scale Height": 100, "Anchor Point": [0.5, 0.5] };
+function host(position: number[] = [0.5, 0.5], uniform = true) {
+  const props: Record<string, unknown> = { Position: position, "Scale Height": 100, "Scale Width": 100, "Uniform Scale": uniform, "Anchor Point": [0.5, 0.5] };
   const list = Object.keys(props).map((displayName) => ({
     displayName,
     getValue: () => props[displayName],
@@ -52,9 +52,17 @@ describe("Motion units", () => {
     expect(props["Anchor Point"]).toEqual([0.25, 0.25]);
   });
 
-  it("set_clip_scale finds Scale after Premiere renamed it Scale Height", async () => {
+  it("set_clip_scale finds Scale after Premiere renamed it Scale Height (uniform scale back on)", async () => {
     const props = host();
     await expect(tools.set_clip_scale.handler({ node_id: "c1", scale: 120 })).resolves.toMatchObject({ success: true });
     expect(props["Scale Height"]).toBe(120);
+  });
+
+  it("does not treat Scale Height as Scale on a non-uniformly scaled clip", async () => {
+    const props = host([0.5, 0.5], false);
+    const result = await tools.set_clip_scale.handler({ node_id: "c1", scale: 120 });
+    expect(result.success).toBe(false);
+    expect(props["Scale Height"]).toBe(100);
+    expect(props["Scale Width"]).toBe(100);
   });
 });

@@ -19,15 +19,20 @@ const tools = getAdvancedTools({ tempDir: "/tmp/scene-detect", timeoutMs: 5000 }
 
 beforeEach(() => vi.clearAllMocks());
 
-type Marker = { type: string; start: { seconds: number; ticks: string } };
+type Marker = { type: string; guid?: string; start: { seconds: number; ticks: string } };
 
 /**
  * Live 25.2: CreateMarkers adds one Segmentation marker per detected cut to the
  * selected clip's source project item - not to the sequence - and a second run
  * adds an identical copy of every marker.
  */
-function host(detectedSourceSeconds: number[], existing: number[] = [], cutsAdded = 0) {
-  const at = (seconds: number): Marker => ({ type: "Segmentation", start: { seconds, ticks: String(Math.round(seconds * TICKS)) } });
+function host(detectedSourceSeconds: number[], existing: number[] = [], cutsAdded = 0, options: { guids?: boolean } = {}) {
+  let nextGuid = 0;
+  const at = (seconds: number): Marker => ({
+    type: "Segmentation",
+    ...(options.guids === false ? {} : { guid: `g${nextGuid++}` }),
+    start: { seconds, ticks: String(Math.round(seconds * TICKS)) },
+  });
   const list: Marker[] = [{ type: "Comment", start: { seconds: 26, ticks: String(26 * TICKS) } }, ...existing.map(at)];
   const markers = {
     getFirstMarker: () => list[0] ?? null,
@@ -74,14 +79,33 @@ describe("scene_edit_detection", () => {
     });
   });
 
-  it("removes the duplicate markers a repeated run creates", async () => {
+  it("removes only the duplicates this run created and does not claim verified when nothing was added", async () => {
     const list = host([14.92, 23.16], [14.92, 23.16]);
+    const originals = list.filter((m) => m.type === "Segmentation").map((m) => m.guid);
     await expect(tools.scene_edit_detection.handler({})).resolves.toMatchObject({
       success: true,
-      data: { markersAdded: 0, items: [{ markersBefore: 2, duplicatesRemoved: 2 }] },
+      data: { markersAdded: 0, verified: false, note: expect.stringContaining("No new Segmentation markers"), items: [{ markersBefore: 2, duplicatesRemoved: 2, duplicateCheck: "marker_guid" }] },
     });
-    expect(list.filter((m) => m.type === "Segmentation")).toHaveLength(2);
+    expect(list.filter((m) => m.type === "Segmentation").map((m) => m.guid)).toEqual(originals);
     expect(list.some((m) => m.type === "Comment")).toBe(true);
+  });
+
+  it("never deletes Segmentation markers the user already had, even identical ones", async () => {
+    const list = host([30], [14.92, 14.92]);
+    await expect(tools.scene_edit_detection.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { markersAdded: 1, verified: true, items: [{ duplicatesRemoved: 0, newSourceCutSeconds: [30] }] },
+    });
+    expect(list.filter((m) => m.type === "Segmentation").map((m) => m.start.seconds)).toEqual([14.92, 14.92, 30]);
+  });
+
+  it("deletes nothing when markers have no GUID to tell runs apart", async () => {
+    const list = host([14.92, 40], [14.92], 0, { guids: false });
+    await expect(tools.scene_edit_detection.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { markersAdded: 1, items: [{ duplicatesRemoved: 0, duplicateCheck: "not_possible_without_marker_guids", newSourceCutSeconds: [40] }] },
+    });
+    expect(list.filter((m) => m.type === "Segmentation")).toHaveLength(3);
   });
 
   it("fails ApplyCuts when no clip was actually cut", async () => {

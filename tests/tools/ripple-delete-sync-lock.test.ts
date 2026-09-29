@@ -96,12 +96,14 @@ function rippleHost(options: {
   lockedVideo?: number[];
   /** Give the target synced audio on A1: "linked" links it, "unlinked" does not. */
   targetAudio?: "linked" | "unlinked";
+  /** Sync lock on A1 (default true). */
+  audioSyncLocked?: boolean;
 } = {}) {
   const target = makeClip("v1-target", 0, 4);
   const v1 = makeTrack([target, makeClip("v1-later", 4, 10)], true, false);
   const v2 = makeTrack([makeClip("v2-later", 4, 8)], true, (options.lockedVideo ?? []).includes(1));
   const targetAudio = makeClip("a1-target", 0, 4);
-  const a1 = makeTrack([...(options.targetAudio ? [targetAudio] : []), makeClip("a1-later", 4, 10)], true, false);
+  const a1 = makeTrack([...(options.targetAudio ? [targetAudio] : []), makeClip("a1-later", 4, 10)], options.audioSyncLocked ?? true, false);
   if (options.targetAudio === "linked") {
     const group = { numItems: 2, 0: target, 1: targetAudio };
     (target as unknown as { getLinkedItems: () => unknown }).getLinkedItems = () => group;
@@ -256,3 +258,25 @@ describe("ripple_delete removes the clip's own linked audio", () => {
     expect(rangesOf(a1)).toEqual([[0, 4], [4, 10]]);
   });
 });
+
+describe("ripple_delete and the clip's linked partners", () => {
+  it("removes a partner on a track without sync lock and closes that track too", async () => {
+    const script = await scriptFor({ node_id: "v1-target" });
+    const { sandbox, v1, a1 } = rippleHost({ targetAudio: "linked", audioSyncLocked: false });
+    const result = runScript(script, sandbox);
+    expect(result).toMatchObject({ success: true, data: { rippled: true, linkedPartnersKept: [] } });
+    expect(rangesOf(v1)).toEqual([[0, 6]]);
+    expect(rangesOf(a1)).toEqual([[0, 6]]);
+  });
+
+  it("keeps the partner in place with scope own_track and reports it", async () => {
+    const script = await scriptFor({ node_id: "v1-target", scope: "own_track" });
+    const { sandbox, v1, v2, a1 } = rippleHost({ targetAudio: "linked" });
+    const result = runScript(script, sandbox);
+    expect(result).toMatchObject({ success: true, data: { rippled: true, linkedPartnersKept: [{ nodeId: "a1-target", track: "audio 0" }] } });
+    expect(rangesOf(v1)).toEqual([[0, 6]]);
+    expect(rangesOf(v2)).toEqual([[4, 8]]);
+    expect(rangesOf(a1)).toEqual([[0, 4], [4, 10]]);
+  });
+});
+

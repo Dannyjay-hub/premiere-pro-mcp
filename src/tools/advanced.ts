@@ -11,7 +11,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
   return {
     ripple_delete: {
       description:
-        "Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed.",
+        "Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. With the default scope the clip's linked audio/video partners are removed with it and their tracks close up too, even when not sync-locked; with scope 'own_track' the partners stay in place (reported as linkedPartnersKept). Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -29,7 +29,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             type: "string",
             enum: ["refuse", "delete"],
             description:
-              "What to do about other clips on participating tracks that sit entirely inside the time range being closed (the usual case in a multicam-style sequence with aligned clips). The clip's own linked audio/video partners are always removed with it, as in Premiere. 'refuse' (default) changes nothing and reports them; 'delete' also removes them, i.e. lifts that whole time segment out of every participating track and closes up. 'delete' is destructive across tracks -- the removed clips are listed in the result.",
+              "What to do about other clips on participating tracks that sit entirely inside the time range being closed (the usual case in a multicam-style sequence with aligned clips). With scope 'sync_locked' the clip's own linked audio/video partners are always removed with it, as in Premiere; with 'own_track' they are kept. 'refuse' (default) changes nothing and reports them; 'delete' also removes them, i.e. lifts that whole time segment out of every participating track and closes up. 'delete' is destructive across tracks -- the removed clips are listed in the result.",
           },
           dry_run: {
             type: "boolean",
@@ -56,7 +56,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
 
     roll_edit: {
       description:
-        "Perform a verified roll edit at the outgoing cut of a clip using the public timeline DOM, moving both visible edges and their source in/out points and verifying all four.",
+        "Perform a verified roll edit at the outgoing cut of a clip using the public timeline DOM, moving both visible edges and their source in/out points and verifying all four. Linked audio/video partners get the same edit by default (include_linked); every clip is checked before any is changed.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -81,7 +81,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           return { success: false, error: "offset_seconds must be a finite, non-zero number" };
         }
         const script = buildToolScript(`
-          function __editOne(result, nodeId) {
+          function __editOne(result, nodeId, checkOnly) {
             var track = result.trackType === "video"
               ? app.project.activeSequence.videoTracks[result.trackIndex]
               : app.project.activeSequence.audioTracks[result.trackIndex];
@@ -102,6 +102,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             var beforeIncomingIn = String(outgoing.inPoint.ticks);
             var expectedOut = String(Math.round(parseFloat(beforeOut) + offsetTicks));
             var expectedIncomingIn = String(Math.round(parseFloat(beforeIncomingIn) + offsetTicks));
+            if (checkOnly) return __editOk({ checked: true });
 
             var newCut = new Time();
             newCut.ticks = String(Math.round(newCutTicks));
@@ -142,22 +143,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");
-          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
-          var main;
-          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
-          if (!main.ok) return __error(main.error);
-          var linkedEdited = [];
-          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
-            var partner = partners[partnerIndex];
-            var partnerResult;
-            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
-            if (!partnerResult.ok) {
-              return __error("The roll was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
-            }
-            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
-          }
-          main.data.linkedPartnersEdited = linkedEdited;
-          return __result(main.data);
+          return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "roll");
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -165,7 +151,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
 
     slide_edit: {
       description:
-        "Perform a verified slide edit on a clip using adjacent clips from the public timeline DOM.",
+        "Perform a verified slide edit on a clip using adjacent clips from the public timeline DOM. Linked audio/video partners get the same edit by default (include_linked); every clip is checked before any is changed.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -213,9 +199,9 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             }
             return __editOk({ previous: previous, following: following, beforeStart: beforeStart, beforeEnd: beforeEnd, deltaTicks: deltaTicks, newStartTicks: newStartTicks, newEndTicks: newEndTicks });
           }
-          function __editOne(result, nodeId) {
+          function __editOne(result, nodeId, checkOnly) {
             var checked = __slideCheck(result);
-            if (!checked.ok) return checked;
+            if (!checked.ok || checkOnly) return checked;
             var previous = checked.data.previous;
             var following = checked.data.following;
             var beforeStart = checked.data.beforeStart;
@@ -266,30 +252,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");
-          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
-          var preflight = __slideCheck(target);
-          if (!preflight.ok) return __error(preflight.error + " Nothing was changed.");
-          for (var checkIndex = 0; checkIndex < partners.length; checkIndex++) {
-            var partnerCheck = __slideCheck(partners[checkIndex]);
-            if (!partnerCheck.ok) {
-              return __error("The linked " + partners[checkIndex].trackType + " clip on track " + (partners[checkIndex].trackIndex + 1) + " cannot slide: " + partnerCheck.error + " Nothing was changed; fix that track or pass include_linked false (this desyncs picture and sound).");
-            }
-          }
-          var main;
-          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
-          if (!main.ok) return __error(main.error);
-          var linkedEdited = [];
-          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
-            var partner = partners[partnerIndex];
-            var partnerResult;
-            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
-            if (!partnerResult.ok) {
-              return __error("The slide was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
-            }
-            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
-          }
-          main.data.linkedPartnersEdited = linkedEdited;
-          return __result(main.data);
+          return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "slide");
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -297,7 +260,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
 
     slip_edit: {
       description:
-        "Perform a verified slip edit on a clip using public source in/out properties.",
+        "Perform a verified slip edit on a clip using public source in/out properties. Linked audio/video partners get the same edit by default (include_linked); every clip is checked before any is changed.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -322,7 +285,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           return { success: false, error: "offset_seconds must be a finite, non-zero number" };
         }
         const script = buildToolScript(`
-          function __editOne(result, nodeId) {
+          function __editOne(result, nodeId, checkOnly) {
             var beforeStart = String(result.clip.start.ticks);
             var beforeEnd = String(result.clip.end.ticks);
             var beforeIn = String(result.clip.inPoint.ticks);
@@ -331,6 +294,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             var newInTicks = parseFloat(beforeIn) + deltaTicks;
             var newOutTicks = parseFloat(beforeOut) + deltaTicks;
             if (newInTicks < 0 || newOutTicks <= newInTicks) return __editFail("The requested slip offset would create an invalid source range.");
+            if (checkOnly) return __editOk({ checked: true });
             var newIn = new Time();
             newIn.ticks = String(Math.round(newInTicks));
             var newOut = new Time();
@@ -356,22 +320,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");
-          var partners = ${args.include_linked === false ? "false" : "true"} ? __linkedPartnerClips(target) : [];
-          var main;
-          try { main = __editOne(target, "${escapeForExtendScript(args.node_id)}"); } catch (mainError) { main = __editFail(mainError.toString()); }
-          if (!main.ok) return __error(main.error);
-          var linkedEdited = [];
-          for (var partnerIndex = 0; partnerIndex < partners.length; partnerIndex++) {
-            var partner = partners[partnerIndex];
-            var partnerResult;
-            try { partnerResult = __editOne(partner, String(partner.clip.nodeId)); } catch (partnerError) { partnerResult = __editFail(partnerError.toString()); }
-            if (!partnerResult.ok) {
-              return __error("The slip was applied to the clip but not to its linked " + partner.trackType + " clip on track " + (partner.trackIndex + 1) + " (" + partnerResult.error + "). Use Undo so picture and sound stay in sync, or retry with include_linked false.");
-            }
-            linkedEdited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex });
-          }
-          main.data.linkedPartnersEdited = linkedEdited;
-          return __result(main.data);
+          return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "slip");
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1131,7 +1080,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
 
     scene_edit_detection: {
       description:
-        "Perform Premiere's scene edit detection on the selected clips in the active sequence (it analyses the footage and can take minutes on long clips). CreateMarkers (default) puts Segmentation markers on the selected clips' source project items (shared by every sequence that uses them), removes duplicates from earlier runs, and reports each detected cut in source and timeline seconds. ApplyCuts razors the selected clips and verifies the clip count grew.",
+        "Perform Premiere's scene edit detection on the selected clips in the active sequence (it analyses the footage and can take minutes on long clips). CreateMarkers (default) puts Segmentation markers on the selected clips' source project items (shared by every sequence that uses them), removes duplicates this run created (markers that were already there are never deleted), and reports each detected cut in source and timeline seconds; it is verified only when at least one new marker was added. ApplyCuts razors the selected clips and verifies the clip count grew.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1192,19 +1141,35 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
               start: clip.start.seconds, inPoint: clip.inPoint.seconds, outPoint: clip.outPoint.seconds
             });
           }
-          var segmentationTimes = function (projectItem) {
-            var times = [];
+          // Segmentation markers already on each item, by GUID where Premiere exposes
+          // one, so this run's markers can be told apart from the user's own.
+          var segmentationMarkers = function (projectItem) {
+            var list = [];
             var markers = projectItem.getMarkers();
-            if (!markers) return times;
+            if (!markers) return list;
             var m = markers.getFirstMarker();
             while (m) {
-              if (String(m.type) === "Segmentation") times.push(m.start.seconds);
+              if (String(m.type) === "Segmentation") {
+                var guid = null;
+                try { guid = m.guid ? String(m.guid) : null; } catch (eGuid) {}
+                list.push({ marker: m, guid: guid, stamp: String(m.start.ticks), seconds: m.start.seconds });
+              }
               m = markers.getNextMarker(m);
             }
-            return times;
+            return list;
           };
           var before = [];
-          for (var b = 0; b < items.length; b++) before.push(segmentationTimes(items[b].item).length);
+          for (var b = 0; b < items.length; b++) {
+            var existing = segmentationMarkers(items[b].item);
+            var guids = {};
+            var stamps = {};
+            var allGuids = true;
+            for (var e = 0; e < existing.length; e++) {
+              if (existing[e].guid) guids[existing[e].guid] = true; else allGuids = false;
+              stamps[existing[e].stamp] = (stamps[existing[e].stamp] || 0) + 1;
+            }
+            before.push({ count: existing.length, guids: guids, stamps: stamps, allGuids: allGuids });
+          }
           var clipsBefore = countClips();
 
           var detected = seq.performSceneEditDetectionOnSelection(
@@ -1240,23 +1205,45 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           for (var r = 0; r < items.length; r++) {
             var entry = items[r];
             var markers = entry.item.getMarkers();
-            // Keep one Segmentation marker per time; earlier runs leave identical copies.
-            var seen = {};
+            var now = segmentationMarkers(entry.item);
+            // Markers this run created: new GUIDs, or (without GUIDs) the count
+            // above what each time already had. Only this run's markers are
+            // deduplicated; markers that were already there are never deleted.
+            var taken = {};
+            for (var st in before[r].stamps) if (before[r].stamps.hasOwnProperty(st)) taken[st] = true;
+            var created = [];
             var duplicates = [];
-            var unique = [];
-            var mk = markers ? markers.getFirstMarker() : null;
-            while (mk) {
-              if (String(mk.type) === "Segmentation") {
-                var stamp = String(mk.start.ticks);
-                if (seen[stamp]) duplicates.push(mk); else { seen[stamp] = true; unique.push(mk.start.seconds); }
+            if (before[r].allGuids) {
+              for (var n = 0; n < now.length; n++) {
+                if (!now[n].guid) { before[r].allGuids = false; break; }
+                if (before[r].guids[now[n].guid]) continue;
+                if (taken[now[n].stamp]) duplicates.push(now[n]); else { taken[now[n].stamp] = true; created.push(now[n]); }
               }
-              mk = markers.getNextMarker(mk);
             }
-            for (var d = 0; d < duplicates.length; d++) markers.deleteMarker(duplicates[d]);
+            var dedupedWithGuids = before[r].allGuids;
+            if (!dedupedWithGuids) {
+              created = [];
+              duplicates = [];
+              var newStamp = {};
+              for (var q = 0; q < now.length; q++) {
+                if (before[r].stamps[now[q].stamp] || newStamp[now[q].stamp]) continue;
+                newStamp[now[q].stamp] = true;
+                created.push(now[q]);
+              }
+            }
+            for (var d = 0; d < duplicates.length; d++) markers.deleteMarker(duplicates[d].marker);
+            var unique = [];
+            var uniqueSeen = {};
+            for (var k = 0; k < now.length; k++) {
+              if (uniqueSeen[now[k].stamp]) continue;
+              uniqueSeen[now[k].stamp] = true;
+              unique.push(now[k].seconds);
+            }
             unique.sort(function (x, y) { return x - y; });
-            var added = unique.length - before[r];
-            if (added < 0) added = 0;
-            totalAdded += added;
+            var newCuts = [];
+            for (var c = 0; c < created.length; c++) newCuts.push(round3(created[c].seconds));
+            newCuts.sort(function (x, y) { return x - y; });
+            totalAdded += created.length;
             var sourceCuts = [];
             for (var u = 0; u < unique.length; u++) {
               sourceCuts.push(round3(unique[u]));
@@ -1270,10 +1257,12 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
             reports.push({
               itemId: String(entry.item.nodeId),
               item: entry.item.name,
-              markersBefore: before[r],
-              markersAdded: added,
+              markersBefore: before[r].count,
+              markersAdded: created.length,
               duplicatesRemoved: duplicates.length,
-              sourceCutSeconds: sourceCuts
+              duplicateCheck: dedupedWithGuids ? "marker_guid" : "not_possible_without_marker_guids",
+              sourceCutSeconds: sourceCuts,
+              newSourceCutSeconds: newCuts
             });
           }
           timelineCuts.sort(function (x, y) { return x - y; });
@@ -1281,7 +1270,10 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           summary.items = reports;
           summary.markersAdded = totalAdded;
           summary.timelineCutSeconds = timelineCuts;
-          summary.verified = true;
+          summary.verified = totalAdded > 0;
+          if (totalAdded === 0) {
+            summary.note = "No new Segmentation markers were added: Premiere found no cuts, or only cuts that already had markers. Existing markers were left as they were.";
+          }
           return __result(summary);
         `);
         // Detection is a synchronous analysis that blocks Premiere (and its connector's
@@ -1549,7 +1541,7 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
           
           var targetProp = null;
           for (var j = 0; j < targetComp.properties.numItems; j++) {
-            if (__propertyNameMatches(targetComp.properties[j].displayName, "${escapeForExtendScript(args.property_name)}")) {
+            if (__propertyNameMatches(targetComp.properties[j].displayName, "${escapeForExtendScript(args.property_name)}", targetComp)) {
               targetProp = targetComp.properties[j];
               break;
             }

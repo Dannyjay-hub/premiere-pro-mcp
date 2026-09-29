@@ -28,21 +28,30 @@ function run(context: Record<string, unknown>) {
 }
 
 /**
- * One 0-60 s clip per track at 25 fps. Premiere 25.2's QE sequence has no lift()
- * - the Lift command is exposed as left() - and extract() ripples the range out.
+ * Two clips per track (0-40 s and 40-60 s) at 25 fps. Premiere 25.2's QE
+ * sequence has no lift() - the Lift command is exposed as left() - and
+ * extract() ripples the range out. Both act only on targeted, unlocked tracks.
  */
-function inOutHost(options: { inSeconds: number; outSeconds: number; lift?: "left" | "lift" | "noop"; lockedAudio?: boolean }) {
+type FakeClip = { nodeId: string; name: string; start: { ticks: string }; end: { ticks: string } };
+function inOutHost(options: {
+  inSeconds: number; outSeconds: number; lift?: "left" | "lift" | "noop";
+  lockedAudio?: boolean; untargetedAudio?: boolean; extractNoShift?: boolean;
+}) {
   const t = (seconds: number) => ({ ticks: String(Math.round(seconds * TICKS)) });
-  const makeTrack = (locked = false) => {
-    const list: Array<{ name: string; start: { ticks: string }; end: { ticks: string } }> = [{ name: "recap", start: t(0), end: t(60) }];
+  let pieces = 0;
+  const makeTrack = (kind: string, locked = false, targeted = true) => {
+    const list: FakeClip[] = [
+      { nodeId: `${kind}-a`, name: "recap", start: t(0), end: t(40) },
+      { nodeId: `${kind}-b`, name: "outro", start: t(40), end: t(60) },
+    ];
     const clipsView: Record<string | number, unknown> = {};
     Object.defineProperty(clipsView, "numItems", { get: () => list.length });
-    const sync = () => list.forEach((clip, i) => { clipsView[i] = clip; });
+    const sync = () => { for (const key of Object.keys(clipsView)) delete clipsView[key]; list.forEach((clip, i) => { clipsView[i] = clip; }); };
     sync();
-    return { list, sync, locked, isLocked: () => locked, clips: clipsView };
+    return { list, sync, locked, targeted, isLocked: () => locked, isTargeted: () => targeted, clips: clipsView };
   };
-  const video = [makeTrack()];
-  const audio = [makeTrack(options.lockedAudio)];
+  const video = [makeTrack("v")];
+  const audio = [makeTrack("a", options.lockedAudio, !options.untargetedAudio)];
   const all = [...video, ...audio];
   const seq = {
     timebase: String(TICKS / 25),
@@ -52,22 +61,24 @@ function inOutHost(options: { inSeconds: number; outSeconds: number; lift?: "lef
     videoTracks: Object.assign({ numTracks: 1 }, video),
     audioTracks: Object.assign({ numTracks: 1 }, audio),
   };
-  const stack = { index: 10 };
+  const secondsOf = (time: { ticks: string }) => parseFloat(time.ticks) / TICKS;
   const cut = (ripple: boolean) => {
     const a = options.inSeconds, b = options.outSeconds;
+    const shift = ripple && !options.extractNoShift ? b - a : 0;
     for (const track of all) {
-      if (track.locked) continue;
-      const next: typeof track.list = [];
+      if (track.locked || !track.targeted) continue;
+      const next: FakeClip[] = [];
       for (const clip of track.list) {
-        const s = parseFloat(clip.start.ticks) / TICKS, e = parseFloat(clip.end.ticks) / TICKS;
-        if (s < a) next.push({ name: clip.name, start: t(s), end: t(Math.min(e, a)) });
-        if (e > b) next.push({ name: clip.name, start: t(ripple ? Math.max(s, b) - (b - a) : Math.max(s, b)), end: t(ripple ? e - (b - a) : e) });
+        const s = secondsOf(clip.start), e = secondsOf(clip.end);
+        if (s >= b) { next.push({ ...clip, start: t(s - shift), end: t(e - shift) }); continue; }
+        if (e <= a) { next.push(clip); continue; }
+        if (s < a) next.push({ ...clip, end: t(a) });
+        if (e > b) next.push({ nodeId: `piece${pieces++}`, name: clip.name, start: t(b - shift), end: t(e - shift) });
       }
       track.list.splice(0, track.list.length, ...next);
       track.sync();
     }
     seq.end = String(Math.max(...all.flatMap((track) => track.list.map((clip) => parseFloat(clip.end.ticks)))));
-    stack.index += 1;
     return true;
   };
   const qeSeq: Record<string, unknown> = { extract: () => cut(true) };
@@ -76,25 +87,41 @@ function inOutHost(options: { inSeconds: number; outSeconds: number; lift?: "lef
   if (options.lift === "noop") qeSeq.left = () => true;
   run({
     app: { enableQE: () => {}, project: { activeSequence: seq } },
-    qe: { project: { getActiveSequence: () => qeSeq, undoStackIndex: () => stack.index } },
+    qe: { project: { getActiveSequence: () => qeSeq } },
   });
-  return { video, audio, seq };
+  const spans = (track: { list: FakeClip[] }) => track.list.map((c) => [secondsOf(c.start), secondsOf(c.end)]);
+  return { video, audio, seq, spans };
 }
 
 describe("lift_selection and extract_selection", () => {
   it("lifts through QE's misspelled left() and verifies the gap (live 25.2)", async () => {
     const host = inOutHost({ inSeconds: 30, outSeconds: 35 });
     const result = await utility.lift_selection.handler() as Result;
-    expect(result).toMatchObject({ success: true, data: { lifted: true, gapSeconds: 5, verified: true} });
-    expect(host.video[0].list.map((c) => [parseFloat(c.start.ticks) / TICKS, parseFloat(c.end.ticks) / TICKS])).toEqual([[0, 30], [35, 60]]);
+    expect(result).toMatchObject({ success: true, data: { lifted: true, gapSeconds: 5, tracksEdited: ["V1", "A1"], verified: true } });
+    expect(host.spans(host.video[0])).toEqual([[0, 30], [35, 40], [40, 60]]);
   });
 
-  it("fails when Premiere leaves clips inside the lifted range", async () => {
+  it("fails without claiming a change when Premiere's lift does nothing", async () => {
     inOutHost({ inSeconds: 30, outSeconds: 35, lift: "noop" });
     await expect(utility.lift_selection.handler()).resolves.toMatchObject({
       success: false,
-      error: expect.stringContaining("left clips inside the in/out range"),
+      error: expect.stringMatching(/^Nothing was changed: .*left clips inside the in\/out range/),
+      data: { timelineChanged: false },
     });
+  });
+
+  it("only checks targeted tracks: an untargeted track keeping its clips is not a failure", async () => {
+    const host = inOutHost({ inSeconds: 30, outSeconds: 35, untargetedAudio: true });
+    await expect(utility.lift_selection.handler()).resolves.toMatchObject({ success: true, data: { tracksEdited: ["V1"] } });
+    expect(host.spans(host.audio[0])).toEqual([[0, 40], [40, 60]]);
+  });
+
+  it("refuses when the range holds clips only on untargeted tracks, changing nothing", async () => {
+    const host = inOutHost({ inSeconds: 30, outSeconds: 35 });
+    host.video[0].targeted = false;
+    host.audio[0].targeted = false;
+    await expect(utility.lift_selection.handler()).resolves.toMatchObject({ success: false, error: expect.stringContaining("targeted") });
+    expect(host.spans(host.video[0])).toEqual([[0, 40], [40, 60]]);
   });
 
   it("refuses to lift when no marks are set (cleared marks read 0..end)", async () => {
@@ -103,10 +130,10 @@ describe("lift_selection and extract_selection", () => {
       success: false,
       error: expect.stringContaining("spans the whole sequence"),
     });
-    expect(host.video[0].list).toHaveLength(1);
+    expect(host.video[0].list).toHaveLength(2);
   });
 
-  it("extracts and verifies the sequence shortened by the range", async () => {
+  it("extracts and verifies each targeted track closed up by the range", async () => {
     const host = inOutHost({ inSeconds: 50, outSeconds: 55 });
     await expect(utility.extract_selection.handler()).resolves.toMatchObject({
       success: true,
@@ -115,11 +142,20 @@ describe("lift_selection and extract_selection", () => {
     expect(parseFloat(host.seq.end) / TICKS).toBe(55);
   });
 
-  it("does not demand a full ripple when a track is locked", async () => {
-    inOutHost({ inSeconds: 50, outSeconds: 55, lockedAudio: true });
+  it("does not demand a ripple on a locked track", async () => {
+    inOutHost({ inSeconds: 30, outSeconds: 35, lockedAudio: true });
     await expect(utility.extract_selection.handler()).resolves.toMatchObject({
       success: true,
-      data: { extracted: true, lockedTracksKept: true },
+      data: { extracted: true, lockedTracksKept: true, tracksEdited: ["V1"] },
+    });
+  });
+
+  it("says the timeline changed when extract removes the range but does not close it", async () => {
+    inOutHost({ inSeconds: 30, outSeconds: 35, extractNoShift: true });
+    await expect(utility.extract_selection.handler()).resolves.toMatchObject({
+      success: false,
+      error: expect.stringMatching(/^The timeline changed, but Premiere's extract did not close/),
+      data: { timelineChanged: true },
     });
   });
 });
