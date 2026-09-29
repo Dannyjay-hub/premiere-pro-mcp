@@ -1605,7 +1605,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     multiple_undo: {
       description: "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo several Premiere project actions through QE, checking each step against Premiere's undo-stack position (stackVerified; the timeline itself is not read back) and reporting how many were undone." +
-        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Results without undoSteps (most property, marker and keyframe writes) added nothing to the undo history, and undo would reverse an earlier action instead.",
+        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Only CEP tool results carry undoSteps: a CEP result without it (most property, marker and keyframe writes) recorded nothing. UXP tools and workflows that send several commands are not counted, so always pass expected_undo_stack_index to make sure undo reverses the action you expect.",
       parameters: {
         type: "object" as const,
         properties: {

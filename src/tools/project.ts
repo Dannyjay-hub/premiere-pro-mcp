@@ -91,6 +91,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           var existing = __findOpenProject("${target}");
           var alreadyOpen = !!existing;
           var opened = null;
+          // Switching projects: the undo index read at the start belongs to the old project.
+          __undoStart = null;
           var activatedVia = "openDocument";
           if (existing && __normProjectPath(app.project ? app.project.path : "") !== __normProjectPath("${target}")) {
             // openDocument returns false for a project that is already open and leaves
@@ -161,7 +163,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
     undo: {
       description:
         "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo the most recent Premiere project action(s) through QE, checked step by step against Premiere's undo-stack position (stackVerified; the timeline itself is not read back). Undo history is project-wide." +
-        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Results without undoSteps (most property, marker and keyframe writes) added nothing to the undo history, and undo would reverse an earlier action instead.",
+        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Only CEP tool results carry undoSteps: a CEP result without it (most property, marker and keyframe writes) recorded nothing. UXP tools and workflows that send several commands are not counted, so always pass expected_undo_stack_index to make sure undo reverses the action you expect.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -303,6 +305,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           if (__normalizedProjectPath(beforePath) === __normalizedProjectPath(requestedPath)) {
             return __error("A project is already open at " + requestedPath + "; choose a new .prproj file path instead.");
           }
+          // A new project has its own undo stack; do not report a count across it.
+          __undoStart = null;
           app.newProject(requestedPath);
           var project = app.project;
           var actualPath = project ? String(project.path || "") : "";
@@ -351,6 +355,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           ${lookup}
           var name = project.name;
           var path = String(project.path || "");
+          // Closing leaves a different (or no) project active; no undo count applies.
+          __undoStart = null;
           var closed = project.closeDocument(${save ? "1" : "0"}, 0);
           if (__findOpenProject(path)) {
             return __error("Premiere did not close " + path + (closed === false ? " (closeDocument returned false)" : "") + ".");
