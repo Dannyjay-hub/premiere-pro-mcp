@@ -223,7 +223,7 @@ function __sequenceFrameSize(seq) {
 // Anchor Point is relative to the clip's own source frame.
 function __clipSourceFrameSize(clip, seq) {
   try {
-    var info = /VideoInfo>\s*([0-9]+)\s*x\s*([0-9]+)/.exec(String(clip.projectItem.getProjectMetadata()));
+    var info = /VideoInfo>\\s*([0-9]+)\\s*x\\s*([0-9]+)/.exec(String(clip.projectItem.getProjectMetadata()));
     if (info) return { width: Number(info[1]), height: Number(info[2]) };
   } catch (eInfo) {}
   return __sequenceFrameSize(seq);
