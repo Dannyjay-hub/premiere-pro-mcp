@@ -101,31 +101,26 @@ describe("issue #460 — attach_custom_property verifies the XMP packet", () => 
 });
 
 // https://github.com/leancoderkavy/premiere-pro-mcp/issues/462
-describe("issue #462 — undo and redo fail closed like multiple_undo", () => {
-  it("does not call app.project.undo, which is not a function on current builds", async () => {
-    const result = await project.undo.handler({});
-
-    expect(result).toMatchObject({
-      success: false,
-      error: expect.stringContaining("app.project.undo is not a function"),
-    });
-    expect(mockedSendCommand).not.toHaveBeenCalled();
+// app.project.undo is not a function, but QE's qe.project.undo()/redo() work
+// and qe.project.undoStackIndex() verifies them (live 25.2): see qe-undo.test.ts.
+describe("issue #462 — undo and redo never use app.project.undo", () => {
+  it("steps QE's undo stack instead of app.project.undo", async () => {
+    await project.undo.handler({});
+    const script = mockedSendCommand.mock.calls[0][0] as string;
+    expect(script).toContain('__qeUndoSteps("undo"');
+    expect(script).not.toContain("app.project.undo");
   });
 
-  it("validates count before reporting the capability gap", async () => {
+  it("validates count before touching the host", async () => {
     await expect(project.undo.handler({ count: 0 }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("count must be an integer") });
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 
-  it("never reports an unverifiable redo success", async () => {
-    const result = await trackTargeting.redo.handler({});
-
-    expect(result).toMatchObject({
-      success: false,
-      error: expect.stringContaining("no supported redo API"),
-    });
-    expect(mockedSendCommand).not.toHaveBeenCalled();
+  it("redoes through QE with undo-stack verification", async () => {
+    await trackTargeting.redo.handler({});
+    const script = mockedSendCommand.mock.calls[0][0] as string;
+    expect(script).toContain('__qeUndoSteps("redo"');
   });
 });
 

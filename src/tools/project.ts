@@ -91,6 +91,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           var existing = __findOpenProject("${target}");
           var alreadyOpen = !!existing;
           var opened = null;
+          // Switching projects: the undo index read at the start belongs to the old project.
+          __undoStart = null;
           var activatedVia = "openDocument";
           if (existing && __normProjectPath(app.project ? app.project.path : "") !== __normProjectPath("${target}")) {
             // openDocument returns false for a project that is already open and leaves
@@ -160,7 +162,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
 
     undo: {
       description:
-        "Unavailable: Premiere exposes no supported, observable undo-stack API, so a scripted undo cannot be performed or verified.",
+        "EXPERIMENTAL (undocumented QE DOM: qe.project.undo / undoStackIndex). Undo the most recent Premiere project action(s) through QE, checked step by step against Premiere's undo-stack position (stackVerified; the timeline itself is not read back). Undo history is project-wide." +
+        " Only actions Premiere records are undoable: QE edits such as razor, insert, lift and extract report undoSteps (and undoStackIndex) in their results; pass that undoSteps as count to reverse exactly that call. Only CEP tool results carry undoSteps: a CEP result without it (most property, marker and keyframe writes) recorded nothing. UXP tools and workflows that send several commands are not counted, so always pass expected_undo_stack_index to make sure undo reverses the action you expect.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -168,18 +171,36 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Number of times to undo (default: 1)",
           },
+          expected_undo_stack_index: {
+            type: "number",
+            description:
+              "Optional safety guard: the undoStackIndex a tool result reported right after the call you want to reverse. The step is refused, with nothing changed, when Premiere's undo-stack position differs from it. This compares the position only: if actions were undone and new ones recorded since, the position can match again and undo would reverse the newer action.",
+          },
         },
       },
-      handler: async (args: { count?: number }) => {
+      handler: async (args: { count?: number; expected_undo_stack_index?: number }) => {
         const count = args.count ?? 1;
         if (!Number.isInteger(count) || count < 1 || count > 100) {
           return { success: false, error: "count must be an integer from 1 through 100" };
         }
-        return {
-          success: false,
-          error:
-            "undo is unavailable because Premiere exposes no supported undo API: app.project.undo is not a function on current Premiere builds, and no undo-stack query exists to verify an undo against. No mutation was attempted. Undo the action from Premiere's Edit menu instead.",
-        };
+        const guardArg = args.expected_undo_stack_index;
+        if (guardArg !== undefined && (!Number.isInteger(guardArg) || guardArg < 0)) {
+          return { success: false, error: "expected_undo_stack_index must be a non-negative integer" };
+        }
+        const guard = guardArg === undefined ? "null" : String(guardArg);
+        const script = buildToolScript(`
+          __undoStart = null;
+          var expectedIndex = ${guard};
+          if (expectedIndex !== null) {
+            var currentIndex = __readUndoIndex();
+            if (currentIndex !== expectedIndex) {
+              return __jsonStringify({ success: false, error: "Premiere's undo stack is at " + currentIndex + ", not the expected " + expectedIndex + ": the undo-stack position changed since that call (actions were undone or recorded), so undo was not attempted.", data: { undoStackIndex: currentIndex, expectedUndoStackIndex: expectedIndex } });
+            }
+          }
+          var outcome = __qeUndoSteps("undo", ${count});
+          return __undoStepsResult(outcome, "undone");
+        `);
+        return sendCommand(script, bridgeOptions);
       },
     },
 
@@ -284,6 +305,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           if (__normalizedProjectPath(beforePath) === __normalizedProjectPath(requestedPath)) {
             return __error("A project is already open at " + requestedPath + "; choose a new .prproj file path instead.");
           }
+          // A new project has its own undo stack; do not report a count across it.
+          __undoStart = null;
           app.newProject(requestedPath);
           var project = app.project;
           var actualPath = project ? String(project.path || "") : "";
@@ -332,6 +355,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           ${lookup}
           var name = project.name;
           var path = String(project.path || "");
+          // Closing leaves a different (or no) project active; no undo count applies.
+          __undoStart = null;
           var closed = project.closeDocument(${save ? "1" : "0"}, 0);
           if (__findOpenProject(path)) {
             return __error("Premiere did not close " + path + (closed === false ? " (closeDocument returned false)" : "") + ".");

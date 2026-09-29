@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import { getHelpersSource } from "../../src/bridge/script-builder.js";
+import { runWithUndoTracking } from "../../src/bridge/undo-tracking.js";
 
 vi.mock("../../src/bridge/file-bridge.js", () => ({
   sendCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
@@ -18,7 +19,7 @@ type Result = { success: boolean; error?: string; data?: Record<string, unknown>
 
 beforeEach(() => vi.clearAllMocks());
 
-/** Two clips on V1; `failing` throws on remove(). */
+/** Two clips on V1. `failing` throws on remove(); `recordsUndo` also moves the undo stack before throwing. */
 function host(options: { failing: string; recordsUndo?: boolean }) {
   const stack = { index: 7 };
   const list: Array<Record<string, unknown>> = [];
@@ -51,23 +52,28 @@ function host(options: { failing: string; recordsUndo?: boolean }) {
 
 const tools = getEditPlanTools({}, { capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" }, auditSink: vi.fn(), operationIdFactory: () => "op" });
 const apply = (plan: { operations: Array<{ type: "remove_clip"; node_id: string }> }) =>
-  tools.apply_edit_plan.handler({ plan, confirmation_token: confirmationToken(plan) }) as Promise<Result>;
+  runWithUndoTracking(true, () => tools.apply_edit_plan.handler({ plan, confirmation_token: confirmationToken(plan) })) as Promise<Result>;
 
 describe("apply_edit_plan failure reporting", () => {
-  it("says the timeline changed, and not that nothing changed, when a later operation fails", async () => {
+  it("returns undoSteps as data only, noting that DOM removals are not covered", async () => {
     const list = host({ failing: "v1" });
     const result = await apply({ operations: [{ type: "remove_clip", node_id: "v0" }, { type: "remove_clip", node_id: "v1" }] });
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining("The timeline changed: the 1 operation(s) before it were applied") });
-    expect(result.error).not.toContain("Nothing was changed");
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("The timeline changed: the 1 operation(s) before it were applied"),
+      data: { timelineChanged: true, undoSteps: 0, undoStepsNote: expect.stringContaining("DOM-only operations") },
+    });
+    expect(result.error).not.toMatch(/undo count/);
     expect(list.map((clip) => clip.nodeId)).toEqual(["v1"]);
     // The pattern must survive the TS template literal as \s and \. in ExtendScript.
     expect(String(mockedSendCommand.mock.calls[0][0])).toContain("replace(/\\s*Nothing was changed\\.?/g");
   });
 
-  it("says nothing changed when the first operation fails before removing anything", async () => {
-    const list = host({ failing: "v0" });
+  it("does not say nothing changed when the failed operation recorded undo entries", async () => {
+    host({ failing: "v0", recordsUndo: true });
     const result = await apply({ operations: [{ type: "remove_clip", node_id: "v0" }] });
-    expect(result.error).toContain("Nothing was changed");
-    expect(list).toHaveLength(2);
+    expect(result).toMatchObject({ success: false, data: { timelineChanged: true, undoSteps: 1 } });
+    expect(result.error).toContain("may have changed");
+    expect(result.error).not.toContain("Nothing was changed");
   });
 });

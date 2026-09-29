@@ -5,6 +5,7 @@ import {
   type StandardSchemaWithJSON,
 } from "@modelcontextprotocol/server";
 import { BridgeOptions } from "./bridge/file-bridge.js";
+import { runWithUndoTracking } from "./bridge/undo-tracking.js";
 import { getDiscoveryTools } from "./tools/discovery.js";
 import { getProjectTools } from "./tools/project.js";
 import { getMediaTools } from "./tools/media.js";
@@ -72,6 +73,7 @@ import {
   isToolPermitted,
   resolveCapabilities,
 } from "./security/index.js";
+import { capabilitiesForToolInvocation } from "./security/capabilities.js";
 import { EXTENDSCRIPT_REFERENCE } from "./resources/extendscript-reference.js";
 import { getLiveContextResources } from "./resources/live-context-resources.js";
 import { PROJECT_CONTEXT_RESOURCE } from "./context/project-context-resource.js";
@@ -423,7 +425,12 @@ export function createServer(
       async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          const result = await guardedHandler(args as Record<string, unknown>);
+          // Every call that may change the project records the undo position:
+          // anything that needs more than inspect (edit, and also filesystem or
+          // export tools such as import_*, relink_*, consolidate_* that add
+          // project items). Only inspect-only calls skip it.
+          const tracksUndo = capabilitiesForToolInvocation(name, args).some((capability) => capability !== "inspect");
+          const result = await runWithUndoTracking(tracksUndo, () => guardedHandler(args as Record<string, unknown>));
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",

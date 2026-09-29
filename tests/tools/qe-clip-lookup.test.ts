@@ -28,7 +28,6 @@ const effects = getEffectsTools(bridgeOptions);
 const trackTargeting = getTrackTargetingTools(bridgeOptions);
 
 const FIXED_TOOLS: Array<[string, Handler, Record<string, unknown>]> = [
-  ["remove_all_effects", advanced.remove_all_effects, { node_id: "a" }],
   ["set_frame_blend", advanced.set_frame_blend, { node_id: "a", enabled: true }],
   ["set_time_interpolation", advanced.set_time_interpolation, { node_id: "a", interpolation_type: 1 }],
   ["apply_effect", effects.apply_effect, { node_id: "a", effect_name: "Gaussian Blur" }],
@@ -166,16 +165,23 @@ describe("QE clip lookup by DOM clip start (#642)", () => {
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 
-  it("remove_all_effects, set_frame_blend, and set_time_interpolation address the matched clip", async () => {
+  it("set_frame_blend and set_time_interpolation address the matched clip", async () => {
     const host = makeHost();
-    expect((await run(host, advanced.remove_all_effects, { node_id: "b" })).success).toBe(true);
     expect((await run(host, advanced.set_frame_blend, { node_id: "b", enabled: true })).success).toBe(true);
     expect((await run(host, advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 })).success).toBe(true);
-    expect(host.qeB.removeEffects).toHaveBeenCalledTimes(1);
     expect(host.qeB.setFrameBlend).toHaveBeenCalledWith(true);
     expect(host.qeB.setTimeInterpolationType).toHaveBeenCalledWith(2);
-    expect(host.qeA.removeEffects).not.toHaveBeenCalled();
     expectGapUntouched(host);
+  });
+
+  it("remove_all_effects never uses the broad QE removeEffects() and changes nothing without a targeted remove", async () => {
+    // It removes each effect through Component.remove() or QE getComponentAt(i).remove();
+    // this host has neither, so it is a capability error with nothing removed.
+    const host = makeHost();
+    const result = await run(host, advanced.remove_all_effects, { node_id: "b" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Capability error") });
+    for (const item of [host.gap, host.qeA, host.qeB]) expect(item.removeEffects).not.toHaveBeenCalled();
+    expect(host.b.components.map((c) => c.displayName)).toEqual(["Motion", "Opacity", "Gaussian Blur", "Missing FX"]);
   });
 
   it("apply_effect adds the effect to the matched clip", async () => {

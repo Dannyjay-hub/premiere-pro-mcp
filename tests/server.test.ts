@@ -18,6 +18,25 @@ const { getDiscoveryTools } = vi.hoisted(() => ({
       },
       handler: vi.fn().mockResolvedValue({ success: true, data: { found: true } }),
     },
+    // Report whether scripts built during the call would track Premiere's undo stack.
+    get_mock_undo_tracking: {
+      description: "Read-only mock",
+      parameters: { type: "object", properties: {} },
+      handler: async () => ({ success: true, data: { tracking: (await import("../src/bridge/undo-tracking.js")).undoTrackingEnabled() } }),
+    },
+    import_mock_undo_tracking: {
+      description: "Filesystem-class mock (import_* tools add project items)",
+      parameters: { type: "object", properties: {} },
+      handler: async () => ({ success: true, data: { tracking: (await import("../src/bridge/undo-tracking.js")).undoTrackingEnabled() } }),
+    },
+    set_mock_undo_tracking: {
+      description: "Mutating mock",
+      parameters: { type: "object", properties: {} },
+      handler: async () => {
+        await Promise.resolve();
+        return { success: true, data: { tracking: (await import("../src/bridge/undo-tracking.js")).undoTrackingEnabled() } };
+      },
+    },
   })),
 }));
 
@@ -171,3 +190,22 @@ describe("SERVER_VERSION", () => {
   });
 });
 
+describe("undo tracking is scoped to tools that change the project", () => {
+  it("tracks for a mutating tool and not for a read-only one", async () => {
+    const server = createServer({});
+    const client = new Client({ name: "undo-scope-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const read = await client.callTool({ name: "get_mock_undo_tracking", arguments: {} });
+      const write = await client.callTool({ name: "set_mock_undo_tracking", arguments: {} });
+      expect(read.structuredContent).toMatchObject({ data: { tracking: false } });
+      expect(write.structuredContent).toMatchObject({ data: { tracking: true } });
+      const imported = await client.callTool({ name: "import_mock_undo_tracking", arguments: {} });
+      expect(imported.structuredContent).toMatchObject({ data: { tracking: true } });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
