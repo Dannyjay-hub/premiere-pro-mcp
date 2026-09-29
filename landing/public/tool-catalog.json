@@ -3,7 +3,7 @@
   "evidenceScope": "source_catalog_may_include_unreleased_work",
   "sourceVersion": "1.18.4",
   "sourcePath": "docs/supported-actions.md",
-  "sourceSha256": "49e629e81290641dc3c5295576e46108a73f92b81062195de4196e8af2d506ad",
+  "sourceSha256": "34f405a5e5d304c2051d05a2f26f4ee24c8fb517dfb022483e2edb37d379fcf0",
   "hostVerification": "not_established_by_catalogs",
   "counts": {
     "default": 382,
@@ -927,7 +927,7 @@
       "name": "get_duplicate_media",
       "surface": "default",
       "modes": "Single operation",
-      "description": "Find project items that reference the same source media file. Useful for consolidation."
+      "description": "Find project items that reference the same source media file. Useful for consolidation. After Effects compositions imported from the same .aep/.aepx are only grouped when their comp names also match. Groups are paged (default 100) and can be filtered by a case-insensitive item-name substring; follow nextOffset while truncated is true."
     },
     {
       "name": "get_effect_properties",
@@ -1053,7 +1053,7 @@
       "name": "get_project_panel_metadata",
       "surface": "default",
       "modes": "Single operation",
-      "description": "Get the current Project-panel column layout as XML. This is schema/layout configuration, not per-item Scene/Shot/Take values; use inspect_project_panel_metadata_uxp item_columns or get_metadata for those."
+      "description": "Get the current Project-panel column layout as XML. This is schema/layout configuration, not per-item Scene/Shot/Take values; use inspect_project_panel_metadata_uxp item_columns or get_metadata for those. Output is capped by max_chars (default 20000); when truncated is true the XML is incomplete and must not be passed to set_project_panel_metadata."
     },
     {
       "name": "get_project_scratch_disks",
@@ -1161,7 +1161,7 @@
       "name": "get_unused_media",
       "surface": "default",
       "modes": "Single operation",
-      "description": "Find all project items that are NOT used in any sequence. Useful for cleaning up projects."
+      "description": "Find project items that are NOT used in any sequence. Useful for cleaning up projects. Results are paged (default 100 items) and can be filtered by a case-insensitive name substring; follow nextOffset while truncated is true."
     },
     {
       "name": "get_used_media_report",
