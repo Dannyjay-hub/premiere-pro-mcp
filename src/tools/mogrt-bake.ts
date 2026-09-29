@@ -270,15 +270,6 @@ export function bakePremiereTitle(
   const slug = (templatePath.split(/[\\/]/).pop() ?? "title").replace(/\.mogrt$/i, "").replace(/[^A-Za-z0-9._-]+/g, "-");
   const outPath = join(outDir, `${slug}-${digest}.mogrt`);
 
-  const verify = (): BakeCheck[] => {
-    const texts = readPremiereTitleText(outPath);
-    return lines.map((expected, index) => ({ index, expected, actual: texts.includes(expected) ? expected : (texts[index] ?? null) }));
-  };
-  if (existsSync(outPath)) {
-    const checks = verify();
-    if (checks.every((check) => check.actual === check.expected)) return { path: outPath, reused: true, checks };
-  }
-
   const definitionEntry = byName.get("definition.json");
   if (!definitionEntry) throw new Error("Template has no definition.json");
   const definition = JSON.parse(definitionEntry.data.toString("utf8").replace(/^﻿/, "")) as Record<string, any>;
@@ -307,6 +298,17 @@ export function bakePremiereTitle(
     used.add(layer);
     assignment.push(layer);
   });
+
+  // Each line must read back from the layer its own field was written to; a
+  // match in some other layer does not count. Rewriting keeps layer order.
+  const verify = (): BakeCheck[] => {
+    const texts = readPremiereTitleText(outPath);
+    return lines.map((expected, index) => ({ index, expected, actual: texts[assignment[index]] ?? null }));
+  };
+  if (existsSync(outPath)) {
+    const checks = verify();
+    if (checks.every((check) => check.actual === check.expected)) return { path: outPath, reused: true, checks };
+  }
 
   let rewritten = "";
   let cursor = 0;

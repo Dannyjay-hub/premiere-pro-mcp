@@ -42,7 +42,8 @@ describe("trim_clip verification", () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("var actualIn = after.inPoint");
-    expect(script).toContain("Math.abs(actualIn - 2) > tolerance");
+    expect(script).toContain("Math.abs(actualIn - requestedIn) > tolerance");
+    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(2) - parseFloat(target.clip.inPoint.ticks)");
     expect(script).toContain("did not apply a verified timeline trim");
     expect(script).toContain("verified: true");
   });
@@ -50,14 +51,15 @@ describe("trim_clip verification", () => {
   it("compares the read-back out point against the requested value", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_out_seconds: 8 });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain("Math.abs(actualOut - 8) > tolerance");
+    expect(script).toContain("Math.abs(actualOut - requestedOut) > tolerance");
+    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(8) - parseFloat(target.clip.outPoint.ticks)");
   });
 
   it("only writes the edge that was actually requested", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls[0][0];
     // Head trim: the start edge and the in point move together; the tail is untouched.
-    expect(script).toContain("var trimInTicks = __secondsToTicks(2);");
+    expect(script).toContain("var trimInTicks = parseFloat(originalInPointTicks) + __trimDeltaTicks;");
     expect(script).toContain("clip.start = trimStart;");
     expect(script).toContain("clip.inPoint = String(Math.round(trimInTicks));");
     expect(script).not.toContain("clip.end = trimEnd;");

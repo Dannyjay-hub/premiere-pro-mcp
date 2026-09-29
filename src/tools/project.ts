@@ -860,6 +860,16 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             return __error("This Premiere build does not expose app.openFCPXML, so FCP XML cannot be imported.");
           }
           var before = __openProjectPaths();
+          // Projects already in the folders Premiere may import into. Only a
+          // project that did not exist before this call can be treated as the
+          // intermediate copy and deleted.
+          var preexistingProjects = {};
+          var projectSearchRoots = [Folder.temp, new Folder("${projectFolder}")];
+          for (var pr = 0; pr < projectSearchRoots.length; pr++) {
+            var found = [];
+            try { if (projectSearchRoots[pr].exists) found = projectSearchRoots[pr].getFiles("*.prproj") || []; } catch (eList) {}
+            for (var pf = 0; pf < found.length; pf++) preexistingProjects[__normProjectPath(found[pf].fsName)] = true;
+          }
           try {
             // The second argument behaves as a folder prefix (live 25.2: "<project_path>cut.1.prproj"),
             // so hand Premiere the destination folder and save the result to project_path below.
@@ -889,11 +899,12 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             imported = __findOpenProject("${projectPath}") || imported;
             // Only delete Premiere's intermediate copy when it sits where this call
             // told Premiere to write (the system temp folder or the destination
-            // folder); anything else is left on disk and reported.
+            // folder) and did not exist before the call; anything else is left on
+            // disk and reported.
             var intermediateNorm = __normProjectPath(importedAt);
             var ownedRoots = [__normProjectPath(Folder.temp.fsName), __normProjectPath(Folder.temp.fullName), __normProjectPath("${projectFolder}")];
             var intermediateOwned = false;
-            if (/\\.prproj$/.test(intermediateNorm) && intermediateNorm.indexOf("/../") < 0) {
+            if (/\\.prproj$/.test(intermediateNorm) && intermediateNorm.indexOf("/../") < 0 && !preexistingProjects[intermediateNorm]) {
               for (var ri = 0; ri < ownedRoots.length; ri++) {
                 if (ownedRoots[ri] && intermediateNorm.indexOf(ownedRoots[ri].replace(/\\/$/, "") + "/") === 0) intermediateOwned = true;
               }

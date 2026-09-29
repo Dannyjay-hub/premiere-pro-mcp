@@ -105,6 +105,17 @@ describe("bakePremiereTitle", () => {
     expect(second).toMatchObject({ path: first.path, reused: true });
   });
 
+  it("does not reuse a file whose lines sit in the wrong fields", () => {
+    const right = bakePremiereTitle(lowerThird, ["Alpha", "Beta"], outDir);
+    const swapped = bakePremiereTitle(lowerThird, ["Beta", "Alpha"], join(workspace, "titles-swapped"));
+    // Both lines appear in the file, but each in the other field's layer.
+    writeFileSync(right.path, readFileSync(swapped.path));
+    const again = bakePremiereTitle(lowerThird, ["Alpha", "Beta"], outDir);
+    expect(again.reused).toBe(false);
+    expect(again.checks.every((c) => c.actual === c.expected)).toBe(true);
+    expect(readPremiereTitleText(again.path)).toEqual(["Beta", "Alpha"]);
+  });
+
   it("fills a partial set of lines and leaves the other layer's default text", () => {
     const { path } = bakePremiereTitle(lowerThird, ["Only role"], outDir);
     expect(readPremiereTitleText(path)).toEqual(["Your Name Here", "Only role"]);

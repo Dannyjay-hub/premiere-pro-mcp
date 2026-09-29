@@ -1118,29 +1118,45 @@ function __findOpenProject(path) {
 
 // Remove a timeline clip (a __findClip result) without rippling, plus its
 // linked audio/video partners when includeLinked is true (Premiere's Clear on
-// a linked clip), then verify every removed clip is gone.
+// a linked clip), then verify every removed clip is gone. Every clip's track
+// lock and remove() are checked before anything is removed, so a partner on a
+// locked track refuses the whole removal instead of leaving its audio behind.
 function __removeClipAndPartners(result, includeLinked) {
-  var targets = [result.clip];
+  var targets = [result];
   if (includeLinked) {
     var partners = __linkedPartnerClips(result);
-    for (var p = 0; p < partners.length; p++) targets.push(partners[p].clip);
+    for (var p = 0; p < partners.length; p++) targets.push(partners[p]);
   }
+  var seq = app.project.activeSequence;
   var ids = [];
   var names = [];
   for (var t = 0; t < targets.length; t++) {
-    ids.push(String(targets[t].nodeId));
-    names.push(targets[t].name);
+    var located = targets[t];
+    ids.push(String(located.clip.nodeId));
+    names.push(located.clip.name);
+    var label = located.trackType + " track " + (located.trackIndex + 1);
+    var track = seq ? (located.trackType === "video" ? seq.videoTracks : seq.audioTracks)[located.trackIndex] : null;
+    var locked = null;
+    try { if (track && typeof track.isLocked === "function") locked = !!track.isLocked(); } catch (eLocked) {}
+    if (locked === null) return __editFail("Could not read whether " + label + " is locked, so " + names[t] + " was not removed. Nothing was changed.");
+    if (locked) return __editFail(names[t] + " is on locked " + label + ". Nothing was changed; unlock the track or pass include_linked false (this leaves its linked partner in place).");
+    if (typeof located.clip.remove !== "function") return __editFail("Premiere does not expose remove() for " + names[t] + " on " + label + ". Nothing was changed.");
   }
+  var removed = [];
   for (var r = 0; r < targets.length; r++) {
     try {
-      targets[r].remove(false, false);
+      targets[r].clip.remove(false, false);
+      removed.push(names[r]);
     } catch (eRemove) {
-      return __editFail("Could not remove " + names[r] + ": " + eRemove.toString());
+      return __editFail((removed.length ? "The timeline changed: " + removed.join(", ") + " was removed, but " : "") + "Premiere could not remove " + names[r] + ": " + eRemove.toString() + (removed.length ? ". The linked clips are now out of sync; inspect the timeline." : ". Nothing was changed."));
     }
   }
   var left = [];
   for (var v = 0; v < ids.length; v++) if (__findClip(ids[v])) left.push(names[v]);
-  if (left.length) return __editFail("Premiere did not remove: " + left.join(", "));
+  if (left.length) {
+    var gone = ids.length - left.length;
+    return __editFail((gone ? "The timeline changed: " + gone + " clip(s) were removed, but " : "") + "Premiere did not remove: " + left.join(", ") + (gone ? ". Inspect the timeline; linked clips may be out of sync." : ". Nothing was changed."));
+  }
   return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
 }
 

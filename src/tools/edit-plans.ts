@@ -122,8 +122,10 @@ function buildApplyScript(plan: EditPlan): string {
   // ones so the caller knows the timeline changed.
   const failure = `
     function __planFail(index, message) {
+      // An operation's own "Nothing was changed" is wrong once earlier ones applied.
+      if (results.length) message = String(message).replace(/\s*Nothing was changed\.?/g, "");
       return __jsonStringify({ success: false,
-        error: "Operation " + index + " failed: " + message + (results.length ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back." : " Nothing was changed."),
+        error: "Operation " + index + " failed: " + message + (results.length ? " The timeline changed: the " + results.length + " operation(s) before it were applied and were not rolled back." : (/Nothing was changed|timeline changed/.test(message) ? "" : " Nothing was changed.")),
         data: { appliedOperations: results } });
     }
   `;

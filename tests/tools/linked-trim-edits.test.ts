@@ -53,7 +53,7 @@ function makeClip(id: string, start: number, end: number, inPoint: number, optio
 }
 
 /** Three linked shots on V1/A1: 0-10, 10-30, 30-60 (source time = timeline time). */
-function host(options: { audioRejectsInPoint?: boolean } = {}) {
+function host(options: { audioRejectsInPoint?: boolean; audioLocked?: boolean } = {}) {
   const ranges: Array<[number, number]> = [[0, 10], [10, 30], [30, 60]];
   const video = ranges.map(([a, b], k) => makeClip(`v${k}`, a, b, a));
   const audio = ranges.map(([a, b], k) => makeClip(`a${k}`, a, b, a, { rejectInPoint: options.audioRejectsInPoint && k === 1 }));
@@ -62,8 +62,8 @@ function host(options: { audioRejectsInPoint?: boolean } = {}) {
   const seq = {
     sequenceID: "seq",
     timebase: String(TICKS / 25),
-    videoTracks: { numTracks: 1, 0: { clips: collection(video) } },
-    audioTracks: { numTracks: 1, 0: { clips: collection(audio) } },
+    videoTracks: { numTracks: 1, 0: { clips: collection(video), isLocked: () => false } },
+    audioTracks: { numTracks: 1, 0: { clips: collection(audio), isLocked: () => options.audioLocked === true } },
   };
   const context = {
     app: { project: { activeSequence: seq, sequences: { numSequences: 1, 0: seq } } },
@@ -147,8 +147,8 @@ describe("trim_clip and set_clip_duration move the visible edge and follow linke
 
 describe("remove_from_timeline takes linked partners and verifies", () => {
   const timeline = getTimelineTools(bridgeOptions);
-  const removable = (options: { stubborn?: string } = {}) => {
-    const { video, audio } = host();
+  const removable = (options: { stubborn?: string; audioLocked?: boolean } = {}) => {
+    const { video, audio } = host({ audioLocked: options.audioLocked });
     for (const list of [video, audio]) {
       for (const clip of [...list]) {
         (clip as unknown as { remove: () => number }).remove = () => {
@@ -174,9 +174,16 @@ describe("remove_from_timeline takes linked partners and verifies", () => {
     expect(audio).toHaveLength(3);
   });
 
-  it("fails when Premiere leaves a clip behind", async () => {
+  it("fails, saying the timeline changed, when Premiere leaves a clip behind", async () => {
     removable({ stubborn: "a1" });
-    await expect(timeline.remove_from_timeline.handler({ node_id: "v1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("did not remove") });
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1" })).resolves.toMatchObject({ success: false, error: expect.stringMatching(/^The timeline changed: 1 clip\(s\) were removed, but Premiere did not remove/) });
+  });
+
+  it("removes nothing when a linked partner sits on a locked track", async () => {
+    const { video, audio } = removable({ audioLocked: true });
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Nothing was changed") });
+    expect(video.map((c) => c.nodeId)).toEqual(["v0", "v1", "v2"]);
+    expect(audio.map((c) => c.nodeId)).toEqual(["a0", "a1", "a2"]);
   });
 
   it("routes ripple removal through the verified ripple delete, never remove(true, ...)", async () => {
@@ -218,7 +225,9 @@ describe("linked edits check every partner before changing anything", () => {
       h.audio[1].getSpeed = () => 2;
     }, () => timeline.trim_clip.handler({ node_id: "v1", new_out_seconds: 29 })],
     ["set_clip_duration (partner would overlap its next clip)", (h: ReturnType<typeof host>) => {
-      h.audio[1].start = { ticks: String(11 * TICKS) };
+      // The picture ends 2 s early (gap before V1's next shot); its audio does not.
+      h.video[1].end = { ticks: String(28 * TICKS) };
+      h.video[1].outPoint = { ticks: String(28 * TICKS) };
     }, () => timeline.set_clip_duration.handler({ node_id: "v1", duration_seconds: 19.5 })],
     ["roll_edit (partner has a gap at the cut)", (h: ReturnType<typeof host>) => {
       h.audio[1].end = { ticks: String(28 * TICKS) };
@@ -277,3 +286,39 @@ describe("trim_clip will not extend into a neighbour", () => {
     expect(video[1].snapshot()).toEqual([10, 28, 10, 28]);
   });
 });
+
+describe("linked partners get the clip's change as an offset (J/L cuts, slipped audio)", () => {
+  const timeline = getTimelineTools(bridgeOptions);
+
+  /** The middle shot's audio is slipped 2 s later in its source (in 12 instead of 10). */
+  function slippedAudioHost() {
+    const h = host();
+    h.audio[1].inPoint = { ticks: String(12 * TICKS) };
+    h.audio[1].outPoint = { ticks: String(32 * TICKS) };
+    return h;
+  }
+
+  it("a head trim moves the partner's in point by the same amount, not to the same value", async () => {
+    const { video, audio } = slippedAudioHost();
+    await expect(timeline.trim_clip.handler({ node_id: "v1", new_in_seconds: 15 })).resolves.toMatchObject({ success: true });
+    expect(video[1].snapshot()).toEqual([15, 30, 15, 30]);
+    expect(audio[1].snapshot()).toEqual([15, 30, 17, 32]);
+  });
+
+  it("a tail trim moves the partner's out point by the same amount", async () => {
+    const { audio } = slippedAudioHost();
+    await expect(timeline.trim_clip.handler({ node_id: "v1", new_out_seconds: 25 })).resolves.toMatchObject({ success: true });
+    expect(audio[1].snapshot()).toEqual([10, 25, 12, 27]);
+  });
+
+  it("set_clip_duration moves a partner that starts later by the same end offset", async () => {
+    const { video, audio } = host();
+    // L cut: the audio starts 1 s after the picture (11-30 on A1).
+    audio[1].start = { ticks: String(11 * TICKS) };
+    audio[1].inPoint = { ticks: String(11 * TICKS) };
+    await expect(timeline.set_clip_duration.handler({ node_id: "v1", duration_seconds: 15 })).resolves.toMatchObject({ success: true });
+    expect(video[1].snapshot().slice(0, 2)).toEqual([10, 25]);
+    expect(audio[1].snapshot().slice(0, 2)).toEqual([11, 25]);
+  });
+});
+

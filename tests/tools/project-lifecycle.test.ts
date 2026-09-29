@@ -121,9 +121,9 @@ describe("project lifecycle tools", () => {
 
 describe("import_fcp_xml", () => {
   /** Live 25.2: openFCPXML opens <tmp>/<xml name>.prproj and leaves an empty FOLDER at project_path. */
-  function xmlHost(options: { opens?: boolean; importsTo?: string } = {}) {
+  function xmlHost(options: { opens?: boolean; importsTo?: string; existing?: string[] } = {}) {
     const importsTo = options.importsTo ?? "/tmp/T/cut.prproj";
-    const files = new Set(["/p/cut.xml"]);
+    const files = new Set(["/p/cut.xml", ...(options.existing ?? [])]);
     const folders = new Set<string>();
     const open: Array<Record<string, unknown>> = [{ path: "/p/Main.prproj", sequences: { numSequences: 0 } }];
     const seq = { name: "B3c Cut", sequenceID: "s1", videoTracks: { numTracks: 1, 0: { clips: { numItems: 4 } } }, audioTracks: { numTracks: 1, 0: { clips: { numItems: 4 } } } };
@@ -155,7 +155,8 @@ describe("import_fcp_xml", () => {
       this.remove = () => folders.delete(path);
       return this;
     }
-    (Folder as unknown as { temp: unknown }).temp = { fsName: "/tmp/T", fullName: "/tmp/T" };
+    const listProjects = (root: string) => [...files].filter((p) => p.startsWith(`${root}/`) && p.endsWith(".prproj")).map((fsName) => ({ fsName }));
+    (Folder as unknown as { temp: unknown }).temp = { fsName: "/tmp/T", fullName: "/tmp/T", exists: true, getFiles: () => listProjects("/tmp/T") };
     mockedSendCommand.mockImplementation(async (script: string) =>
       JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, File, Folder }))));
     return { files, folders };
@@ -179,6 +180,13 @@ describe("import_fcp_xml", () => {
     const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
     expect(result).toMatchObject({ success: true, data: { intermediateRemoved: false, intermediateKeptAt: "/Users/me/Projects/cut.prproj" } });
     expect(files.has("/Users/me/Projects/cut.prproj")).toBe(true);
+  });
+
+  it("never deletes a project that was already in the temp folder before the import", async () => {
+    const { files } = xmlHost({ existing: ["/tmp/T/cut.prproj"] });
+    const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
+    expect(result).toMatchObject({ success: true, data: { intermediateRemoved: false, intermediateKeptAt: "/tmp/T/cut.prproj" } });
+    expect(files.has("/tmp/T/cut.prproj")).toBe(true);
   });
 
   it("does not treat a lookalike folder as the temp folder", async () => {

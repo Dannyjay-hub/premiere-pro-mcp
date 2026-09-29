@@ -378,7 +378,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
 
     trim_clip: {
       description:
-        "Trim exactly one source in/out point and verify the corresponding visible timeline edge. Refuses retimed clips, extensions that would overlap the neighbouring clip on the same track, and, by default, trims that would leave effect keyframes outside the visible clip. Linked audio/video partners get the same trim by default (include_linked); every clip is checked before any is changed. To set a clip's timeline length or extend a still image, use set_clip_duration.",
+        "Trim exactly one source in/out point and verify the corresponding visible timeline edge. Refuses retimed clips, extensions that would overlap the neighbouring clip on the same track, and, by default, trims that would leave effect keyframes outside the visible clip. Linked audio/video partners get the same trim by default (include_linked), applied as the same offset from each partner's own source point so a J/L cut or slipped audio stays in sync; every clip is checked before any is changed. To set a clip's timeline length or extend a still image, use set_clip_duration.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -500,8 +500,11 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               return __editFail("trim_clip does not support retimed or otherwise non-1x clips because CEP cannot prove the requested source trim maps to the correct timeline edge. Use a host-verified workflow instead.");
             }
 
-            var requestedIn = ${args.new_in_seconds !== undefined ? args.new_in_seconds : "null"};
-            var requestedOut = ${args.new_out_seconds !== undefined ? args.new_out_seconds : "null"};
+            // The requested point applies to the clip itself; linked partners get
+            // the same change as a delta from their own source point, so a J/L cut
+            // or slipped audio keeps its offset instead of jumping to the value.
+            var requestedIn = ${args.new_in_seconds !== undefined ? "(parseFloat(clip.inPoint.ticks) + __trimDeltaTicks) / TICKS_PER_SECOND" : "null"};
+            var requestedOut = ${args.new_out_seconds !== undefined ? "(parseFloat(clip.outPoint.ticks) + __trimDeltaTicks) / TICKS_PER_SECOND" : "null"};
             var targetIn = requestedIn === null ? before.inPoint : requestedIn;
             var targetOut = requestedOut === null ? before.outPoint : requestedOut;
             if (!isFinite(targetIn) || !isFinite(targetOut) || targetIn < 0 || targetOut - targetIn < tolerance) {
@@ -551,12 +554,12 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             // does. On Premiere 25.2 a source-point write alone leaves the
             // timeline edge where it was (the head trim never moved the clip).
             ${args.new_in_seconds !== undefined ? `
-            var trimInTicks = __secondsToTicks(${args.new_in_seconds});
+            var trimInTicks = parseFloat(originalInPointTicks) + __trimDeltaTicks;
             var trimStart = new Time();
             trimStart.ticks = String(Math.round(parseFloat(originalStartTicks) + (trimInTicks - parseFloat(originalInPointTicks))));
             clip.start = trimStart;
             clip.inPoint = String(Math.round(trimInTicks));` : `
-            var trimOutTicks = __secondsToTicks(${args.new_out_seconds});
+            var trimOutTicks = parseFloat(originalOutPointTicks) + __trimDeltaTicks;
             var trimEnd = new Time();
             trimEnd.ticks = String(Math.round(parseFloat(originalEndTicks) + (trimOutTicks - parseFloat(originalOutPointTicks))));
             clip.end = trimEnd;
@@ -579,12 +582,12 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
 
             var drift = [];
             ${args.new_in_seconds !== undefined ? `
-            if (Math.abs(actualIn - ${args.new_in_seconds}) > tolerance) {
-              drift.push("inPoint requested ${args.new_in_seconds}s, read back " + actualIn + "s");
+            if (Math.abs(actualIn - requestedIn) > tolerance) {
+              drift.push("inPoint requested " + requestedIn + "s, read back " + actualIn + "s");
             }` : ""}
             ${args.new_out_seconds !== undefined ? `
-            if (Math.abs(actualOut - ${args.new_out_seconds}) > tolerance) {
-              drift.push("outPoint requested ${args.new_out_seconds}s, read back " + actualOut + "s");
+            if (Math.abs(actualOut - requestedOut) > tolerance) {
+              drift.push("outPoint requested " + requestedOut + "s, read back " + actualOut + "s");
             }` : ""}
 
             var expectedStart = ${args.new_in_seconds !== undefined
@@ -677,6 +680,9 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found: " + "${escapeForExtendScript(args.node_id)}");
+          var __trimDeltaTicks = ${args.new_in_seconds !== undefined
+            ? `__secondsToTicks(${args.new_in_seconds}) - parseFloat(target.clip.inPoint.ticks)`
+            : `__secondsToTicks(${args.new_out_seconds}) - parseFloat(target.clip.outPoint.ticks)`};
           return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "trim");
         `);
         return sendCommand(script, bridgeOptions);
@@ -685,7 +691,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
 
     set_clip_duration: {
       description:
-        "Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners get the same change by default (include_linked); every clip is checked before any is changed. Use this instead of speed changes, which Premiere does not expose to scripting.",
+        "Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners get the same change by default (include_linked), applied as the same end offset so partners with a J/L cut keep their offset; every clip is checked before any is changed. Use this instead of speed changes, which Premiere does not expose to scripting.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -770,9 +776,9 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               return __editFail("Premiere did not provide a readable, non-empty timeline range for this clip; no change was attempted.");
             }
 
-            var targetEndTicks = ${mode === "duration"
-              ? `startTicks + __secondsToTicks(${requested})`
-              : `__secondsToTicks(${requested})`};
+            // The clip gets the requested end; linked partners move their end by
+            // the same amount, so partners that start or end elsewhere keep sync.
+            var targetEndTicks = endTicks + __durationDeltaTicks;
             if (targetEndTicks - startTicks < frameTicks) {
               return __editFail("The requested end must be at least one frame after the clip start (" + __ticksToSeconds(startTicks) + "s); no change was attempted.");
             }
@@ -931,6 +937,9 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           var target = __findClip("${nodeId}");
           if (!target) return __error("Clip not found: " + "${nodeId}");
+          var __durationDeltaTicks = ${mode === "duration"
+            ? `parseFloat(target.clip.start.ticks) + __secondsToTicks(${requested})`
+            : `__secondsToTicks(${requested})`} - parseFloat(target.clip.end.ticks);
           return __runLinkedEdit(target, "${nodeId}", ${args.include_linked === false ? "false" : "true"}, __editOne, "duration change");
         `);
         return sendCommand(script, bridgeOptions);

@@ -105,7 +105,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
 
     delete_track: {
       description:
-        "Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true.",
+        "EXPERIMENTAL (undocumented QE DOM: removeVideoTrack/removeAudioTrack). Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -138,13 +138,15 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           if (${args.track_index} >= before) return __error("Track index out of range");
           if (before <= 1) return __error("A sequence keeps at least one ${args.track_type} track");
           // Identity of every track before the delete: clip IDs, custom name and
-          // lock/mute state. Default names ("Video 3") follow the track's position,
-          // so they are left out of the comparison.
-          var trackSignature = function (track) {
+          // lock/mute state. A default name ends in the track's own number ("Video 3",
+          // "Vidéo 3") and follows its position, so it is left out of the
+          // comparison in any host language.
+          var trackSignature = function (track, position) {
             var ids = [];
             for (var c = 0; c < track.clips.numItems; c++) ids.push(String(track.clips[c].nodeId));
             var name = String(track.name || "");
-            if (/^(Video|Audio) [0-9]+$/.test(name)) name = "";
+            var numbered = /^(.*[^0-9\\s])\\s*([0-9]+)$/.exec(name);
+            if (numbered && Number(numbered[2]) === position + 1) name = "";
             var locked = null, muted = null;
             try { locked = !!track.isLocked(); } catch (eLocked) {}
             try { muted = !!track.isMuted(); } catch (eMuted) {}
@@ -152,7 +154,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           };
           var signaturesOf = function (list) {
             var out = [];
-            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t]));
+            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t], t));
             return out;
           };
           var beforeSignatures = signaturesOf(tracks);

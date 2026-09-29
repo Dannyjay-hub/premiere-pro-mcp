@@ -74,7 +74,13 @@ describe("delete_track", () => {
       return { name: options.names?.[i] ?? `Video ${i + 1}`, clips, isLocked: () => false, isMuted: () => false };
     });
     const videoTracks = new Proxy({}, { get: (_t, k) => (k === "numTracks" ? list.length : list[Number(k)]) });
-    const qeSeq = { removeVideoTrack: (index: number) => { list.splice(options.qeOffByOne ? index + 1 : index, 1); } };
+    const qeSeq = {
+      removeVideoTrack: (index: number) => {
+        list.splice(options.qeOffByOne ? index + 1 : index, 1);
+        // Premiere renumbers positional default names ("Video 3" becomes "Video 2").
+        list.forEach((track, i) => { track.name = track.name.replace(/^(.*\D)\d+$/, `$1${i + 1}`); });
+      },
+    };
     run({ app: { enableQE: () => {}, project: { activeSequence: { videoTracks, audioTracks: { numTracks: 1 } } } }, qe: { project: { getActiveSequence: () => qeSeq } } });
     return list;
   }
@@ -106,6 +112,12 @@ describe("delete_track", () => {
     trackHost([0, 0, 0], { names: ["Graphics", "B-roll", "Titles"], qeOffByOne: true });
     await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 0 }))
       .resolves.toMatchObject({ success: false, data: { removedTrackIndex: 1 } });
+  });
+
+  it("ignores default names in any host language, since they follow the track's position", async () => {
+    trackHost([1, 0, 2], { names: ["Vidéo 1", "Vidéo 2", "Vidéo 3"] });
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 1 }))
+      .resolves.toMatchObject({ success: true, data: { verified: true } });
   });
 
   it("ignores default names, which follow the track's position", async () => {
