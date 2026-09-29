@@ -190,6 +190,25 @@ describe("SERVER_VERSION", () => {
   });
 });
 
+describe("unknown tool arguments", () => {
+  it("rejects a misspelled argument by name instead of silently using defaults", async () => {
+    const server = createServer({});
+    const client = new Client({ name: "unknown-arg-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const outcome = await client.callTool({ name: "mock_discovery_tool", arguments: { name: "x", nmae: "y" } })
+        .then((result) => JSON.stringify(result), (error: Error) => error.message);
+      expect(outcome).toContain("unknown argument nmae; this tool accepts: name");
+      const ok = await client.callTool({ name: "mock_discovery_tool", arguments: { name: "x" } });
+      expect(ok.isError).toBeFalsy();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
 describe("undo tracking is scoped to tools that change the project", () => {
   it("tracks for a mutating tool and not for a read-only one", async () => {
     const server = createServer({});
