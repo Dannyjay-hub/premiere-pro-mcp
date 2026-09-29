@@ -366,3 +366,13 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
     expect(marks.outPoint).toBeCloseTo(5 + 1 / 24, 8);
   });
 });
+
+describe("escapeForExtendScript and ES3 line terminators", () => {
+  it("escapes U+2028, U+2029 and other control characters so the literal still parses and round-trips", () => {
+    const value = "Line\u2028break\u2029para\u0000nul\u000bvt\u001fus \"q\" back\\slash";
+    const escaped = escapeForExtendScript(value);
+    expect(escaped).not.toMatch(new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029]"));
+    expect(escaped).toContain("\\u2028");
+    expect(runInNewContext(`"${escaped}"`)).toBe(value);
+  });
+});
