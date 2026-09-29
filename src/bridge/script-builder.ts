@@ -669,19 +669,35 @@ function __componentMatchName(component) {
 // audio intrinsics, by graphic/shape layer match names, or by English name.
 function __isBuiltInComponent(component) {
   var match = __componentMatchName(component);
-  if (__BUILT_IN_MATCH_NAMES[match] || /^Internal /.test(match) || /^AE\.ADBE (Vector|Shape|Graphic)/.test(match)) return true;
+  if (__BUILT_IN_MATCH_NAMES[match] || /^Internal /.test(match) || /^AE\\.ADBE (Vector|Shape|Graphic)/.test(match)) return true;
   return !!__BUILT_IN_COMPONENTS[String(component.displayName)];
 }
 
+// Match names confirmed live (#674). Unlike the guessed entries above, these
+// prove the host language: one of them showing a non-English display name
+// means the built-ins are localized.
+function __isConfirmedBuiltInMatchName(match) {
+  return match === "AE.ADBE Motion" || match === "AE.ADBE Opacity" || match === "AE.ADBE Graphic Group" ||
+    match === "AE.ADBE Text" || /^Internal /.test(match);
+}
+
 // A component can only be classified when it reports a match name or carries a
-// built-in's English name. Otherwise (no match name, non-English name) removal
-// is refused rather than risk removing Opacity or Motion.
+// built-in's English name. On a localized host, the match names of Time
+// Remapping, Panner and shape layers are not confirmed, so an unknown match
+// name could be one of them: refuse rather than risk removing it (#674).
 function __componentClassificationProblem(clip) {
+  var localized = null;
   for (var i = 0; i < clip.components.numItems; i++) {
     var component = clip.components[i];
-    if (!__componentMatchName(component) && !__BUILT_IN_COMPONENTS[String(component.displayName)]) {
-      return "Premiere reports no match name for the component " + String(component.displayName) + ", so it cannot be told apart from a built-in component reliably.";
+    var match = __componentMatchName(component);
+    var name = String(component.displayName);
+    if (!match && !__BUILT_IN_COMPONENTS[name]) {
+      return "Premiere reports no match name for the component " + name + ", so it cannot be told apart from a built-in component reliably.";
     }
+    if (__isConfirmedBuiltInMatchName(match) && !__BUILT_IN_COMPONENTS[name]) localized = name;
+  }
+  if (localized !== null) {
+    return "This Premiere host shows built-in components under localized names (" + localized + "). The match names of Time Remapping, Panner and shape layers are not confirmed yet, so an effect cannot be told apart from them reliably (#674).";
   }
   return null;
 }
