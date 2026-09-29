@@ -77,6 +77,31 @@ const IN_OUT_EDIT_PREAMBLE = `
           for (var tt = 0; tt < targeted.length; tt++) if (targeted[tt].overlap > halfFrame) rangeHadClips = true;
           if (!rangeHadClips) return __error("Nothing to remove: no clips on targeted, unlocked tracks overlap the in/out range (Lift and Extract only edit targeted tracks; see set_target_track). No clips were changed.");
           var signatureBefore = timelineSignature();
+          // Per-track signatures, to report tracks Premiere changed besides the
+          // targeted ones (live 25.2.3: Extract also closed the range on an
+          // untargeted audio track holding the targeted video's linked audio).
+          var trackSignatures = function () {
+            var out = {};
+            var groups = [["V", seq.videoTracks], ["A", seq.audioTracks]];
+            for (var g = 0; g < groups.length; g++) {
+              for (var t = 0; t < groups[g][1].numTracks; t++) {
+                var clips = groups[g][1][t].clips;
+                var parts = [];
+                for (var c = 0; c < clips.numItems; c++) parts.push(clips[c].nodeId + "@" + clips[c].start.ticks + "-" + clips[c].end.ticks);
+                out[groups[g][0] + (t + 1)] = parts.join(";");
+              }
+            }
+            return out;
+          };
+          var tracksBefore = trackSignatures();
+          var otherTracksChanged = function () {
+            var now = trackSignatures();
+            var changed = [];
+            var edited = {};
+            for (var e = 0; e < targeted.length; e++) edited[targeted[e].label] = true;
+            for (var key in now) if (now.hasOwnProperty(key) && !edited[key] && now[key] !== tracksBefore[key]) changed.push(key);
+            return changed;
+          };
           // After the edit, each targeted track must hold exactly the range's content less.
           var coverageProblems = function () {
             var problems = [];
@@ -1005,7 +1030,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are left alone, as in Premiere.",
+        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1039,6 +1064,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             outSeconds: outSeconds,
             gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
             tracksEdited: edited,
+            otherTracksChanged: otherTracksChanged(),
             sequenceEndSeconds: __ticksToSeconds(seq.end),
             verified: true
           });
@@ -1049,7 +1075,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are only shifted by Premiere when sync-locked; they are not verified.",
+        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1083,6 +1109,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             outSeconds: outSeconds,
             removedSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
             tracksEdited: edited,
+            otherTracksChanged: otherTracksChanged(),
             sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)),
             sequenceEndSeconds: __ticksToSeconds(String(endAfter)),
             lockedTracksKept: anyLocked,

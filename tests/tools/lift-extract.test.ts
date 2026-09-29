@@ -35,7 +35,7 @@ function run(context: Record<string, unknown>) {
 type FakeClip = { nodeId: string; name: string; start: { ticks: string }; end: { ticks: string } };
 function inOutHost(options: {
   inSeconds: number; outSeconds: number; lift?: "left" | "lift" | "noop";
-  lockedAudio?: boolean; untargetedAudio?: boolean; extractNoShift?: boolean;
+  lockedAudio?: boolean; untargetedAudio?: boolean; extractNoShift?: boolean; extractTouchesUntargeted?: boolean;
 }) {
   const t = (seconds: number) => ({ ticks: String(Math.round(seconds * TICKS)) });
   let pieces = 0;
@@ -66,7 +66,7 @@ function inOutHost(options: {
     const a = options.inSeconds, b = options.outSeconds;
     const shift = ripple && !options.extractNoShift ? b - a : 0;
     for (const track of all) {
-      if (track.locked || !track.targeted) continue;
+      if (track.locked || (!track.targeted && !(ripple && options.extractTouchesUntargeted))) continue;
       const next: FakeClip[] = [];
       for (const clip of track.list) {
         const s = secondsOf(clip.start), e = secondsOf(clip.end);
@@ -157,5 +157,18 @@ describe("lift_selection and extract_selection", () => {
       error: expect.stringMatching(/^The timeline changed, but Premiere's extract did not close/),
       data: { timelineChanged: true },
     });
+  });
+
+  it("lists an untargeted track that Premiere's extract changed too (live 25.2.3: linked audio)", async () => {
+    inOutHost({ inSeconds: 30, outSeconds: 35, untargetedAudio: true, extractTouchesUntargeted: true });
+    await expect(utility.extract_selection.handler()).resolves.toMatchObject({
+      success: true,
+      data: { tracksEdited: ["V1"], otherTracksChanged: ["A1"] },
+    });
+  });
+
+  it("reports no other tracks when only targeted tracks changed", async () => {
+    inOutHost({ inSeconds: 30, outSeconds: 35, untargetedAudio: true });
+    await expect(utility.lift_selection.handler()).resolves.toMatchObject({ success: true, data: { otherTracksChanged: [] } });
   });
 });

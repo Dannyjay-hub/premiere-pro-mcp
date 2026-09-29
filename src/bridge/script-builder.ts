@@ -266,6 +266,32 @@ function __propertyNameMatches(actual, wanted, component) {
   return aliased && __isUniformScale(component);
 }
 
+// Scale a clip's Motion component uniformly and read it back. With Uniform
+// Scale on, "Scale" (or its renamed "Scale Height") scales both axes. With it
+// off, "Scale" is the height alone (live 25.2.3: writing Scale 120 left Scale
+// Width at 100 and stretched the picture), so the width is written too.
+// Returns { ok, uniform, error }.
+function __setMotionScale(motion, value) {
+  var uniform = __isUniformScale(motion);
+  var height = null;
+  var width = null;
+  for (var i = 0; i < motion.properties.numItems; i++) {
+    var name = String(motion.properties[i].displayName);
+    if (name === "Scale" || name === "Scale Height") height = motion.properties[i];
+    else if (name === "Scale Width") width = motion.properties[i];
+  }
+  if (!height) return { ok: false, uniform: uniform, error: "Motion has no Scale property; nothing was changed." };
+  if (!uniform && !width) return { ok: false, uniform: uniform, error: "Uniform Scale is off but Motion has no Scale Width property, so the clip cannot be scaled evenly; nothing was changed." };
+  height.setValue(value, true);
+  if (!uniform) width.setValue(value, true);
+  var readHeight = Number(height.getValue());
+  var readWidth = uniform ? readHeight : Number(width.getValue());
+  if (!(Math.abs(readHeight - value) < 0.01) || !(Math.abs(readWidth - value) < 0.01)) {
+    return { ok: false, uniform: uniform, error: "Premiere did not apply the scale: it reads back as " + readHeight + (uniform ? "" : " (height) and " + readWidth + " (width)") + " instead of " + value + "." };
+  }
+  return { ok: true, uniform: uniform };
+}
+
 // TrackItem.isDisabled() does not exist on Premiere 25.2; the state is the
 // boolean "disabled" property. Callers wrapped isDisabled() in try/catch, so
 // every disabled clip was silently reported as enabled.

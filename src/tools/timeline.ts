@@ -1319,6 +1319,17 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           ` : ""}
           
+          ${args.scale !== undefined ? `
+          // Even scaling reads Uniform Scale first: with it off, "Scale" is the height alone.
+          var scaleMotion = null;
+          for (var sm = 0; sm < clip.components.numItems; sm++) {
+            if (clip.components[sm].matchName === "AE.ADBE Motion" || clip.components[sm].displayName === "Motion") { scaleMotion = clip.components[sm]; break; }
+          }
+          if (!scaleMotion) return __error("The clip has no Motion component, so scale was not set.");
+          var scaledClip = __setMotionScale(scaleMotion, ${args.scale});
+          if (!scaledClip.ok) return __error(scaledClip.error);
+          changes.scale = ${args.scale};` : ""}
+
           ${args.scale !== undefined || args.position_x !== undefined || args.position_y !== undefined || args.rotation !== undefined ? `
           for (var i = 0; i < clip.components.numItems; i++) {
             var comp = clip.components[i];
@@ -1326,10 +1337,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
               for (var p = 0; p < comp.properties.numItems; p++) {
                 var prop = comp.properties[p];
                 ${args.scale !== undefined ? `
-                if (__propertyNameMatches(prop.displayName, "Scale", comp)) {
-                  prop.setValue(${args.scale}, true);
-                  changes.scale = ${args.scale};
-                }` : ""}
+` : ""}
                 ${args.position_x !== undefined || args.position_y !== undefined ? `
                 if (prop.displayName === "Position") {
                   var posVal = prop.getValue();

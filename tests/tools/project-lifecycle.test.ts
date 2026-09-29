@@ -121,7 +121,7 @@ describe("project lifecycle tools", () => {
 
 describe("import_fcp_xml", () => {
   /** Live 25.2: openFCPXML opens <tmp>/<xml name>.prproj and leaves an empty FOLDER at project_path. */
-  function xmlHost(options: { opens?: boolean; importsTo?: string; existing?: string[] } = {}) {
+  function xmlHost(options: { opens?: boolean; importsTo?: string; existing?: string[]; macTemp?: boolean } = {}) {
     const importsTo = options.importsTo ?? "/tmp/T/cut.prproj";
     const files = new Set(["/p/cut.xml", ...(options.existing ?? [])]);
     const folders = new Set<string>();
@@ -150,16 +150,22 @@ describe("import_fcp_xml", () => {
           ? new (File as unknown as new (p: string) => unknown)(path)
           : new (Folder as unknown as new (p: string) => unknown)(path);
       }
-      this.exists = folders.has(path) || files.has(path);
-      this.getFiles = () => [];
+      const bare = path.replace(/^\/private\//, "/");
+      this.exists = folders.has(path) || files.has(path) || [...files].some((f) => f.startsWith(`${path}/`) || f.startsWith(`${bare}/`));
+      this.getFiles = () => listProjects(bare);
       this.remove = () => folders.delete(path);
       return this;
     }
     // Folder.getFiles(): the folder's own entries (no recursion).
     const listProjects = (root: string) => [...files].filter((p) => p.startsWith(`${root}/`) && !p.slice(root.length + 1).includes("/")).map((fsName) => ({ fsName }));
-    (Folder as unknown as { temp: unknown }).temp = { fsName: "/tmp/T", fullName: "/tmp/T", exists: true, getFiles: () => listProjects("/tmp/T") };
+    // Live 25.2.3 (macOS): Folder.temp is ".../T/TemporaryItems" under /private/var,
+    // while Premiere writes the intermediate project to $TMPDIR (".../T/", under /var).
+    (Folder as unknown as { temp: unknown }).temp = options.macTemp
+      ? { fsName: "/private/var/T/TemporaryItems", fullName: "/private/var/T/TemporaryItems", parent: { fsName: "/private/var/T" }, exists: true }
+      : { fsName: "/tmp/T", fullName: "/tmp/T", exists: true };
+    const $ = { getenv: (name: string) => (options.macTemp && name === "TMPDIR" ? "/var/T/" : "") };
     mockedSendCommand.mockImplementation(async (script: string) =>
-      JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, File, Folder }))));
+      JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, File, Folder, $ }))));
     return { files, folders };
   }
 
@@ -201,6 +207,19 @@ describe("import_fcp_xml", () => {
     const { files } = xmlHost({ importsTo: "/tmp/T/CUT.PRPROJ", existing: ["/tmp/T/CUT.PRPROJ"] });
     await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" });
     expect(files.has("/tmp/T/CUT.PRPROJ")).toBe(true);
+  });
+
+  it("deletes the intermediate project Premiere wrote to $TMPDIR on macOS (not Folder.temp)", async () => {
+    const { files } = xmlHost({ macTemp: true, importsTo: "/var/T/lv.prproj" });
+    const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
+    expect(result).toMatchObject({ success: true, data: { intermediateRemoved: true, intermediateKeptAt: null } });
+    expect(files.has("/var/T/lv.prproj")).toBe(false);
+  });
+
+  it("keeps a same-named project that already existed in $TMPDIR", async () => {
+    const { files } = xmlHost({ macTemp: true, importsTo: "/var/T/lv.prproj", existing: ["/var/T/lv.prproj"] });
+    await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" });
+    expect(files.has("/var/T/lv.prproj")).toBe(true);
   });
 
   it("does not treat a lookalike folder as the temp folder", async () => {

@@ -799,7 +799,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
     },
 
     set_clip_scale: {
-      description: "Set the Scale property on a video clip's Motion effect.",
+      description: "Scale a video clip evenly through its Motion effect and read the result back. With Uniform Scale off, both Scale (height) and Scale Width are set, so the picture is not stretched; use set_scale_width_height for different values.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -821,21 +821,15 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           if (!result) return __error("Clip not found");
 
           var clip = result.clip;
-          var set = false;
+          var motion = null;
           for (var i = 0; i < clip.components.numItems; i++) {
-            if (clip.components[i].displayName === "Motion") {
-              for (var p = 0; p < clip.components[i].properties.numItems; p++) {
-                if (__propertyNameMatches(clip.components[i].properties[p].displayName, "Scale", clip.components[i])) {
-                  clip.components[i].properties[p].setValue(${args.scale}, true);
-                  set = true;
-                  break;
-                }
-              }
-              break;
-            }
+            var candidate = clip.components[i];
+            if (candidate.matchName === "AE.ADBE Motion" || candidate.displayName === "Motion") { motion = candidate; break; }
           }
-          if (!set) return __error("Could not set scale");
-          return __result({ scale: ${args.scale}, clip: clip.name });
+          if (!motion) return __error("The clip has no Motion component; nothing was changed.");
+          var scaled = __setMotionScale(motion, ${args.scale});
+          if (!scaled.ok) return __error(scaled.error);
+          return __result({ scale: ${args.scale}, clip: clip.name, uniformScale: scaled.uniform, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },

@@ -864,12 +864,21 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           // project that did not exist before this call can be treated as the
           // intermediate copy and deleted.
           var preexistingProjects = {};
-          var projectSearchRoots = [Folder.temp, new Folder("${projectFolder}")];
+          // Where Premiere may write the intermediate project. Live 25.2.3 (macOS):
+          // Folder.temp is ".../T/TemporaryItems" but Premiere wrote ".../T/lv.prproj"
+          // (the process temp dir, spelled /var rather than /private/var).
+          var importRootPaths = [Folder.temp.fsName, "${projectFolder}"];
+          try { if (Folder.temp.parent) importRootPaths.push(Folder.temp.parent.fsName); } catch (eParent) {}
+          try { var tmpDir = $.getenv("TMPDIR"); if (tmpDir) importRootPaths.push(tmpDir); } catch (eEnv) {}
+          // /private/var and /var are the same directory on macOS.
+          var normImportPath = function (path) { return __normProjectPath(path).replace(/^\\/private\\//, "/").replace(/\\/+$/, ""); };
+          var projectSearchRoots = [];
+          for (var ir = 0; ir < importRootPaths.length; ir++) projectSearchRoots.push(new Folder(importRootPaths[ir]));
           for (var pr = 0; pr < projectSearchRoots.length; pr++) {
             var found = [];
             // Every entry, not a "*.prproj" mask: the mask can miss "CUT.PRPROJ".
             try { if (projectSearchRoots[pr].exists) found = projectSearchRoots[pr].getFiles() || []; } catch (eList) {}
-            for (var pf = 0; pf < found.length; pf++) preexistingProjects[__normProjectPath(found[pf].fsName)] = true;
+            for (var pf = 0; pf < found.length; pf++) preexistingProjects[normImportPath(found[pf].fsName)] = true;
           }
           try {
             // The second argument behaves as a folder prefix (live 25.2: "<project_path>cut.1.prproj"),
@@ -902,12 +911,13 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             // told Premiere to write (the system temp folder or the destination
             // folder) and did not exist before the call; anything else is left on
             // disk and reported.
-            var intermediateNorm = __normProjectPath(importedAt);
-            var ownedRoots = [__normProjectPath(Folder.temp.fsName), __normProjectPath(Folder.temp.fullName), __normProjectPath("${projectFolder}")];
+            var intermediateNorm = normImportPath(importedAt);
+            var ownedRoots = [];
+            for (var orp = 0; orp < importRootPaths.length; orp++) ownedRoots.push(normImportPath(importRootPaths[orp]));
             var intermediateOwned = false;
             if (/\\.prproj$/.test(intermediateNorm) && intermediateNorm.indexOf("/../") < 0 && !preexistingProjects[intermediateNorm]) {
               for (var ri = 0; ri < ownedRoots.length; ri++) {
-                var ownedPrefix = ownedRoots[ri] ? ownedRoots[ri].replace(/\\/$/, "") + "/" : "";
+                var ownedPrefix = ownedRoots[ri] ? ownedRoots[ri] + "/" : "";
                 // Direct children only: the snapshot above lists each folder's own files.
                 if (ownedPrefix && intermediateNorm.indexOf(ownedPrefix) === 0 && intermediateNorm.substring(ownedPrefix.length).indexOf("/") < 0) intermediateOwned = true;
               }
