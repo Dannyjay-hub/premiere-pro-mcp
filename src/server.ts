@@ -164,6 +164,40 @@ function debugLog(message: string): void {
 }
 
 /**
+ * AJV reports an unknown argument only as "must NOT have additional
+ * properties". Name the offending keys and the accepted ones so a caller can
+ * fix a misspelling instead of guessing.
+ */
+function namingUnknownArguments(
+  schema: StandardSchemaWithJSON<unknown, unknown>,
+  allowed: string[] | null,
+): StandardSchemaWithJSON<unknown, unknown> {
+  if (!allowed) return schema;
+  const standard = schema["~standard"];
+  const allowedSet = new Set(allowed);
+  return {
+    "~standard": {
+      ...standard,
+      validate: async (value: unknown) => {
+        const result = await standard.validate(value);
+        if (!("issues" in result) || !result.issues || !value || typeof value !== "object" || Array.isArray(value)) {
+          return result;
+        }
+        const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
+        if (unknown.length === 0) return result;
+        const message = `unknown argument${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; this tool accepts: ${allowed.join(", ") || "no arguments"}`;
+        return {
+          issues: [
+            { message },
+            ...result.issues.filter((issue) => !/additional properties/.test(issue.message)),
+          ],
+        };
+      },
+    },
+  } as StandardSchemaWithJSON<unknown, unknown>;
+}
+
+/**
  * Reuse the source JSON Schema directly. The MCP SDK's adapter supplies both
  * AJV validation and the exact schema needed for tools/list, avoiding a costly
  * Zod-to-JSON-Schema conversion for every stateless HTTP request.
@@ -184,10 +218,20 @@ function jsonSchemaToInputSchema(
     return contentCached;
   }
 
-  const sourceSchema = params.$schema === undefined
+  const withDraft = params.$schema === undefined
     ? { $schema: JSON_SCHEMA_DRAFT_2020_12, ...params }
     : params;
-  const schema = fromJsonSchema(sourceSchema as JsonSchemaType);
+  // A misspelled argument (time_seconds for start_seconds) used to be dropped
+  // silently and the tool ran with its default instead. Reject unknown
+  // top-level arguments whenever a tool declares its properties.
+  const sourceSchema = withDraft.properties !== undefined && withDraft.additionalProperties === undefined
+    && withDraft.patternProperties === undefined
+    ? { ...withDraft, additionalProperties: false }
+    : withDraft;
+  const schema = namingUnknownArguments(
+    fromJsonSchema(sourceSchema as JsonSchemaType),
+    sourceSchema.additionalProperties === false ? Object.keys((sourceSchema.properties ?? {}) as object) : null,
+  );
   inputSchemaCache.set(params, schema);
   inputSchemaContentCache.set(cacheKey, schema);
   return schema;
@@ -265,7 +309,8 @@ function collectStaticTools(
   return tools;
 }
 
-function collectTools(
+/** Every tool definition a server would register (exported for catalog tests). */
+export function collectTools(
   bridgeOptions: BridgeOptions,
   capabilities: ReturnType<typeof resolveCapabilities>,
   uxpBridge?: UxpWebSocketBridge,
