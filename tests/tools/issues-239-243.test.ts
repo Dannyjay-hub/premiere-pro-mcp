@@ -246,7 +246,7 @@ describe("issue #240 — legacy structural tools verify or refuse the operation"
     expect(itemScript).not.toContain("deleteProjectItem(");
     expect(itemScript).toContain("item.deleteBin()");
     expect(itemScript).toContain("app.project.deleteSequence(sequence)");
-    expect(itemScript).toContain("if (__findProjectItem(nodeId))");
+    expect(itemScript).toContain("if (__findProjectItemByNodeId(nodeId))");
 
     const manyScript = await scriptFor(utility.delete_multiple_project_items, { item_ids: ["item-1", "item-2"] });
     expect(manyScript).toContain("No project items were deleted");

@@ -507,7 +507,13 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             var requestedOut = ${args.new_out_seconds !== undefined ? "(parseFloat(clip.outPoint.ticks) + __trimDeltaTicks) / TICKS_PER_SECOND" : "null"};
             var targetIn = requestedIn === null ? before.inPoint : requestedIn;
             var targetOut = requestedOut === null ? before.outPoint : requestedOut;
-            if (!isFinite(targetIn) || !isFinite(targetOut) || targetIn < 0 || targetOut - targetIn < tolerance) {
+            if (!isFinite(targetIn) || !isFinite(targetOut)) {
+              return __editFail("The requested source trim could not be computed for this clip; trim was not attempted.");
+            }
+            if (targetIn < 0) {
+              return __editFail("The trim would move this clip's source in point to " + targetIn + "s, before the start of its media; trim was not attempted.");
+            }
+            if (targetOut - targetIn < tolerance) {
               return __editFail("The requested source trim must leave at least one frame between in and out; trim was not attempted.");
             }
 

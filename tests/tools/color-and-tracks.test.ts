@@ -67,7 +67,7 @@ describe("colour parameters", () => {
 });
 
 describe("delete_track", () => {
-  function trackHost(clipCounts: number[], options: { names?: string[]; qeOffByOne?: boolean } = {}) {
+  function trackHost(clipCounts: number[], options: { names?: string[]; qeOffByOne?: boolean; renumbers?: boolean } = {}) {
     const list = clipCounts.map((n, i) => {
       const clips: Record<string | number, unknown> = { numItems: n };
       for (let c = 0; c < n; c++) clips[c] = { nodeId: `t${i}c${c}` };
@@ -77,8 +77,11 @@ describe("delete_track", () => {
     const qeSeq = {
       removeVideoTrack: (index: number) => {
         list.splice(options.qeOffByOne ? index + 1 : index, 1);
-        // Premiere renumbers positional default names ("Video 3" becomes "Video 2").
-        list.forEach((track, i) => { track.name = track.name.replace(/^(.*\D)\d+$/, `$1${i + 1}`); });
+        // Premiere renumbers positional default names ("Video 3" becomes "Video 2");
+        // custom names such as "Cam 4" keep their number.
+        if (options.renumbers !== false) {
+          list.forEach((track, i) => { track.name = track.name.replace(/^(Video|Vidéo) \d+$/, `$1 ${i + 1}`); });
+        }
       },
     };
     run({ app: { enableQE: () => {}, project: { activeSequence: { videoTracks, audioTracks: { numTracks: 1 } } } }, qe: { project: { getActiveSequence: () => qeSeq } } });
@@ -118,6 +121,22 @@ describe("delete_track", () => {
     trackHost([1, 0, 2], { names: ["Vidéo 1", "Vidéo 2", "Vidéo 3"] });
     await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 1 }))
       .resolves.toMatchObject({ success: true, data: { verified: true } });
+  });
+
+  it.each([
+    ["a custom name ending in its own number moves down (Cam 4 on V4, delete V2)", [0, 0, 0, 0], ["Video 1", "Video 2", "Video 3", "Cam 4"], 1, true],
+    ["a custom name ending in a lower number moves down (Take 2 on V3, delete V1)", [0, 0, 0], ["Video 1", "Video 2", "Take 2"], 0, true],
+    ["a host that does not renumber default names", [0, 0, 0, 0], ["Video 1", "Video 2", "Video 3", "Video 4"], 1, false],
+  ] as const)("reports a correct delete as verified when %s", async (_case, counts, names, index, renumbers) => {
+    trackHost([...counts], { names: [...names], renumbers });
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: index }))
+      .resolves.toMatchObject({ success: true, data: { verified: true } });
+  });
+
+  it("still catches the wrong track being removed when names are custom and numbered", async () => {
+    trackHost([0, 0, 0], { names: ["Video 1", "Cam A", "Cam 7"], qeOffByOne: true });
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "video", track_index: 0 }))
+      .resolves.toMatchObject({ success: false, data: { removedTrackIndex: 1 } });
   });
 
   it("ignores default names, which follow the track's position", async () => {

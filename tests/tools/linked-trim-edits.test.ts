@@ -322,3 +322,35 @@ describe("linked partners get the clip's change as an offset (J/L cuts, slipped 
   });
 });
 
+describe("a partner Premiere moves while the main clip is written", () => {
+  const timeline = getTimelineTools(bridgeOptions);
+
+  it("is not given the offset a second time, and the result says the timeline changed", async () => {
+    const { video, audio } = host();
+    // Emulate a host that carries a linked partner along with the main clip's in-point write.
+    const setIn = Object.getOwnPropertyDescriptor(video[1], "inPoint")!.set!;
+    Object.defineProperty(video[1], "inPoint", {
+      get: Object.getOwnPropertyDescriptor(video[1], "inPoint")!.get,
+      set(value: unknown) {
+        setIn.call(video[1], value);
+        audio[1].inPoint = value;
+        audio[1].start = { ticks: String(15 * TICKS) };
+      },
+    });
+    const result = await timeline.trim_clip.handler({ node_id: "v1", new_in_seconds: 15 }) as Result;
+    expect(result).toMatchObject({ success: false, data: { timelineChanged: true, failedPartner: { nodeId: "a1" } } });
+    expect(result.error).toContain("Premiere moved it while the main clip was written");
+    expect(audio[1].snapshot().slice(0, 3)).toEqual([15, 30, 15]);
+  });
+
+  it("names the real problem when a partner's in point would go below zero", async () => {
+    const { video, audio } = host();
+    // Leave room before the shot so only the partner's source limits the trim.
+    for (const clip of [video[0], audio[0]]) { clip.end = { ticks: String(2 * TICKS) }; clip.outPoint = { ticks: String(2 * TICKS) }; }
+    audio[1].inPoint = { ticks: String(3 * TICKS) };
+    audio[1].outPoint = { ticks: String(23 * TICKS) };
+    const result = await timeline.trim_clip.handler({ node_id: "v1", new_in_seconds: 5 }) as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("before the start of its media") });
+  });
+});
+

@@ -280,7 +280,17 @@ function __isClipDisabled(clip) {
 
 // How many timeline clips, in every sequence, use this project item.
 function __projectItemUsage(item) {
-  var wanted = String(item.nodeId);
+  // A bin's usage is the usage of everything inside it: deleting the bin
+  // deletes its contents and their timeline clips.
+  var wanted = {};
+  var collect = function (entry) {
+    wanted[String(entry.nodeId)] = true;
+    if (__isBinItem(entry)) {
+      var count = __childCount(entry);
+      for (var k = 0; k < count; k++) { var child = __childAt(entry, k); if (child) collect(child); }
+    }
+  };
+  collect(item);
   var usage = { clips: 0, sequences: [] };
   for (var sq = 0; sq < app.project.sequences.numSequences; sq++) {
     var sequenceInUse = app.project.sequences[sq];
@@ -291,7 +301,7 @@ function __projectItemUsage(item) {
         var trackClips = groups[g][t].clips;
         for (var c = 0; c < trackClips.numItems; c++) {
           try {
-            if (trackClips[c].projectItem && String(trackClips[c].projectItem.nodeId) === wanted) { usage.clips++; hit = true; }
+            if (trackClips[c].projectItem && wanted[String(trackClips[c].projectItem.nodeId)]) { usage.clips++; hit = true; }
           } catch (eUse) {}
         }
       }
@@ -304,22 +314,38 @@ function __projectItemUsage(item) {
 // Premiere has no documented delete for a clip/file project item, but deleting
 // a bin deletes what it contains. Move the item into a fresh temporary bin and
 // delete that bin; restore on failure. Callers must refuse items still used on
-// a timeline, because deleting the item also removes those timeline clips.
+// a timeline unless the caller confirmed, because deleting the item also
+// removes those timeline clips, and this path is not undoable.
 function __deleteProjectItemViaBin(item) {
+  var itemId = String(item.nodeId);
+  var holderName = "mcp-delete-" + new Date().getTime();
+  var rootCount = __childCount(app.project.rootItem);
+  for (var r = 0; r < rootCount; r++) {
+    var existing = __childAt(app.project.rootItem, r);
+    if (existing && String(existing.name) === holderName) {
+      return { ok: false, changed: false, error: "A bin named " + holderName + " already exists, so the temporary bin could not be told apart from it. Nothing was deleted." };
+    }
+  }
   var holder = null;
-  try { holder = app.project.rootItem.createBin("mcp-delete-" + new Date().getTime()); } catch (eCreate) {}
-  if (!holder) return { ok: false, error: "Premiere could not create a temporary bin for the deletion." };
+  try { holder = app.project.rootItem.createBin(holderName); } catch (eCreate) {}
+  if (!holder) return { ok: false, changed: false, error: "Premiere could not create a temporary bin for the deletion. Nothing was deleted." };
+  var holderId = String(holder.nodeId);
   var originalParent = null;
   try { originalParent = item.getBin ? item.getBin() : null; } catch (eParent) {}
   try { item.moveBin(holder); } catch (eMove) {
     try { holder.deleteBin(); } catch (eCleanup) {}
-    return { ok: false, error: "Premiere could not move the item into a temporary bin: " + eMove.toString() };
+    return { ok: false, changed: !!__findProjectItemByNodeId(holderId), error: "Premiere could not move the item into a temporary bin: " + eMove.toString() + "." };
   }
   try { holder.deleteBin(); } catch (eDelete) {
     try { if (originalParent) item.moveBin(originalParent); } catch (eRestore) {}
-    return { ok: false, error: "Premiere could not delete the temporary bin: " + eDelete.toString() };
+    return { ok: false, changed: true, error: "Premiere could not delete the temporary bin " + holderName + ": " + eDelete.toString() + ". Check the Project panel." };
   }
-  return { ok: true };
+  var itemLeft = !!__findProjectItemByNodeId(itemId);
+  var holderLeft = !!__findProjectItemByNodeId(holderId);
+  if (itemLeft || holderLeft) {
+    return { ok: false, changed: true, error: "The project changed: after deleting the temporary bin " + holderName + ", " + (itemLeft && holderLeft ? "the item and the bin are" : (itemLeft ? "the item is" : "the temporary bin is")) + " still in the project. Check the Project panel." };
+  }
+  return { ok: true, changed: true };
 }
 
 function __isBinItem(item) {
@@ -1184,8 +1210,26 @@ function __linkedPartnerClips(result) {
 // refuses the whole edit instead of leaving picture and sound out of sync
 // (most DOM writes add no undo entry, so Undo cannot be relied on). The
 // result is verified only when every clip's edit was verified.
+// Timeline and source position of a clip, read fresh, to tell whether it moved.
+function __clipPositionKey(nodeId) {
+  var found = __findClip(nodeId);
+  if (!found) return null;
+  var parts = [];
+  var fields = ["start", "end", "inPoint", "outPoint"];
+  for (var f = 0; f < fields.length; f++) {
+    try { parts.push(String(found.clip[fields[f]].ticks)); } catch (eField) { parts.push("?"); }
+  }
+  return parts.join("|");
+}
+
 function __runLinkedEdit(target, nodeId, includeLinked, edit, label) {
   var partners = includeLinked ? __linkedPartnerClips(target) : [];
+  // Each clip's position when it was checked. A partner is edited only if it is
+  // still there when its turn comes: if Premiere moved it while writing the
+  // main clip, applying the offset again would double it and still read back
+  // as the requested target.
+  var checkedAt = {};
+  checkedAt[nodeId] = __clipPositionKey(nodeId);
   var check;
   try { check = edit(target, nodeId, true); } catch (eCheck) { check = __editFail(eCheck.toString()); }
   if (!check.ok) return __error(check.error);
@@ -1193,6 +1237,7 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label) {
   for (p = 0; p < partners.length; p++) {
     var partnerCheck;
     try { partnerCheck = edit(partners[p], String(partners[p].clip.nodeId), true); } catch (ePartnerCheck) { partnerCheck = __editFail(ePartnerCheck.toString()); }
+    checkedAt[String(partners[p].clip.nodeId)] = __clipPositionKey(String(partners[p].clip.nodeId));
     if (!partnerCheck.ok) {
       return __error("The linked " + partners[p].trackType + " clip on track " + (partners[p].trackIndex + 1) + " cannot follow the " + label + ": " + partnerCheck.error + " Nothing was changed; fix that clip or pass include_linked false (this desyncs picture and sound).");
     }
@@ -1204,8 +1249,13 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label) {
   var edited = [];
   for (p = 0; p < partners.length; p++) {
     var partner = partners[p];
+    var partnerId = String(partner.clip.nodeId);
     var outcome;
-    try { outcome = edit(partner, String(partner.clip.nodeId), false); } catch (ePartner) { outcome = __editFail(ePartner.toString()); }
+    if (__clipPositionKey(partnerId) !== checkedAt[partnerId]) {
+      outcome = __editFail("Premiere moved it while the main clip was written, so the " + label + " was not applied to it again");
+    } else {
+      try { outcome = edit(partner, partnerId, false); } catch (ePartner) { outcome = __editFail(ePartner.toString()); }
+    }
     if (!outcome.ok) {
       return __jsonStringify({
         success: false,

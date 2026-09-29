@@ -638,6 +638,9 @@ ${script}`, "utf-8");
   }
 }
 
+/** A busy file unchanged for this long past the deadline means the CEP panel is stuck. */
+const STUCK_BUSY_MS = 10_000;
+
 async function pollForResponse(
   resFile: string,
   busyFile: string,
@@ -652,15 +655,19 @@ async function pollForResponse(
   // misreporting "is the plugin running?".
   const hardCapMs = Math.max(timeoutMs * 4, 120_000);
   let sawBusy = false;
+  let busyAgeMs = 0;
   let lastResponseParseError: string | undefined;
 
-  // fresh: heartbeat updated recently; stale: file present but not refreshed;
-  // absent/unknown: gone, or unreadable.
-  const busyState = (): "fresh" | "stale" | "absent" | "unknown" => {
+  // fresh: refreshed within STUCK_BUSY_MS; stuck: present but unchanged for
+  // longer (a crashed panel leaves its busy file behind); absent/unknown: gone,
+  // or unreadable. A stuck busy file is never deleted: if the panel is only
+  // slow, removing it could run the command twice.
+  const busyState = (): "fresh" | "stuck" | "absent" | "unknown" => {
     try {
       if (!existsSync(busyFile)) return "absent";
       sawBusy = true;
-      return Date.now() - statSync(busyFile).mtimeMs < 6_000 ? "fresh" : "stale";
+      busyAgeMs = Date.now() - statSync(busyFile).mtimeMs;
+      return busyAgeMs < STUCK_BUSY_MS ? "fresh" : "stuck";
     } catch {
       return "unknown";
     }
@@ -724,14 +731,21 @@ async function pollForResponse(
 
       const elapsed = Date.now() - start;
       if (elapsed >= timeoutMs) {
-        // A long host operation (first media import, sequence creation) can hold
-        // Premiere's main thread so the connector stops refreshing the busy file.
-        // A busy file that is still present, even if stale, means the script has
-        // not returned yet: keep waiting to the hard cap so an edit that is still
-        // completing is not reported as failed.
+        // Keep waiting (up to the hard cap) only while the panel keeps
+        // refreshing its busy file. One that has not changed for STUCK_BUSY_MS
+        // means the panel is stuck or gone; fail now instead of waiting hours.
         const busy = busyState();
-        if ((busy === "fresh" || busy === "stale") && elapsed <= hardCapMs) {
+        if (busy === "fresh" && elapsed <= hardCapMs) {
           scheduleFallback();
+          return;
+        }
+        if (busy === "stuck") {
+          finish({
+            success: false,
+            error:
+              `The CEP panel appears stuck: its busy marker for this command has not changed for ${Math.round(busyAgeMs / 1000)} s. ` +
+              `Reload it in ${hostLabel} (Window > Extensions > MCP Bridge). The command may or may not have run; check ${hostLabel} before retrying.`,
+          });
           return;
         }
         if (lastResponseParseError) {

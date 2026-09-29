@@ -138,15 +138,27 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           if (${args.track_index} >= before) return __error("Track index out of range");
           if (before <= 1) return __error("A sequence keeps at least one ${args.track_type} track");
           // Identity of every track before the delete: clip IDs, custom name and
-          // lock/mute state. A default name ends in the track's own number ("Video 3",
-          // "Vidéo 3") and follows its position, so it is left out of the
-          // comparison in any host language.
-          var trackSignature = function (track, position) {
+          // lock/mute state. Premiere's default names are a prefix plus the track's
+          // position ("Video 3", "Vidéo 3") and renumber when a track goes. The
+          // prefix is learned from the tracks whose number matches their position
+          // before the delete, then that prefix is ignored at any number, before
+          // and after, so a custom name such as "Cam 4" is compared the same way
+          // on both sides even when its track moves.
+          var numberedName = function (name) {
+            var match = /^(.*[^0-9\s])\s*([0-9]+)$/.exec(name);
+            return match ? { prefix: match[1], number: Number(match[2]) } : null;
+          };
+          var defaultPrefixes = {};
+          for (var dp = 0; dp < tracks.numTracks; dp++) {
+            var learned = numberedName(String(tracks[dp].name || ""));
+            if (learned && learned.number === dp + 1) defaultPrefixes[learned.prefix] = true;
+          }
+          var trackSignature = function (track) {
             var ids = [];
             for (var c = 0; c < track.clips.numItems; c++) ids.push(String(track.clips[c].nodeId));
             var name = String(track.name || "");
-            var numbered = /^(.*[^0-9\\s])\\s*([0-9]+)$/.exec(name);
-            if (numbered && Number(numbered[2]) === position + 1) name = "";
+            var numbered = numberedName(name);
+            if (numbered && defaultPrefixes[numbered.prefix]) name = "";
             var locked = null, muted = null;
             try { locked = !!track.isLocked(); } catch (eLocked) {}
             try { muted = !!track.isMuted(); } catch (eMuted) {}
@@ -154,7 +166,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           };
           var signaturesOf = function (list) {
             var out = [];
-            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t], t));
+            for (var t = 0; t < list.numTracks; t++) out.push(trackSignature(list[t]));
             return out;
           };
           var beforeSignatures = signaturesOf(tracks);

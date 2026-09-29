@@ -60,6 +60,8 @@ describe("apply_edit_plan failure reporting", () => {
     expect(result).toMatchObject({ success: false, error: expect.stringContaining("The timeline changed: the 1 operation(s) before it were applied") });
     expect(result.error).not.toContain("Nothing was changed");
     expect(list.map((clip) => clip.nodeId)).toEqual(["v1"]);
+    // The pattern must survive the TS template literal as \s and \. in ExtendScript.
+    expect(String(mockedSendCommand.mock.calls[0][0])).toContain("replace(/\\s*Nothing was changed\\.?/g");
   });
 
   it("says nothing changed when the first operation fails before removing anything", async () => {

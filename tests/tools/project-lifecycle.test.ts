@@ -155,7 +155,8 @@ describe("import_fcp_xml", () => {
       this.remove = () => folders.delete(path);
       return this;
     }
-    const listProjects = (root: string) => [...files].filter((p) => p.startsWith(`${root}/`) && p.endsWith(".prproj")).map((fsName) => ({ fsName }));
+    // Folder.getFiles(): the folder's own entries (no recursion).
+    const listProjects = (root: string) => [...files].filter((p) => p.startsWith(`${root}/`) && !p.slice(root.length + 1).includes("/")).map((fsName) => ({ fsName }));
     (Folder as unknown as { temp: unknown }).temp = { fsName: "/tmp/T", fullName: "/tmp/T", exists: true, getFiles: () => listProjects("/tmp/T") };
     mockedSendCommand.mockImplementation(async (script: string) =>
       JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, File, Folder }))));
@@ -187,6 +188,19 @@ describe("import_fcp_xml", () => {
     const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
     expect(result).toMatchObject({ success: true, data: { intermediateRemoved: false, intermediateKeptAt: "/tmp/T/cut.prproj" } });
     expect(files.has("/tmp/T/cut.prproj")).toBe(true);
+  });
+
+  it("never deletes a project in a subfolder of the temp folder, which the snapshot does not list", async () => {
+    const { files } = xmlHost({ importsTo: "/tmp/T/older/cut.prproj", existing: ["/tmp/T/older/cut.prproj"] });
+    const result = await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" }) as Result;
+    expect(result).toMatchObject({ success: true, data: { intermediateRemoved: false, intermediateKeptAt: "/tmp/T/older/cut.prproj" } });
+    expect(files.has("/tmp/T/older/cut.prproj")).toBe(true);
+  });
+
+  it("recognises an existing project whose extension is upper case", async () => {
+    const { files } = xmlHost({ importsTo: "/tmp/T/CUT.PRPROJ", existing: ["/tmp/T/CUT.PRPROJ"] });
+    await tools.import_fcp_xml.handler({ path: "/p/cut.xml", project_path: "/p/From XML.prproj" });
+    expect(files.has("/tmp/T/CUT.PRPROJ")).toBe(true);
   });
 
   it("does not treat a lookalike folder as the temp folder", async () => {

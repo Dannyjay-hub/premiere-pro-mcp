@@ -143,7 +143,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
   return {
     delete_project_item: {
       description:
-        "Delete a project item (clip, bin, etc.) from the project panel. This removes it from the project but does not affect timeline instances.",
+        "Delete a project item (bin, sequence, clip or file) from the project panel and read back that it is gone. " +
+        "organize_project_items_uxp with action 'remove' (authenticated UXP bridge) is the preferred, documented route. This CEP fallback deletes a clip or file by moving it into a temporary bin and deleting that bin, which cannot be undone here. " +
+        "Deleting media also removes its clips from every sequence, so an item (or a bin whose contents are) used on a timeline is refused unless confirm_remove_from_sequences is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -151,10 +153,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Node ID or name of the project item to delete",
           },
+          confirm_remove_from_sequences: {
+            type: "boolean",
+            description: "Delete even when the item (or something inside the bin) is used in a sequence, which also removes those timeline clips (default: false).",
+          },
         },
         required: ["item_id"],
       },
-      handler: async (args: { item_id: string }) => {
+      handler: async (args: { item_id: string; confirm_remove_from_sequences?: boolean }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
@@ -173,18 +179,21 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             } catch (e) {}
           }
 
+          var usage = { clips: 0, sequences: [] };
+          if (!sequence && (item.type === 1 || item.type === 2 || item.type === 4)) {
+            usage = __projectItemUsage(item);
+            if (usage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
+              return __error(name + (item.type === 2 ? " holds media used by " : " is used by ") + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here, so nothing was deleted. Remove the clips first, or pass confirm_remove_from_sequences: true.");
+            }
+          }
           if (item.type === 2) {
             item.deleteBin();
           } else if (sequence) {
             var accepted = app.project.deleteSequence(sequence);
             if (accepted === false) return __error("Premiere rejected deletion of sequence: " + name);
           } else if (item.type === 1 || item.type === 4) {
-            var usage = __projectItemUsage(item);
-            if (usage.clips > 0) {
-              return __error(name + " is used by " + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, so nothing was deleted. Remove the clips first.");
-            }
             var removal = __deleteProjectItemViaBin(item);
-            if (!removal.ok) return __error(removal.error + " Nothing is reported as deleted.");
+            if (!removal.ok) return __error(removal.error + (removal.changed ? "" : " Nothing is reported as deleted."));
           } else {
             return __error(
               "Legacy CEP cannot safely delete this project item type through a documented API. " +
@@ -192,10 +201,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             );
           }
 
-          if (__findProjectItem(nodeId)) {
+          if (__findProjectItemByNodeId(nodeId)) {
             return __error("Premiere did not remove project item: " + name + ". The deletion is not reported as successful.");
           }
-          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId });
+          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId, timelineClipsRemoved: usage.clips, sequencesChanged: usage.sequences });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -203,7 +212,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     delete_multiple_project_items: {
       description:
-        "Delete multiple project items at once from the project panel.",
+        "Delete several project items (bins, sequences, clips or files) and read back that each is gone. Every item is checked before any is deleted. " +
+        "organize_project_items_uxp with action 'remove' (authenticated UXP bridge) is the preferred, documented route; this CEP fallback deletes clips and files through a temporary bin, which cannot be undone here. " +
+        "Items (or bins whose contents are) used on a timeline are refused unless confirm_remove_from_sequences is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -212,10 +223,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             items: { type: "string" },
             description: "Array of node IDs or names of items to delete",
           },
+          confirm_remove_from_sequences: {
+            type: "boolean",
+            description: "Delete even when an item (or something inside a bin) is used in a sequence, which also removes those timeline clips (default: false).",
+          },
         },
         required: ["item_ids"],
       },
-      handler: async (args: { item_ids: string[] }) => {
+      handler: async (args: { item_ids: string[]; confirm_remove_from_sequences?: boolean }) => {
         const idsJson = JSON.stringify(args.item_ids);
         const script = buildToolScript(`
           var ids = ${idsJson};
@@ -234,16 +249,16 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
                 }
               } catch (e) {}
             }
-            if (item.type !== 2 && !sequence) {
-              if (item.type !== 1 && item.type !== 4) {
-                return __error(
-                  "Legacy CEP cannot safely delete project item: " + item.name + ". " +
-                  "No project items were deleted; use organize_project_items_uxp with action 'remove' for generic project-item deletion."
-                );
-              }
+            if (item.type !== 2 && !sequence && item.type !== 1 && item.type !== 4) {
+              return __error(
+                "Legacy CEP cannot safely delete project item: " + item.name + ". " +
+                "No project items were deleted; use organize_project_items_uxp with action 'remove' for generic project-item deletion."
+              );
+            }
+            if (!sequence) {
               var itemUsage = __projectItemUsage(item);
-              if (itemUsage.clips > 0) {
-                return __error(item.name + " is used by " + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too. No project items were deleted.");
+              if (itemUsage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
+                return __error(item.name + (item.type === 2 ? " holds media used by " : " is used by ") + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here. No project items were deleted; pass confirm_remove_from_sequences: true to delete anyway.");
               }
             }
             planned.push({ nodeId: String(item.nodeId), name: item.name, item: item, sequence: sequence });
@@ -260,7 +275,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
               if (accepted === false) return __error("Premiere rejected deletion of sequence: " + target.name);
             } else {
               var viaBin = __deleteProjectItemViaBin(target.item);
-              if (!viaBin.ok) return __error(viaBin.error + " Deleted before this item: " + p + ".");
+              if (!viaBin.ok) return __error(viaBin.error + (p || viaBin.changed ? " The project changed: " + p + " item(s) before this one were deleted." : " No project items were deleted."));
             }
           }
           var deleted = [];

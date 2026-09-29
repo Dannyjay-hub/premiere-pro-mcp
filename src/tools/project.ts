@@ -867,7 +867,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           var projectSearchRoots = [Folder.temp, new Folder("${projectFolder}")];
           for (var pr = 0; pr < projectSearchRoots.length; pr++) {
             var found = [];
-            try { if (projectSearchRoots[pr].exists) found = projectSearchRoots[pr].getFiles("*.prproj") || []; } catch (eList) {}
+            // Every entry, not a "*.prproj" mask: the mask can miss "CUT.PRPROJ".
+            try { if (projectSearchRoots[pr].exists) found = projectSearchRoots[pr].getFiles() || []; } catch (eList) {}
             for (var pf = 0; pf < found.length; pf++) preexistingProjects[__normProjectPath(found[pf].fsName)] = true;
           }
           try {
@@ -906,7 +907,9 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             var intermediateOwned = false;
             if (/\\.prproj$/.test(intermediateNorm) && intermediateNorm.indexOf("/../") < 0 && !preexistingProjects[intermediateNorm]) {
               for (var ri = 0; ri < ownedRoots.length; ri++) {
-                if (ownedRoots[ri] && intermediateNorm.indexOf(ownedRoots[ri].replace(/\\/$/, "") + "/") === 0) intermediateOwned = true;
+                var ownedPrefix = ownedRoots[ri] ? ownedRoots[ri].replace(/\\/$/, "") + "/" : "";
+                // Direct children only: the snapshot above lists each folder's own files.
+                if (ownedPrefix && intermediateNorm.indexOf(ownedPrefix) === 0 && intermediateNorm.substring(ownedPrefix.length).indexOf("/") < 0) intermediateOwned = true;
               }
             }
             if (!intermediateOwned) {

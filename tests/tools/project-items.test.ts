@@ -21,7 +21,7 @@ type Result = { success: boolean; error?: string; data?: Record<string, unknown>
 beforeEach(() => vi.clearAllMocks());
 
 /** Project with a root bin holding a used clip (on a timeline) and an unused Bars item. */
-function project(options: { startTimeWritable?: boolean } = {}) {
+function project(options: { startTimeWritable?: boolean; existingBin?: string; deleteBinNoop?: boolean } = {}) {
   let startTicks = 0;
   type Node = { nodeId: string; name: string; type: number; children?: { numItems: number; [i: number]: Node }; parent?: Node };
   const makeBin = (nodeId: string, name: string): Node => ({ nodeId, name, type: 2, children: { numItems: 0 } });
@@ -41,14 +41,17 @@ function project(options: { startTimeWritable?: boolean } = {}) {
   }
   (root as Record<string, unknown>).createBin = (name: string) => {
     const bin = makeBin(`bin-${name}`, name) as Node & Record<string, unknown>;
-    bin.deleteBin = () => remove(root, bin);
+    bin.deleteBin = () => { if (!options.deleteBinNoop) remove(root, bin); };
     add(root, bin);
     return bin;
   };
+  if (options.existingBin) add(root, makeBin("user-bin", options.existingBin));
   const timelineClip = { projectItem: used, name: used.name };
   const seq = { name: "Edit", videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: timelineClip } } }, audioTracks: { numTracks: 0 }, projectItem: { nodeId: "seqitem" } };
   mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
     app: { project: { rootItem: root, sequences: { numSequences: 1, 0: seq }, activeSequence: seq } },
+    // A fixed clock, so the temporary bin name ("mcp-delete-1000") is predictable.
+    Date: function FixedDate(this: { getTime: () => number }) { this.getTime = () => 1000; },
     Time: function Time(this: { ticks: string; seconds: number }) { let s = 0; Object.defineProperty(this, "seconds", { get: () => s, set: (v: number) => { s = v; } }); Object.defineProperty(this, "ticks", { get: () => String(Math.round(s * 254016000000)) }); },
   }))));
   const names = () => { const out: string[] = []; for (let i = 0; i < root.children!.numItems; i++) out.push(root.children![i].name); return out; };
@@ -88,6 +91,43 @@ describe("delete_project_item for clip items", () => {
     const result = await getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "used" }) as Result;
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/used by 1 timeline clip\(s\) in Edit/);
+    expect(result.error).toContain("confirm_remove_from_sequences");
+    expect(names()).toEqual(["Interview A.mp4", "Bars 1080p"]);
+  });
+
+  it("deletes a used item only when the caller confirms, and reports the timeline clips it removes", async () => {
+    const { names } = project();
+    await expect(getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "used", confirm_remove_from_sequences: true }))
+      .resolves.toMatchObject({ success: true, data: { deleted: true, verified: true, timelineClipsRemoved: 1, sequencesChanged: ["Edit"] } });
+    expect(names()).toEqual(["Bars 1080p"]);
+  });
+
+  it("refuses when a bin with the temporary name already exists", async () => {
+    const { names } = project({ existingBin: "mcp-delete-1000" });
+    await expect(getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "bars" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("already exists") });
+    expect(names()).toEqual(["Interview A.mp4", "Bars 1080p", "mcp-delete-1000"]);
+  });
+
+  it("reports failure, not success, when the temporary bin and item survive", async () => {
+    project({ deleteBinNoop: true });
+    const result = await getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "bars" }) as Result;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("The project changed") });
+    expect(result.error).toContain("still in the project");
+  });
+
+  it("names the documented UXP route as preferred", () => {
+    const tools = getUtilityTools(bridgeOptions);
+    for (const tool of [tools.delete_project_item, tools.delete_multiple_project_items]) {
+      expect(tool.description).toContain("organize_project_items_uxp with action 'remove'");
+      expect(tool.description).toContain("preferred");
+    }
+  });
+
+  it("delete_multiple_project_items refuses a used item before deleting anything", async () => {
+    const { names } = project();
+    await expect(getUtilityTools(bridgeOptions).delete_multiple_project_items.handler({ item_ids: ["bars", "used"] }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("No project items were deleted") });
     expect(names()).toEqual(["Interview A.mp4", "Bars 1080p"]);
   });
 });
