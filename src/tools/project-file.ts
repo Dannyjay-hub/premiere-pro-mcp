@@ -90,8 +90,16 @@ export async function readProjectSection(projectPath: string, tag: string): Prom
     }
     return null;
   } finally {
-    file.destroy();
     if (stream !== file) stream.destroy();
+    // destroy() closes the descriptor asynchronously. Wait for it: on Windows an
+    // open handle keeps the project file (and its folder) from being replaced or
+    // deleted right after this returns, for example when Premiere saves again.
+    if (!file.closed) {
+      await new Promise<void>((resolveClose) => {
+        file.once("close", () => resolveClose());
+        file.destroy();
+      });
+    }
   }
 }
 
