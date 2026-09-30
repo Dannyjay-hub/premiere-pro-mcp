@@ -1025,9 +1025,17 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           try { previous = Number(blendProperty.getValue()); } catch (ePrevious) {}
           blendProperty.setValue(${modeValue}, true);
           var stored = null;
-          try { stored = Number(blendProperty.getValue()); } catch (eStored) {}
+          var readError = null;
+          try { stored = Number(blendProperty.getValue()); } catch (eStored) { readError = eStored.toString(); }
           if (stored !== ${modeValue}) {
-            return __error("Premiere did not apply the blend mode ${modeName}: the stored mode index reads back as " + stored + " instead of ${modeValue}.");
+            // setValue already ran, so the clip may have changed even though the
+            // requested mode is not what Premiere stored.
+            var changed = readError !== null || stored !== previous;
+            return __jsonStringify({ success: false,
+              error: (readError !== null
+                ? "The blend mode was written, but Premiere's stored mode could not be read back (" + readError + "), so ${modeName} is not verified."
+                : "Premiere stored blend mode index " + stored + " instead of ${modeValue} (${modeName})" + (changed ? "; the clip's blend mode changed." : "; the clip is unchanged.")),
+              data: { requestedModeIndex: ${modeValue}, storedModeIndex: stored, previousModeIndex: previous, timelineChanged: changed } });
           }
           return __result({ blendMode: "${modeName}", modeIndex: ${modeValue}, previousModeIndex: previous, clip: clip.name, verified: true });
         `);

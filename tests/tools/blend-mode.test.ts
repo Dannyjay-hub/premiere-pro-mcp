@@ -19,12 +19,12 @@ const tools = getClipboardTools({ tempDir: "/tmp/blend-mode", timeoutMs: 5000 } 
 beforeEach(() => vi.clearAllMocks());
 
 /** A clip whose Opacity > Blend Mode clamps writes to 0-27, like Premiere 25.2.3. */
-function host(options: { ignoreWrite?: boolean } = {}) {
+function host(options: { ignoreWrite?: boolean; clampTo?: number; unreadable?: boolean } = {}) {
   const state = { mode: 18 };
   const blend = {
     displayName: "Blend Mode",
-    getValue: () => state.mode,
-    setValue: (value: number) => { if (!options.ignoreWrite) state.mode = Math.max(0, Math.min(27, value)); },
+    getValue: () => { if (options.unreadable && state.mode !== 18) throw new Error("unreadable"); return state.mode; },
+    setValue: (value: number) => { if (!options.ignoreWrite) state.mode = Math.max(0, Math.min(options.clampTo ?? 27, value)); },
   };
   const opacity = { displayName: "Opacity", matchName: "AE.ADBE Opacity", properties: { numItems: 3, 0: { displayName: "Opacity" }, 1: blend, 2: { displayName: "Blend Mode", getValue: () => 0 } } };
   const clip = { nodeId: "c1", name: "Top", components: { numItems: 1, 0: opacity } };
@@ -56,12 +56,24 @@ describe("set_blend_mode", () => {
   it("fails when Premiere keeps the old mode", async () => {
     host({ ignoreWrite: true });
     await expect(tools.set_blend_mode.handler({ node_id: "c1", blend_mode: "Multiply" }))
-      .resolves.toMatchObject({ success: false, error: expect.stringContaining("reads back as 18 instead of 17") });
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("stored blend mode index 18 instead of 17"), data: { storedModeIndex: 18, timelineChanged: false } });
   });
 
   it("refuses an unknown mode instead of silently using another", async () => {
     await expect(tools.set_blend_mode.handler({ node_id: "c1", blend_mode: "Glow" }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("Unknown blend mode Glow") });
     expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("says the clip changed when Premiere stores a different mode than requested", async () => {
+    host({ clampTo: 5 });
+    await expect(tools.set_blend_mode.handler({ node_id: "c1", blend_mode: "Multiply" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("the clip's blend mode changed"), data: { storedModeIndex: 5, timelineChanged: true } });
+  });
+
+  it("reports an unreadable stored mode as changed and unverified", async () => {
+    host({ unreadable: true });
+    await expect(tools.set_blend_mode.handler({ node_id: "c1", blend_mode: "Screen" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("could not be read back"), data: { timelineChanged: true } });
   });
 });
