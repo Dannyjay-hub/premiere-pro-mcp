@@ -2129,10 +2129,19 @@ export function buildScript(code: string): string {
 /**
  * Escape a string for safe embedding in ExtendScript.
  */
-// Control characters and the U+2028/U+2029 line separators, which ES3 does not
-// allow raw inside a string literal. Built from a string so no tool parses the
-// separators inside a regex literal.
-const UNSAFE_LITERAL_CHARACTERS = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029]", "g");
+// Control characters, the U+2028/U+2029 line separators (which ES3 does not
+// allow raw inside a string literal), and lone surrogates (which cannot be
+// written to the UTF-8 command file and would arrive as U+FFFD). Built from a
+// string so no tool parses the separators inside a regex literal.
+const UNSAFE_LITERAL_CHARACTERS = new RegExp(
+  "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u2028\\u2029]|[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?<![\\ud800-\\udbff])[\\udc00-\\udfff]",
+  "g",
+);
+
+/** Write characters a string literal cannot carry safely as `\uXXXX` escapes. */
+export function escapeUnsafeLiteralCharacters(value: string): string {
+  return value.replace(UNSAFE_LITERAL_CHARACTERS, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
 
 export function escapeForExtendScript(value: string): string {
   return value
@@ -2145,7 +2154,7 @@ export function escapeForExtendScript(value: string): string {
     // ES3 treats U+2028 and U+2029 as line terminators, so a raw one inside a
     // string literal is a syntax error and Premiere rejects the whole script
     // (live 25.2.3: a marker named "Line<U+2028>break" failed with "EvalScript
-    // error"). Other control characters are escaped too.
+    // error"). Other control characters and lone surrogates are escaped too.
     .replace(UNSAFE_LITERAL_CHARACTERS, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
