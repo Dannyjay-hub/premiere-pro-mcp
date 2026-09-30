@@ -1889,29 +1889,48 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
   }
 
   var insertedClips = [];
+  var newOnVideo = 0;
+  var newOnAudio = 0;
   for (i = 0; i < afterVideoCount; i++) {
-    if (!beforeVideoIds[String(videoTrack.clips[i].nodeId)]) insertedClips.push(videoTrack.clips[i]);
+    if (!beforeVideoIds[String(videoTrack.clips[i].nodeId)]) { insertedClips.push(videoTrack.clips[i]); newOnVideo++; }
   }
   for (i = 0; i < afterAudioCount; i++) {
-    if (!beforeAudioIds[String(audioTrack.clips[i].nodeId)]) insertedClips.push(audioTrack.clips[i]);
+    if (!beforeAudioIds[String(audioTrack.clips[i].nodeId)]) { insertedClips.push(audioTrack.clips[i]); newOnAudio++; }
   }
-  if (!insertedClips.length) {
+  // Every stream the item has must land on its requested track. Live 25.2.3:
+  // a 5.1 clip inserted on a stereo track landed on a new track at the bottom,
+  // and a video with 5.1 audio can land its picture correctly but not its sound.
+  var missingVideo = videoReceives && videoSpan !== null && newOnVideo === 0;
+  var missingAudio = audioReceives && audioSpan !== null && newOnAudio === 0;
+  if (!insertedClips.length || missingVideo || missingAudio) {
     var elsewhere = [];
     var groupsAfter = [["video", seq.videoTracks], ["audio", seq.audioTracks]];
     for (var ga = 0; ga < groupsAfter.length; ga++) {
       for (var ta = 0; ta < groupsAfter[ga][1].numTracks; ta++) {
         var clipsAfter = groupsAfter[ga][1][ta].clips;
         for (var ca = 0; ca < clipsAfter.numItems; ca++) {
-          if (!beforeAllIds[String(clipsAfter[ca].nodeId)]) elsewhere.push(groupsAfter[ga][0] + " track " + (ta + 1));
+          var candidateClip = clipsAfter[ca];
+          if (beforeAllIds[String(candidateClip.nodeId)]) continue;
+          // Only pieces of the inserted item count; a sync-lock split elsewhere does not.
+          var fromItem = false;
+          try { fromItem = !!candidateClip.projectItem && String(candidateClip.projectItem.nodeId) === String(item.nodeId); } catch (eItem) {}
+          if (!fromItem) continue;
+          if (groupsAfter[ga][0] === "video" && ta === vTrackIndex) continue;
+          if (groupsAfter[ga][0] === "audio" && ta === aTrackIndex) continue;
+          elsewhere.push({ trackType: groupsAfter[ga][0], trackIndex: ta, nodeId: String(candidateClip.nodeId), startSeconds: __ticksToSeconds(candidateClip.start.ticks) });
         }
       }
     }
-    if (elsewhere.length) {
+    if (elsewhere.length || insertedClips.length) {
       var newTracks = (seq.audioTracks.numTracks - audioTracksBefore) + (seq.videoTracks.numTracks - videoTracksBefore);
-      return { ok: false, changed: true, placedOn: elsewhere, error: "The timeline changed: Premiere placed the clip on " + elsewhere.join(", ") + " instead of the requested video track " + (vTrackIndex + 1) + " / audio track " + (aTrackIndex + 1) + (newTracks > 0 ? ", adding " + newTracks + " track(s)" : "") + " (for example, a 5.1 clip does not fit a stereo track). Other tracks were not shifted to match" + afterRazorNote + ". Move or remove that clip, or target a track that matches its channel layout." };
+      var labels = [];
+      for (var el = 0; el < elsewhere.length; el++) labels.push(elsewhere[el].trackType + " track " + (elsewhere[el].trackIndex + 1));
+      var missing = (missingVideo ? "video" : "") + (missingVideo && missingAudio ? " and " : "") + (missingAudio ? "audio" : "");
+      return { ok: false, changed: true, placedOn: elsewhere, error: "The timeline changed: Premiere did not put the clip's " + (missing || "media") + " on the requested video track " + (vTrackIndex + 1) + " / audio track " + (aTrackIndex + 1) + (labels.length ? "; it placed it on " + labels.join(", ") : "") + (newTracks > 0 ? ", adding " + newTracks + " track(s)" : "") + " (for example, 5.1 audio does not fit a stereo track). Other tracks were not shifted to match" + afterRazorNote + ". Move or remove those pieces, or target tracks that match the clip's channel layout." };
     }
     return { ok: false, error: "Premiere did not add a new track item at the requested insertion point" + afterRazorNote + "." };
   }
+
 
   var matched = false;
   var actualDuration = durationTicks;
@@ -2084,17 +2103,29 @@ function __result(data) {
   return __jsonStringify({ success: true, data: data });
 }
 
-function __error(msg) {
+// extraData (optional) is merged into the failure's data, alongside any undo
+// entries the command recorded.
+function __error(msg, extraData) {
+  var data = null;
+  var message = String(msg);
+  if (extraData && typeof extraData === "object") {
+    data = {};
+    for (var key in extraData) if (extraData.hasOwnProperty(key)) data[key] = extraData[key];
+  }
   // A failure can come after the command recorded undo entries; report them
   // so the caller knows the project may have changed.
   if (__undoStart !== null) {
     var undoNow = __readUndoIndex();
     if (undoNow !== null && undoNow > __undoStart) {
       var recorded = undoNow - __undoStart;
-      return __jsonStringify({ success: false, error: String(msg) + " Premiere recorded " + recorded + " undo entr" + (recorded === 1 ? "y" : "ies") + " during this command, so the project may have changed.", data: { undoSteps: recorded, undoStackIndex: undoNow, timelineChanged: true } });
+      if (!data) data = {};
+      data.undoSteps = recorded;
+      data.undoStackIndex = undoNow;
+      data.timelineChanged = true;
+      message += " Premiere recorded " + recorded + " undo entr" + (recorded === 1 ? "y" : "ies") + " during this command, so the project may have changed.";
     }
   }
-  return __jsonStringify({ success: false, error: String(msg) });
+  return data ? __jsonStringify({ success: false, error: message, data: data }) : __jsonStringify({ success: false, error: message });
 }
 
 // === End MCP Bridge Helpers ===
