@@ -1244,6 +1244,58 @@ function __exportStillFrame(outputPath, ticks) {
 function __editOk(data) { return { ok: true, data: data }; }
 function __editFail(message) { return { ok: false, error: String(message) }; }
 
+// Effect-parameter key times are media time: the clip's in-point plus the
+// offset into the clip. On live 25.2.3 a clip starting at 25s with its
+// in-point at 30s rendered keys stored at 32s and 34s at timeline 27s and
+// 29s. Tools take seconds from the clip's start, so convert through the
+// in-point. A speed change or reverse remaps media time, so refuse those.
+function __clipKeyframeBase(clip) {
+  var speed = 1;
+  var reversed = false;
+  try { speed = Number(clip.getSpeed()); } catch (eSpeed) {}
+  try { reversed = clip.isSpeedReversed() == true; } catch (eReversed) {}
+  if (reversed || !(Math.abs(speed - 1) < 0.0001)) {
+    return { ok: false, error: "This clip has a speed change or is reversed, and keyframe times on such clips are not supported yet. Nothing was changed." };
+  }
+  var inTicks = parseFloat(clip.inPoint.ticks);
+  var durationSeconds = __ticksToSeconds(parseFloat(clip.end.ticks) - parseFloat(clip.start.ticks));
+  if (!isFinite(inTicks) || !isFinite(durationSeconds)) {
+    return { ok: false, error: "Premiere did not report the clip's in-point and duration. Nothing was changed." };
+  }
+  return { ok: true, inTicks: inTicks, durationSeconds: durationSeconds };
+}
+
+function __clipKeyTime(base, clipSeconds) {
+  var time = new Time();
+  time.ticks = String(base.inTicks + __secondsToTicks(clipSeconds));
+  return time;
+}
+
+function __clipSecondsFromKey(base, time) {
+  return Math.round(__ticksToSeconds(parseFloat(time.ticks) - base.inTicks) * 1000000) / 1000000;
+}
+
+// The stored key within 0.01s of a time, or null.
+function __findKeyNear(prop, time) {
+  var keys = null;
+  try { keys = prop.getKeys(); } catch (eKeys) {}
+  if (!keys) return null;
+  for (var k = 0; k < keys.length; k++) {
+    if (Math.abs(parseFloat(keys[k].ticks) - parseFloat(time.ticks)) <= TICKS_PER_SECOND * 0.01) return keys[k];
+  }
+  return null;
+}
+
+// Clip-relative seconds of every stored key.
+function __clipKeySeconds(base, prop) {
+  var keys = null;
+  try { keys = prop.getKeys(); } catch (eKeys) {}
+  var list = [];
+  if (!keys) return list;
+  for (var k = 0; k < keys.length; k++) list.push(__clipSecondsFromKey(base, keys[k]));
+  return list;
+}
+
 // Colour parameters report getValue() as a packed 64-bit integer (live 25.2:
 // 0xff0014002800a0c8 for ARGB 255,20,40,160), which a JS double cannot hold
 // exactly. Read them with getColorValue() instead, as [alpha, red, green, blue].
