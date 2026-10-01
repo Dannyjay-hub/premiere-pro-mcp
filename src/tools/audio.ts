@@ -553,6 +553,9 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         required: ["track_index", "muted"],
       },
       handler: async (args: { track_index: number; muted: boolean }) => {
+        if (!Number.isInteger(args.track_index) || args.track_index < 0 || typeof args.muted !== "boolean") {
+          return { success: false, error: "track_index must be a non-negative integer and muted must be a boolean" };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -560,9 +563,25 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
           if (${args.track_index} >= seq.audioTracks.numTracks) return __error("Track index out of range");
 
           var track = seq.audioTracks[${args.track_index}];
-          track.setMute(${args.muted ? 1 : 0});
-
-          return __result({ trackIndex: ${args.track_index}, muted: ${args.muted}, trackName: track.name });
+          function readMute() {
+            var state = track.isMuted();
+            if (state !== true && state !== false && state !== 0 && state !== 1) throw new Error("Unknown mute state");
+            return state === true || state === 1;
+          }
+          var before;
+          try { before = readMute(); } catch (e) { return __error("Cannot read track mute state; nothing was changed."); }
+          var writeError = "";
+          try { track.setMute(${args.muted ? 1 : 0}); } catch (e) { writeError = String(e); }
+          var after = null;
+          try { after = readMute(); } catch (e) {}
+          var data = { trackIndex: ${args.track_index}, muted: after, trackName: track.name, verified: false, outcome: "committed_unverified" };
+          if (after !== null && after !== before) data.timelineChanged = true;
+          if (after !== ${args.muted} || writeError) {
+            return __jsonStringify({ success: false, error: "Track mute could not be verified. Inspect the track before retrying. " + writeError, data: data });
+          }
+          data.verified = true;
+          data.outcome = "verified";
+          return __result(data);
         `);
         return sendCommand(script, bridgeOptions);
       },
