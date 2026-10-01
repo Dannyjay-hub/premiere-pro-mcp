@@ -126,6 +126,9 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
         required: ["track_type", "track_index"],
       },
       handler: async (args: { track_type: string; track_index: number; force?: boolean }) => {
+        if (args.track_type !== "video" && args.track_type !== "audio") {
+          return { success: false, error: "track_type must be either video or audio" };
+        }
         if (!Number.isInteger(args.track_index) || args.track_index < 0) {
           return { success: false, error: "track_index must be a non-negative integer" };
         }
@@ -200,7 +203,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
     },
 
     lock_track: {
-      description: "Lock or unlock a video track",
+      description: "Set a video track's lock state and read it back to verify the change.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -216,6 +219,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
         required: ["track_index", "locked"],
       },
       handler: async (args: { track_index: number; locked: boolean }) => {
+        if (!Number.isInteger(args.track_index) || args.track_index < 0) return { success: false, error: "track_index must be a non-negative integer." };
+        if (typeof args.locked !== "boolean") return { success: false, error: "locked must be a boolean." };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -223,16 +228,21 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           if (${args.track_index} >= seq.videoTracks.numTracks) return __error("Track index out of range");
           
           var track = seq.videoTracks[${args.track_index}];
-          track.setLocked(${args.locked ? 1 : 0});
-          
-          return __result({ trackIndex: ${args.track_index}, locked: ${args.locked}, trackName: track.name });
+          if (!track || typeof track.isLocked !== "function" || typeof track.setLocked !== "function") return __error("Track lock state cannot be read or set on this Premiere host; nothing was changed.");
+          var beforeLocked = !!track.isLocked();
+          var writeError = null;
+          try { track.setLocked(${args.locked ? 1 : 0}); } catch (lockError) { writeError = lockError.toString(); }
+          var actualLocked = null;
+          try { actualLocked = !!track.isLocked(); } catch (readError) {}
+          if (actualLocked !== ${args.locked ? "true" : "false"}) return __jsonStringify({ success: false, error: "Premiere did not verify the requested track lock state" + (writeError ? ": " + writeError : "") + ". Inspect the track before retrying.", data: { outcome: beforeLocked !== actualLocked ? "committed_unverified" : "not_applied", verified: false, timelineChanged: beforeLocked !== actualLocked, trackIndex: ${args.track_index}, requestedLocked: ${args.locked}, actualLocked: actualLocked } });
+          return __result({ trackIndex: ${args.track_index}, locked: actualLocked, trackName: track.name, verified: true, outcome: "verified", timelineChanged: beforeLocked !== actualLocked });
         `);
         return sendCommand(script, bridgeOptions);
       },
     },
 
     toggle_track_visibility: {
-      description: "Toggle a video track's visibility (eye icon)",
+      description: "Set video track visibility using Premiere's track mute state (eye icon) and read the mute state back. Premiere's scripting API exposes mute, not a separate video visibility setter.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -248,6 +258,8 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
         required: ["track_index", "visible"],
       },
       handler: async (args: { track_index: number; visible: boolean }) => {
+        if (!Number.isInteger(args.track_index) || args.track_index < 0) return { success: false, error: "track_index must be a non-negative integer." };
+        if (typeof args.visible !== "boolean") return { success: false, error: "visible must be a boolean." };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -255,9 +267,15 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           if (${args.track_index} >= seq.videoTracks.numTracks) return __error("Track index out of range");
           
           var track = seq.videoTracks[${args.track_index}];
-          track.setMute(${args.visible ? 0 : 1});
-          
-          return __result({ trackIndex: ${args.track_index}, visible: ${args.visible}, trackName: track.name });
+          if (!track || typeof track.isMuted !== "function" || typeof track.setMute !== "function") return __error("Track mute/visibility state cannot be read or set on this Premiere host; nothing was changed.");
+          var beforeMuted = !!track.isMuted();
+          var writeError = null;
+          try { track.setMute(${args.visible ? "0" : "1"}); } catch (muteError) { writeError = muteError.toString(); }
+          var actualMuted = null;
+          try { actualMuted = !!track.isMuted(); } catch (readError) {}
+          var wantedMuted = ${args.visible ? "false" : "true"};
+          if (actualMuted !== wantedMuted) return __jsonStringify({ success: false, error: "Premiere did not verify the requested track visibility" + (writeError ? ": " + writeError : "") + ". Inspect the track before retrying.", data: { outcome: beforeMuted !== actualMuted ? "committed_unverified" : "not_applied", verified: false, timelineChanged: beforeMuted !== actualMuted, trackIndex: ${args.track_index}, requestedVisible: ${args.visible}, actualMuted: actualMuted } });
+          return __result({ trackIndex: ${args.track_index}, visible: !actualMuted, muted: actualMuted, trackName: track.name, verified: true, outcome: "verified", timelineChanged: beforeMuted !== actualMuted });
         `);
         return sendCommand(script, bridgeOptions);
       },
