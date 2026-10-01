@@ -232,8 +232,8 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           if ((position === "end" || position === "both") && __newTransitionCovers(domTrack, {}, clipEndTicks, frameTicks)) {
             return __error("A transition already covers the clip end; no transition was attempted.");
           }
-          if (position === "start" || position === "both") requestedEdges.push({ edge: "start", ticks: clipStartTicks });
-          if (position === "end" || position === "both") requestedEdges.push({ edge: "end", ticks: clipEndTicks });
+          if (position === "start" || position === "both") requestedEdges.push({ edge: "start", ticks: clipStartTicks, seconds: __ticksToSeconds(clipStartTicks) });
+          if (position === "end" || position === "both") requestedEdges.push({ edge: "end", ticks: clipEndTicks, seconds: __ticksToSeconds(clipEndTicks) });
           
           if (position === "start" || position === "both") {
             try {
@@ -397,7 +397,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             transition: transitionName,
             trackIndex: ${trackIndex},
             durationSeconds: ${duration},
-            cutIndices: requestedCuts.length
+            cutCount: requestedCuts.length
           });
         `);
         return sendCommand(script, bridgeOptions);
