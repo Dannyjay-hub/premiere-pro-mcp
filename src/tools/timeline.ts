@@ -1202,16 +1202,26 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           if (!isVideo && !partner && newVideo) { try { newVideo.remove(false, false); } catch (dropVideo) {} newVideo = null; }
 
           var primary = isVideo ? newVideo : newAudio;
-          if (!primary) return __error("Premiere did not place the duplicate on the expected track; inspect the timeline or use Undo.");
+          if (!primary) return __jsonStringify({ success: false, error: "Premiere changed the timeline but did not place the duplicate on the expected track. Inspect the timeline or use Undo.", data: { outcome: "committed_unverified", verified: false, timelineChanged: true } });
           var drift = Math.abs(parseFloat(primary.start.ticks) - startTicks) + Math.abs(parseFloat(primary.end.ticks) - endTicks);
           var inDrift = Math.abs(parseFloat(primary.inPoint.ticks) - inTicks);
           function describe(c, type, index) {
             return c ? { nodeId: String(c.nodeId), trackType: type, trackIndex: index, startSeconds: __ticksToSeconds(c.start.ticks), endSeconds: __ticksToSeconds(c.end.ticks), inSeconds: __ticksToSeconds(c.inPoint.ticks) } : null;
           }
+          var duplicateVerified = drift <= 2 * frameTicks && inDrift <= frameTicks && (!partner || !!(isVideo ? newAudio : newVideo));
+          if (!duplicateVerified) return __jsonStringify({ success: false, error: "Premiere placed a duplicate, but its timing, source in-point, or linked partner did not verify. Inspect the timeline or use Undo.", data: {
+            duplicated: false,
+            verified: false,
+            outcome: "committed_unverified",
+            timelineChanged: true,
+            clipName: clip.name,
+            copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
+            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget)
+          } });
           return __result({
             duplicated: true,
-            verified: drift <= 2 * frameTicks && inDrift <= frameTicks && (!partner || !!(isVideo ? newAudio : newVideo)),
-            outcome: drift <= 2 * frameTicks && inDrift <= frameTicks && (!partner || !!(isVideo ? newAudio : newVideo)) ? "verified" : "committed_unverified",
+            verified: true,
+            outcome: "verified",
             clipName: clip.name,
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
             linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),

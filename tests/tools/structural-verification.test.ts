@@ -186,8 +186,9 @@ describe("duplicate_clip verification", () => {
   it("does not report success when a duplicate or linked partner is unverified", async () => {
     await timeline.duplicate_clip.handler({ node_id: "c1" });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain('outcome: drift <= 2 * frameTicks && inDrift <= frameTicks');
-    expect(script).toContain('committed_unverified');
+    expect(script).toContain('var duplicateVerified = drift <= 2 * frameTicks && inDrift <= frameTicks');
+    expect(script).toContain('if (!duplicateVerified) return __jsonStringify({ success: false');
+    expect(script).toContain('outcome: "committed_unverified"');
     expect(script).toContain('(!partner || !!(isVideo ? newAudio : newVideo))');
     expect(script).toContain('timelineChanged: true');
   });
