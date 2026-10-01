@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `adjust_audio_levels` preserves uncertain outcomes after a failed write or readback and refuses levels that underflow to zero before changing the clip. (#648)
 - `mute_track` validates its index and reads the mute state back, reporting uncertainty instead of success when a write is ignored or cannot be confirmed. (#648)
 
 - Effect removal classifies built-in components by match name, which is the same in every host language: `AE.ADBE Opacity`, `AE.ADBE Motion`, a graphic's `AE.ADBE Graphic Group` and `AE.ADBE Text`, and the `Internal Volume …` / `Internal Channel Volume …` audio intrinsics (seen live on Premiere 25.2.3). #654 refused on every mono clip, because mono clips have Volume but no Channel Volume; that is fixed. A built-in picked by index or name is refused whatever its language. Hosts with localized component names still refuse, now detected by a confirmed built-in match name showing a non-English name, because the match names of Time Remapping, Panner, and shape layers are not confirmed and an unknown one could be removed. (#674, #679)

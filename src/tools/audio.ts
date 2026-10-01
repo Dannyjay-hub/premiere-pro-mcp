@@ -423,6 +423,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
           };
         }
         const normalizedLevel = dbToPremiereLevel(args.level_db);
+        if (normalizedLevel <= 0) return { success: false, error: "level_db is too small to represent as a nonzero normalized level" };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -436,13 +437,21 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
                 if (comp.properties[p].displayName === "Level") {
                   var levelProp = comp.properties[p];
                   var requestedLevel = ${normalizedLevel};
-                  var writeResult = levelProp.setValue(requestedLevel, true);
-                  var appliedLevel = Number(levelProp.getValue());
+                  var beforeLevel;
+                  try { beforeLevel = Number(levelProp.getValue()); } catch (e) { return __error("Cannot read audio level; nothing was changed."); }
+                  if (!isFinite(beforeLevel)) return __error("Cannot read audio level; nothing was changed.");
+                  var writeResult = null;
+                  var writeError = "";
+                  try { writeResult = levelProp.setValue(requestedLevel, true); } catch (e) { writeError = String(e); }
+                  var appliedLevel = NaN;
+                  try { appliedLevel = Number(levelProp.getValue()); } catch (e) {}
+                  var data = { verified: false, outcome: "committed_unverified", requestedLevel: requestedLevel, normalizedLevel: isFinite(appliedLevel) ? appliedLevel : null };
+                  if (isFinite(appliedLevel) && appliedLevel !== beforeLevel) data.timelineChanged = true;
                   var appliedDb = appliedLevel > 0 ? (20 * (Math.log(appliedLevel) / Math.LN10) + ${PREMIERE_MAX_LEVEL_DB}) : null;
-                  if (isNaN(appliedLevel) || Math.abs(appliedLevel - requestedLevel) > 0.0001 || appliedDb === null || Math.abs(appliedDb - ${args.level_db}) > 0.01) {
-                    return __error("Premiere did not apply the requested audio level (requested ${args.level_db} dB / normalized " + requestedLevel + ", read back " + appliedLevel + " / " + appliedDb + " dB). Effect-property writes are known to no-op on some Premiere Pro 26.3 installations.");
+                  if (writeError || !isFinite(appliedLevel) || Math.abs(appliedLevel - requestedLevel) > 0.0001 || appliedDb === null || Math.abs(appliedDb - ${args.level_db}) > 0.01) {
+                    return __jsonStringify({ success: false, error: "Premiere did not apply the requested audio level or could not confirm it. Inspect Volume > Level before retrying. " + writeError, data: data });
                   }
-                  return __result({ adjusted: true, verified: true, clipName: clip.name, levelDb: ${args.level_db}, normalizedLevel: appliedLevel, writeResult: writeResult });
+                  return __result({ adjusted: true, verified: true, outcome: "verified", clipName: clip.name, levelDb: ${args.level_db}, normalizedLevel: appliedLevel, writeResult: writeResult });
                 }
               }
             }
