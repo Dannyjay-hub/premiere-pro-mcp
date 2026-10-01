@@ -339,7 +339,7 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
     },
 
     set_color_label: {
-      description: "Set the color label on a project item or clip",
+      description: "Set the color label on a project item or clip and read it back",
       parameters: {
         type: "object" as const,
         properties: {
@@ -355,12 +355,19 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
         required: ["item_id", "color_index"],
       },
       handler: async (args: { item_id: string; color_index: number }) => {
+        // Live 25.2.3 silently ignores an index outside 0-15.
+        if (!Number.isInteger(args.color_index) || args.color_index < 0 || args.color_index > 15) {
+          return { success: false, error: "color_index must be an integer from 0 to 15." };
+        }
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
           
           item.setColorLabel(${args.color_index});
-          return __result({ updated: true, item: item.name, colorIndex: ${args.color_index} });
+          var observed = null;
+          try { observed = item.getColorLabel(); } catch (eRead) {}
+          if (observed !== ${args.color_index}) return __error("Premiere kept color label " + observed + " instead of ${args.color_index}.");
+          return __result({ updated: true, verified: true, item: item.name, colorIndex: observed });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -425,7 +432,7 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
     },
 
     set_footage_interpretation: {
-      description: "Set footage interpretation settings for a project item",
+      description: "Set footage interpretation settings for a project item and read them back, including fields that were not meant to change",
       parameters: {
         type: "object" as const,
         properties: {
@@ -445,6 +452,14 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
         required: ["item_id"],
       },
       handler: async (args: { item_id: string; frame_rate?: number; pixel_aspect_ratio?: number }) => {
+        if (args.frame_rate === undefined && args.pixel_aspect_ratio === undefined) {
+          return { success: false, error: "Provide frame_rate, pixel_aspect_ratio, or both." };
+        }
+        for (const [name, value] of [["frame_rate", args.frame_rate], ["pixel_aspect_ratio", args.pixel_aspect_ratio]] as const) {
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
+            return { success: false, error: `${name} must be a positive number.` };
+          }
+        }
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
@@ -455,8 +470,18 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
           ${args.frame_rate !== undefined ? `interp.frameRate = ${args.frame_rate};` : ""}
           ${args.pixel_aspect_ratio !== undefined ? `interp.pixelAspectRatio = ${args.pixel_aspect_ratio};` : ""}
           
+          var wantedRate = ${args.frame_rate !== undefined ? args.frame_rate : "interp.frameRate"};
+          var wantedPar = ${args.pixel_aspect_ratio !== undefined ? args.pixel_aspect_ratio : "interp.pixelAspectRatio"};
           item.setFootageInterpretation(interp);
-          return __result({ updated: true, item: item.name });
+          // Live 25.2.3: writing the interpretation back can reset fields that
+          // were not changed (a 2:1 pixel aspect returned to 1), so check both.
+          var after = item.getFootageInterpretation();
+          var observedRate = after ? Number(after.frameRate) : NaN;
+          var observedPar = after ? Number(after.pixelAspectRatio) : NaN;
+          if (!(Math.abs(observedRate - wantedRate) < 0.001) || !(Math.abs(observedPar - wantedPar) < 0.0001)) {
+            return __jsonStringify({ success: false, error: "Premiere's footage interpretation reads " + observedRate + " fps, pixel aspect " + observedPar + " instead of " + wantedRate + " fps, " + wantedPar + ".", data: { frameRate: observedRate, pixelAspectRatio: observedPar } });
+          }
+          return __result({ updated: true, verified: true, item: item.name, frameRate: observedRate, pixelAspectRatio: observedPar });
         `);
         return sendCommand(script, bridgeOptions);
       },
