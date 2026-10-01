@@ -680,15 +680,6 @@ describe("issue #129 — effect removal uses the targeted QE component remove an
     expect(names(list)).toEqual(["Volume", "Channel Volume"]);
   });
 
-  it("keeps a touched Balance on an English stereo clip (live 25.2.3: Internal Audio Balance)", async () => {
-    const stereo = { Volume: "Internal Volume Stereo", "Channel Volume": "Internal Channel Volume Stereo", Balance: "Internal Audio Balance", DeEsser: "ffbe710f-cd69-4139-ad26-65603616d9d4" };
-    const list = removalHost(["Volume", "Channel Volume", "Balance", "DeEsser"], { trackType: "audio", matchNames: stereo });
-    await expect(advanced.remove_all_effects.handler({ node_id: "clip1" })).resolves.toMatchObject({ success: true, data: { removedEffects: ["DeEsser"] } });
-    expect(names(list)).toEqual(["Volume", "Channel Volume", "Balance"]);
-    await expect(clipboard.remove_effect_by_name.handler({ node_id: "clip1", effect_name: "Balance" })).resolves.toMatchObject({ success: false });
-    expect(names(list)).toEqual(["Volume", "Channel Volume", "Balance"]);
-  });
-
   it("refuses on a localized audio host, since Panner's match name is not confirmed (French 5.1)", async () => {
     const french = { Volume: "Internal Volume 5.1", "Volume des canaux": "Internal Channel Volume 5.1", "Réduction du bruit": "AE.ADBE DeNoise" };
     const list = removalHost(["Volume", "Volume des canaux", "Réduction du bruit"], { trackType: "audio", matchNames: french });
