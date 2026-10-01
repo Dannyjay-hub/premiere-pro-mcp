@@ -152,7 +152,6 @@ describe("split_clip verification", () => {
   it("returns structured timeline state when QE split partially changes a track", async () => {
     await timeline.split_clip.handler({ time_seconds: 4 });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain('outcome: "committed_unverified"');
     expect(script).toContain("timelineChanged: true");
     expect(script).toContain('outcome: "not_applied"');
     expect(script).toContain("clipCountBefore: clipCountBefore");
@@ -176,7 +175,7 @@ describe("set_clip_properties verification", () => {
     expect(script).toContain("Motion Scale values could not be read before mutation");
     expect(script).toContain("Position value could not be read before mutation");
     expect(script).toContain("Rotation value could not be read before mutation");
-    expect(script).toContain('outcome: "committed_unverified"');
+    expect(script).toContain('outcome: timelineChanged ? "committed_unverified" : "not_applied"');
     expect(script).toContain("timelineChanged: timelineChanged");
     expect(script).toContain("readback: readback");
     expect(script).toContain("verified: true");

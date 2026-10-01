@@ -1409,7 +1409,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           if (!isFinite(actualRotation) || Math.abs(actualRotation - ${args.rotation}) > 0.01) mismatches.push("rotation did not match the requested value");
           ` : ""}
           if (writeErrors.length || mismatches.length) {
-            return __jsonStringify({ success: false, error: "Premiere did not verify requested clip properties: " + writeErrors.concat(mismatches).join("; ") + ". Inspect the clip before retrying.", data: { outcome: "committed_unverified", verified: false, timelineChanged: timelineChanged, changedProperties: changedProperties, readback: readback } });
+            return __jsonStringify({ success: false, error: "Premiere did not verify requested clip properties: " + writeErrors.concat(mismatches).join("; ") + ". Inspect the clip before retrying.", data: { outcome: timelineChanged ? "committed_unverified" : "not_applied", verified: false, timelineChanged: timelineChanged, changedProperties: changedProperties, readback: readback } });
           }
           var changes = {};
           ${args.opacity !== undefined ? `changes.opacity = ${args.opacity};` : ""}
