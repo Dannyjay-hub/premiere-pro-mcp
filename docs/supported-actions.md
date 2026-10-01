@@ -369,7 +369,7 @@ operation” when the tool has no enum-based mode.
 | `set_offline` | Default profile | Single operation | Set a project item offline, or ask Premiere to refresh it back online when offline is false. |
 | `set_override_frame_rate` | Default profile | Single operation | Override the frame rate of a project item (useful for image sequences or misinterpreted media) |
 | `set_override_pixel_aspect_ratio` | Default profile | Single operation | Override the pixel aspect ratio of a project item |
-| `set_playhead_position` | Default profile | Single operation | Set the playhead (CTI) position in the active sequence |
+| `set_playhead_position` | Default profile | Single operation | Move the playhead (CTI) in the active sequence and read the position back. Refuses a time past the sequence end. |
 | `set_poster_frame` | Default profile | Single operation | Unavailable: Premiere's scripting API cannot set a project item's poster frame. Fails without changing the item; set it in the Project panel (Shift+P). |
 | `set_project_item_audio_channel_mapping` | Default profile | Single operation | Map one output audio channel of a project item to a source channel using Premiere's documented AudioChannelMapping API. |
 | `set_project_panel_metadata` | Default profile | Single operation | Set the project panel metadata/column configuration from XML and verify that Premiere reads back the exact XML |
@@ -381,7 +381,7 @@ operation” when the tool has no enum-based mode.
 | `set_sequence_display_format` | Default profile | Single operation | Set the timecode display format for the active sequence. |
 | `set_sequence_field_type` | Default profile | Single operation | Set the field order of the active sequence. |
 | `set_sequence_frame_rate` | Default profile | Single operation | Change the frame rate of the active sequence. |
-| `set_sequence_in_out_points` | Default profile | Single operation | Set the sequence in and out points (for export range, etc.) |
+| `set_sequence_in_out_points` | Default profile | Single operation | Set the sequence in and out points (for an export range, etc.) and read them back. out_seconds must be after in_seconds and not past the sequence end. |
 | `set_sequence_pixel_aspect_ratio` | Default profile | Single operation | Change the pixel aspect ratio of the active sequence, or return a capability error when the legacy host does not expose a writable setting. |
 | `set_sequence_resolution` | Default profile | Single operation | Change the resolution (frame size) of the active sequence. |
 | `set_sequence_settings` | Default profile | Single operation | Modify and read back sequence frame-size settings. |
