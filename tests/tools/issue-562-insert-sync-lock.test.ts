@@ -47,7 +47,7 @@ function rangesOf(track: { clips: { numItems: number; [i: number]: { start: { ti
   return ranges.sort((a, b) => a[0] - b[0]);
 }
 
-function makeClip(id: string, startSeconds: number, endSeconds: number, itemId = id) {
+function makeClip(id: string, startSeconds: number, endSeconds: number, itemId = id, inPointSeconds = 0) {
   let startT = Math.round(startSeconds * TICKS);
   let endT = Math.round(endSeconds * TICKS);
   const assign = (value: unknown) => {
@@ -61,6 +61,9 @@ function makeClip(id: string, startSeconds: number, endSeconds: number, itemId =
     name: id,
     projectItem: { nodeId: itemId, name: itemId },
     components: { numItems: 0 },
+    inPoint: { ticks: ticksOf(inPointSeconds) },
+    getSpeed() { return 1; },
+    isSpeedReversed() { return false; },
     get start() { return { ticks: String(startT) }; },
     set start(value: unknown) { startT = assign(value); },
     get end() { return { ticks: String(endT) }; },
@@ -121,8 +124,22 @@ function insertOnTrack(
     clip.end = String(parseFloat(clip.end.ticks) + duration);
     clip.start = String(parseFloat(clip.start.ticks) + duration);
   }
-  track._arr.push(makeClip(newId, secondsOf(at), secondsOf(at + duration), item.nodeId));
+  track._arr.push(makeClip(newId, secondsOf(at), secondsOf(at + duration), item.nodeId, secondsOf(parseFloat(item.getInPoint().ticks))));
   track._reindex();
+}
+
+function addMotionScale(clip: ReturnType<typeof makeClip>, readbackMismatch = false) {
+  const values = new Map<number, number>();
+  const property = {
+    displayName: "Scale",
+    isTimeVarying: () => values.size > 0,
+    setTimeVarying: () => {},
+    addKey: (time: { ticks: string }) => { if (!values.has(Number(time.ticks))) values.set(Number(time.ticks), 100); },
+    setValueAtKey: (time: { ticks: string }, value: number) => { values.set(Number(time.ticks), value); },
+    getValueAtKey: (time: { ticks: string }) => readbackMismatch ? undefined : values.get(Number(time.ticks)),
+  };
+  clip.components = Object.assign([{ displayName: "Motion", matchName: "AE.ADBE Motion", properties: Object.assign([property], { numItems: 1 }) }], { numItems: 1 });
+  return values;
 }
 
 function issue562Host(options: {
@@ -138,6 +155,9 @@ function issue562Host(options: {
   emptyTargets?: boolean;
   overlaySeconds?: [number, number];
   sourceDurationSeconds?: number;
+  sourceInPointSeconds?: number;
+  addMotion?: boolean;
+  motionReadbackMismatch?: boolean;
   mediaKind?: "audio_only" | "video_only";
 } = {}) {
   // Premiere's getIn/OutPoint(mediaType): 1 = video, 2 = audio, 4 = any. A missing
@@ -146,9 +166,10 @@ function issue562Host(options: {
   const source = {
     nodeId: "src",
     name: "src",
-    getInPoint() { return { ticks: ticksOf(0) }; },
+    getInPoint() { return { ticks: ticksOf(options.sourceInPointSeconds ?? 0) }; },
     getOutPoint(mediaType?: number) {
-      return { ticks: ticksOf(mediaType !== undefined && mediaType === missingType ? 0 : options.sourceDurationSeconds ?? 2) };
+      const duration = mediaType !== undefined && mediaType === missingType ? 0 : options.sourceDurationSeconds ?? 2;
+      return { ticks: ticksOf((options.sourceInPointSeconds ?? 0) + duration) };
     },
   };
   const overlay = options.overlaySeconds ?? [6, 10];
@@ -166,6 +187,7 @@ function issue562Host(options: {
   const a3 = makeTrack([makeClip("a3", 2, 36, "cam3")]);
   const videoTracks = { 0: v1, 1: v2, 2: v3, get numTracks() { return 3; } };
   const audioTracks = { 0: a1, 1: a2, 2: a3, get numTracks() { return 3; } };
+  const motionValues: Record<string, Map<number, number>> = {};
   (options.lockedVideo ?? []).forEach((index) => {
     [v1, v2, v3][index]._locked = true;
     [a1, a2, a3][index]._locked = true;
@@ -189,7 +211,14 @@ function issue562Host(options: {
     insertClip(item: typeof source, time: string | number, vTrack: number, aTrack: number) {
       if (options.insertNoop) return;
       // Like Premiere, only a track that receives part of the item is rippled.
-      if (options.mediaKind !== "audio_only") insertOnTrack(videoTracks[vTrack as 0 | 1 | 2], item, time, `ins-v-${vTrack}`);
+      if (options.mediaKind !== "audio_only") {
+        const targetTrack = videoTracks[vTrack as 0 | 1 | 2];
+        insertOnTrack(targetTrack, item, time, `ins-v-${vTrack}`);
+        if (options.addMotion) {
+          const placed = targetTrack._arr.find((clip) => clip.nodeId === `ins-v-${vTrack}`);
+          if (placed) motionValues[placed.nodeId] = addMotionScale(placed, options.motionReadbackMismatch);
+        }
+      }
       if (options.mediaKind !== "video_only") insertOnTrack(audioTracks[aTrack as 0 | 1 | 2], item, time, `ins-a-${aTrack}`);
     },
   };
@@ -245,7 +274,7 @@ function issue562Host(options: {
   if (options.qe !== false) {
     sandbox.qe = { project: { getActiveSequence() { return qeSeq; } } };
   }
-  return { sandbox, seq, source };
+  return { sandbox, seq, source, motionValues };
 }
 
 function runScript(script: string, sandbox: Record<string, unknown>) {
@@ -507,6 +536,51 @@ describe("issue #562 — other Sequence.insertClip callers use the same helper",
     expect(result).toMatchObject({ success: true, data: { applied: true } });
     expect(rangesOf(seq.videoTracks[1])).toEqual([[0.4, 2]]);
     expect(rangesOf(seq.videoTracks[0])[0]).toEqual([0, 5]);
+  });
+
+  it("stores spot scale motion from a trimmed source clip's nonzero in-point", async () => {
+    const spots = getSpotWorkflowTools(bridgeOptions, {
+      capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" },
+      auditSink: vi.fn(),
+      operationIdFactory: () => "spot-inpoint-562",
+    });
+    const preview = await spots.preview_motion_graphics_demo.handler({
+      sequence_id: "sequence-1",
+      asset_item_ids: ["src"],
+      clip_duration_seconds: 5,
+      transition_name: "none",
+    });
+    mockedSendCommand.mockClear();
+    await spots.apply_spot_workflow_plan.handler({
+      plan: preview.data.plan,
+      confirmation_token: spotWorkflowConfirmationToken(preview.data.plan),
+    });
+    const script = String(mockedSendCommand.mock.calls[0][0]);
+    const { sandbox, motionValues } = issue562Host({
+      sequenceID: "sequence-1",
+      emptyTargets: true,
+      sourceDurationSeconds: 10,
+      sourceInPointSeconds: 30,
+      addMotion: true,
+    });
+    const result = runScript(script, sandbox);
+    expect(result).toMatchObject({ success: true, data: { motion: [{ applied: true, verified: true, startSeconds: 0, endSeconds: 4.9 }] } });
+    expect(Array.from(motionValues["ins-v-0"].keys()).map((value) => Math.round(value / TICKS * 10) / 10)).toEqual([30, 34.9]);
+  });
+
+  it("reports an unreadable spot scale write as committed_unverified", async () => {
+    const spots = getSpotWorkflowTools(bridgeOptions, {
+      capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" },
+      auditSink: vi.fn(),
+      operationIdFactory: () => "spot-readback-562",
+    });
+    const preview = await spots.preview_motion_graphics_demo.handler({ sequence_id: "sequence-1", asset_item_ids: ["src"], transition_name: "none" });
+    mockedSendCommand.mockClear();
+    await spots.apply_spot_workflow_plan.handler({ plan: preview.data.plan, confirmation_token: spotWorkflowConfirmationToken(preview.data.plan) });
+    const script = String(mockedSendCommand.mock.calls[0][0]);
+    const { sandbox } = issue562Host({ sequenceID: "sequence-1", emptyTargets: true, sourceDurationSeconds: 10, sourceInPointSeconds: 30, addMotion: true, motionReadbackMismatch: true });
+    const result = runScript(script, sandbox);
+    expect(result).toMatchObject({ success: true, data: { motion: [{ applied: false, verified: false, outcome: "committed_unverified", timelineChanged: true }] } });
   });
 });
 
