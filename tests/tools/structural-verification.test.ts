@@ -148,9 +148,65 @@ describe("split_clip verification", () => {
     expect(script).toContain("right segment");
     expect(script).toContain('keyframeSemantics: "unverified"');
   });
+
+  it("returns structured timeline state when QE split partially changes a track", async () => {
+    await timeline.split_clip.handler({ time_seconds: 4 });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain('outcome: "committed_unverified"');
+    expect(script).toContain("timelineChanged: true");
+    expect(script).toContain('outcome: "not_applied"');
+    expect(script).toContain("clipCountBefore: clipCountBefore");
+    expect(script).toContain("clipCountAfter: clipCountAfter");
+  });
+});
+
+describe("set_clip_properties verification", () => {
+  it("refuses empty, non-finite, and out-of-range requests before dispatch", async () => {
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1" })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: Number.NaN })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: 101 })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", scale: -1 })).resolves.toMatchObject({ success: false });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("preflights requested properties and reads them back after writing", async () => {
+    await timeline.set_clip_properties.handler({ node_id: "c1", opacity: 50, scale: 110, position_x: 100, rotation: 10 });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain("Opacity value could not be read before mutation");
+    expect(script).toContain("Motion Scale values could not be read before mutation");
+    expect(script).toContain("Position value could not be read before mutation");
+    expect(script).toContain("Rotation value could not be read before mutation");
+    expect(script).toContain('outcome: "committed_unverified"');
+    expect(script).toContain("timelineChanged: timelineChanged");
+    expect(script).toContain("readback: readback");
+    expect(script).toContain("verified: true");
+  });
+});
+
+describe("duplicate_clip verification", () => {
+  it("does not report success when a duplicate or linked partner is unverified", async () => {
+    await timeline.duplicate_clip.handler({ node_id: "c1" });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain('outcome: drift <= 2 * frameTicks && inDrift <= frameTicks');
+    expect(script).toContain('committed_unverified');
+    expect(script).toContain('(!partner || !!(isVideo ? newAudio : newVideo))');
+    expect(script).toContain('timelineChanged: true');
+  });
 });
 
 describe("move_clip verification", () => {
+  it.each([
+    [{ new_start_seconds: Number.NaN }, "new_start_seconds"],
+    [{ new_start_seconds: Number.POSITIVE_INFINITY }, "new_start_seconds"],
+    [{ new_start_seconds: -1 }, "new_start_seconds"],
+    [{ new_start_seconds: 5, new_track_index: -1 }, "new_track_index"],
+    [{ new_start_seconds: 5, new_track_index: 1.5 }, "new_track_index"],
+  ] as const)("refuses invalid generated-script numbers before dispatch", async (args, field) => {
+    const result = await timeline.move_clip.handler({ node_id: "abc", ...args });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining(field) });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
   it("re-finds the clip after the move rather than trusting a stale reference", async () => {
     await timeline.move_clip.handler({ node_id: "abc", new_start_seconds: 5 });
     const script = mockedSendCommand.mock.calls[0][0];
