@@ -157,7 +157,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             },
           },
           sequence_id: { type: "string", minLength: 1, maxLength: 512, description: "Sequence ID or name. Defaults to the active sequence." },
-          node_id: { type: "string", minLength: 1, maxLength: 512, description: "Optional timeline clip node ID; markers are then created on that clip instead of the sequence (requires the active sequence)." },
+          node_id: { type: "string", minLength: 1, maxLength: 512, description: "Optional timeline clip node ID; markers are then created on that clip instead of the sequence (requires the active sequence). Premiere 25.2.3 timeline clips have no marker collection, so this refuses there and names the source time to use with add_marker_to_project_item." },
           skip_existing_within_frames: { type: "integer", minimum: 0, maximum: 120, description: "When above 0, skip a marker if an existing marker already sits within this many frames of it (default 0 = never skip)." },
           allow_beyond_end: { type: "boolean", description: "Allow marker times past the sequence end instead of rejecting the whole batch (default false)." },
         },
@@ -204,6 +204,11 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
              var clipResult = __findClip("${escapeForExtendScript(args.node_id)}");
              if (!clipResult) return __error("Clip not found: ${escapeForExtendScript(args.node_id)}");
              var markers = clipResult.clip.markers;
+             if (!markers || typeof markers.createMarker !== "function") {
+               var sourceIn = 0;
+               try { sourceIn = __ticksToSeconds(clipResult.clip.inPoint.ticks); } catch (eIn) {}
+               return __error("Timeline clips have no marker collection on this Premiere host; clip markers belong to the source project item and appear on every use of that media. Nothing was changed. Use add_marker_to_project_item with the source time instead: this clip's in-point is " + sourceIn + "s, so clip time t is source time t + " + sourceIn + "s.");
+             }
              var limitSeconds = __ticksToSeconds(clipResult.clip.duration.ticks);
              var targetKind = "clip";`
           : `${sequenceLookup(args.sequence_id)}
@@ -244,26 +249,40 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             if (near) skipped.push({ timeSeconds: requested[i].t, name: requested[i].n }); else toWrite.push(requested[i]);
           }
           var created = [];
+          // Once a marker exists the target has changed, so later failures
+          // report what was already written.
+          function __batchFailure(message, markerWritten) {
+            return __jsonStringify({ success: false, error: message, data: { createdCount: created.length, created: created, timelineChanged: created.length > 0 || markerWritten, outcome: created.length > 0 || markerWritten ? "committed_unverified" : "not_applied" } });
+          }
           for (i = 0; i < toWrite.length; i++) {
             var spec = toWrite[i];
             var marker;
             try { marker = markers.createMarker(spec.t); } catch (createError) {
-              return __error("Premiere rejected marker " + i + " at " + spec.t + "s after " + created.length + " verified marker(s): " + createError.toString());
+              return __batchFailure("Premiere rejected marker " + i + " at " + spec.t + "s after " + created.length + " verified marker(s): " + createError.toString(), false);
             }
-            if (!marker) return __error("Premiere returned no marker for entry " + i + " at " + spec.t + "s after " + created.length + " verified marker(s).");
+            if (!marker) return __batchFailure("Premiere returned no marker for entry " + i + " at " + spec.t + "s after " + created.length + " verified marker(s).", false);
             try {
               if (spec.n !== null) marker.name = spec.n;
               if (spec.c !== null) marker.comments = spec.c;
               if (spec.k !== null) marker.setColorByIndex(spec.k);
               if (spec.d > 0) marker.end = spec.t + spec.d;
             } catch (assignError) {
-              return __error("Premiere created marker " + i + " but rejected its properties: " + assignError.toString());
+              return __batchFailure("Premiere created marker " + i + " but rejected its properties: " + assignError.toString(), true);
             }
             var actualStart = __ticksToSeconds(marker.start.ticks);
             if (Math.abs(actualStart - spec.t) > frameSeconds) {
-              return __error("Marker " + i + " landed at " + actualStart + "s instead of " + spec.t + "s; the batch is not reported as verified.");
+              return __batchFailure("Marker " + i + " landed at " + actualStart + "s instead of " + spec.t + "s; the batch is not reported as verified.", true);
             }
-            created.push({ timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: __ticksToSeconds(marker.end.ticks), requestedColor: spec.k });
+            var actualEnd = __ticksToSeconds(marker.end.ticks);
+            var actualColor = null;
+            try { actualColor = marker.getColorByIndex(); } catch (eColor) {}
+            var fieldProblems = [];
+            if (spec.n !== null && String(marker.name) !== spec.n) fieldProblems.push("name reads back as " + marker.name);
+            if (spec.c !== null && String(marker.comments) !== spec.c) fieldProblems.push("comments read back as " + marker.comments);
+            if (spec.d > 0 && Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds) fieldProblems.push("end reads back as " + actualEnd + "s");
+            if (spec.k !== null && actualColor !== null && Number(actualColor) !== spec.k) fieldProblems.push("color index reads back as " + actualColor);
+            if (fieldProblems.length) return __batchFailure("Marker " + i + " at " + spec.t + "s was created, but " + fieldProblems.join("; ") + ".", true);
+            created.push({ timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: actualEnd, color: actualColor === null ? null : Number(actualColor) });
           }
           var afterCount = 0;
           probe = markers.getFirstMarker();
@@ -282,7 +301,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             markerCountBefore: beforeCount,
             markerCountAfter: afterCount,
             markers: created,
-            verificationScope: "Marker collection readback only; colors are requested values and are not read back by Premiere's DOM."
+            verificationScope: "Marker collection readback: start, end, name, comments and color index (when Premiere reports it) are read back for every created marker."
           });
         `);
         const result = await sendCommand(script, bridgeOptions);
