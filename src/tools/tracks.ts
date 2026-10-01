@@ -229,7 +229,9 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           
           var track = seq.videoTracks[${args.track_index}];
           if (!track || typeof track.isLocked !== "function" || typeof track.setLocked !== "function") return __error("Track lock state cannot be read or set on this Premiere host; nothing was changed.");
-          var beforeLocked = !!track.isLocked();
+          var beforeLocked;
+          try { beforeLocked = track.isLocked(); } catch (beforeLockError) { return __error("Track lock state could not be read before mutation; nothing was changed: " + beforeLockError.toString()); }
+          if (typeof beforeLocked !== "boolean") return __error("Track lock state was not boolean before mutation; nothing was changed.");
           var writeError = null;
           try { track.setLocked(${args.locked ? 1 : 0}); } catch (lockError) { writeError = lockError.toString(); }
           var actualLocked = null;
@@ -268,7 +270,9 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
           
           var track = seq.videoTracks[${args.track_index}];
           if (!track || typeof track.isMuted !== "function" || typeof track.setMute !== "function") return __error("Track mute/visibility state cannot be read or set on this Premiere host; nothing was changed.");
-          var beforeMuted = !!track.isMuted();
+          var beforeMuted;
+          try { beforeMuted = track.isMuted(); } catch (beforeMuteError) { return __error("Track mute state could not be read before mutation; nothing was changed: " + beforeMuteError.toString()); }
+          if (typeof beforeMuted !== "boolean") return __error("Track mute state was not boolean before mutation; nothing was changed.");
           var writeError = null;
           try { track.setMute(${args.visible ? "0" : "1"}); } catch (muteError) { writeError = muteError.toString(); }
           var actualMuted = null;

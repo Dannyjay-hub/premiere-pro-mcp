@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Track lock and visibility tools refuse before writing when Premiere cannot return a boolean pre-change state, then verify the requested state after the write.
+
 ### Added
 
 - EXPERIMENTAL (QE DOM): `undo`, `redo`, and `multiple_undo` step Premiere's undo stack and verify each step against `undoStackIndex`. They stop when the stack stops moving, refuse on a host without `undoStackIndex`, and refuse when the stack has moved past `expected_undo_stack_index`. A step that moves the stack unexpectedly or leaves the index unreadable is reported as `committed_unverified` with a "Do not retry" warning. (#654)
