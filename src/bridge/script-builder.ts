@@ -651,14 +651,15 @@ function __qeTransitionObject(kind, entry) {
 
 // Components every clip carries (and a graphic's own layers). They are not
 // effects and are never removed.
-var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Vector Motion": true, "Text": true, "Shape": true };
+var __BUILT_IN_COMPONENTS = { "Opacity": true, "Motion": true, "Time Remapping": true, "Volume": true, "Channel Volume": true, "Panner": true, "Balance": true, "Vector Motion": true, "Text": true, "Shape": true };
 // Match names do not change with the host language. Seen live on Premiere
 // 25.2.3 (#674): video "AE.ADBE Opacity", "AE.ADBE Motion"; graphics
 // "AE.ADBE Graphic Group" (Vector Motion), "AE.ADBE Text"; audio "Internal
 // Volume Mono|Stereo|5.1" and "Internal Channel Volume Stereo|5.1" (a mono clip
 // has no Channel Volume), and shape layers "AE.ADBE Shape" (a stock lower
 // third). 25.2.3 lists no clip-level Panner, even for a mono clip on a stereo
-// track (panning is per track there). Time Remapping was not listed and cannot
+// track (panning is per track there); a stereo clip gains "Balance"
+// ("Internal Audio Balance") once Balance is applied or touched. Time Remapping was not listed and cannot
 // be enabled by script; its likely name is included because treating a
 // component as built-in only ever prevents a removal.
 var __BUILT_IN_MATCH_NAMES = { "AE.ADBE Motion": true, "AE.ADBE Opacity": true, "AE.ADBE Graphic Group": true, "AE.ADBE Text": true, "AE.ADBE Shape": true, "AE.ADBE Time Remapping": true };
