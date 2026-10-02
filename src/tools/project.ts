@@ -28,7 +28,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
 
     save_project_as: {
       description:
-        "Save the current project to a new .prproj path. Premiere then has the NEW copy open and closes the original, so later edits go to the copy; the result reports both paths. Use open_project to return to the original.",
+        "Save the current project to a new .prproj path. Premiere then has the NEW copy open and closes the original, so later edits go to the copy; the result reports both paths. Fails when Premiere writes no file or leaves a pre-existing path unchanged. Use open_project to return to the original.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -52,12 +52,37 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           if (__normProjectPath(previousPath) === __normProjectPath("${target}")) {
             return __error("That is the current project's own path; use save_project instead.");
           }
+          var outputFile = new File("${target}");
+          if (!outputFile.parent || !outputFile.parent.exists) {
+            return __error("The Save As directory does not exist: " + outputFile.parent);
+          }
+          var existedBefore = !!outputFile.exists;
+          var lengthBefore = existedBefore ? Number(outputFile.length) : -1;
+          if (existedBefore && !isFinite(lengthBefore)) return __error("Cannot read the existing output size; Save As was not attempted.");
+          function readModified(file) {
+            try {
+              var modified = file.modified;
+              var stamp = modified && typeof modified.valueOf === "function" ? modified.valueOf() : null;
+              return typeof stamp === "number" && isFinite(stamp) ? stamp : null;
+            } catch (eModified) { return null; }
+          }
+          var modifiedBefore = existedBefore ? readModified(outputFile) : null;
           project.saveAs("${target}");
-          if (!(new File("${target}")).exists) return __error("Premiere did not write ${target}; the current project is unchanged.");
+          if (!outputFile.exists || !(outputFile.length > 0)) return __error("Premiere did not write a non-empty project file at ${target}; inspect the active project before retrying.");
+          var modifiedAfter = readModified(outputFile);
+          if (existedBefore && Number(outputFile.length) === lengthBefore) {
+            if (modifiedBefore === null || modifiedAfter === null) {
+              return __error("Cannot verify a new project file at ${target}: the size is unchanged and a modification timestamp is unreadable. Inspect the active project before retrying.");
+            }
+            if (modifiedAfter === modifiedBefore) {
+              return __error("Premiere did not write a new project file at ${target} (the existing output was unchanged).");
+            }
+          }
           var activePath = app.project ? String(app.project.path || "") : "";
           var switched = __normProjectPath(activePath) === __normProjectPath("${target}");
           return __result({
             saved: true,
+            verified: true,
             path: "${target}",
             activeProjectPath: activePath,
             previousProjectPath: previousPath,
