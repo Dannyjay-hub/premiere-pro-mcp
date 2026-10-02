@@ -283,7 +283,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
           
           var success = item.changeMediaPath("${escapeForExtendScript(path)}", true);
-          if (success !== true) return __error("Premiere did not confirm the CEP relink. The item may have changed; inspect it before continuing and do not retry automatically.", { outcome: "committed_unverified", item: item.name, newPath: "${escapeForExtendScript(path)}" });
+          if (success !== true && success !== 0) return __error("Premiere did not confirm the CEP relink. The item may have changed; inspect it before continuing and do not retry automatically.", { outcome: "committed_unverified", item: item.name, newPath: "${escapeForExtendScript(path)}" });
           return __result({ relinked: true, outcome: "committed_unverified", verified: false, item: item.name, newPath: "${escapeForExtendScript(path)}", warning: "Legacy CEP relink has no path/online readback here. Inspect the item before continuing; do not retry automatically." });
         `);
         return sendCommand(script, bridgeOptions);

@@ -50,7 +50,7 @@ describe("CEP relink safety guard (#729)", () => {
     await relink.handler({ item_id: "clip-1", new_path: path, allow_unsafe_cep_relink: true });
     expect(mockedSendCommand).toHaveBeenCalledOnce();
     const script = String(mockedSendCommand.mock.calls[0][0]);
-    const item = { nodeId: "clip-1", name: "clip", changeMediaPath: vi.fn(() => true) };
+    const item = { nodeId: "clip-1", name: "clip", changeMediaPath: vi.fn((_path: string, _override: boolean): boolean | number => true) };
     const app = { project: { rootItem: { children: { numItems: 1, 0: item } } } };
     const execute = () => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app })));
     expect(execute()).toEqual(expect.objectContaining({
@@ -58,6 +58,11 @@ describe("CEP relink safety guard (#729)", () => {
       data: expect.objectContaining({ outcome: "committed_unverified", verified: false }),
     }));
     expect(item.changeMediaPath).toHaveBeenCalledWith(path, true);
+    item.changeMediaPath.mockReturnValue(0);
+    expect(execute()).toEqual(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({ outcome: "committed_unverified", verified: false }),
+    }));
     item.changeMediaPath.mockReturnValue(false);
     expect(execute()).toEqual(expect.objectContaining({
       success: false,
