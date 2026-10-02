@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runInNewContext } from "node:vm";
-import { getHelpersSource } from "../../src/bridge/script-builder.js";
+import { escapeForExtendScript, getHelpersSource } from "../../src/bridge/script-builder.js";
 import { BridgeOptions } from "../../src/bridge/file-bridge.js";
 
 vi.mock("../../src/bridge/file-bridge.js", () => ({
@@ -1054,6 +1054,49 @@ describe("issue #237 — reported mutations must be observable or fail", () => {
   const project = getProjectTools(bridgeOptions);
   const tracks = getTrackTargetingTools(bridgeOptions);
   const media = getMediaTools(bridgeOptions);
+
+  // #713: a missing import path must fail fast in the handler — importFiles
+  // with a nonexistent path opens a blocking modal in Premiere that wedges the
+  // CEP bridge until a restart.
+  it("refuses import_media with missing paths before Premiere is contacted", async () => {
+    await expect(media.import_media.handler({ file_paths: ["C:/no/existe.mp4"] })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("File(s) not found"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("refuses import_folder with a nonexistent folder before Premiere is contacted", async () => {
+    const missing = join(process.cwd(), "__missing_import_folder_713__");
+    await expect(media.import_folder.handler({ folder_path: missing })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("not found"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty arrays and directories before host contact (#725 FAM-5)", async () => {
+    expect(media.import_media.parameters.properties.file_paths).toMatchObject({ minItems: 1, items: { minLength: 1 } });
+    await expect(media.import_media.handler({ file_paths: [] })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("at least one non-empty path"),
+    });
+    const dir = join(process.cwd());
+    const dirForward = dir.split(sep).join("/");
+    await expect(media.import_media.handler({ file_paths: [dirForward] })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("Use import_folder"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+    await expect(media.import_folder.handler({ folder_path: join(process.cwd(), "package.json") })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("not a directory"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("resolves forward-slash import paths to native separators before embedding them", async () => {
+    const forward = join(process.cwd(), "package.json").split(sep).join("/");
+    const script = await scriptFor(media.import_media, { file_paths: [forward] });
+    expect(script).toContain(escapeForExtendScript(resolve(forward)));
+  });
   const exports = getExportTools(bridgeOptions);
 
   it("makes trim tools read back their claimed changes", async () => {
