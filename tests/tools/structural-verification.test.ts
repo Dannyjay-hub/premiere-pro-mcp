@@ -150,9 +150,128 @@ describe("split_clip verification", () => {
     expect(script).toContain("right segment");
     expect(script).toContain('keyframeSemantics: "unverified"');
   });
+
+  it("returns structured timeline state when QE split partially changes a track", async () => {
+    await timeline.split_clip.handler({ time_seconds: 4 });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain("timelineChanged: true");
+    expect(script).toContain('outcome: "not_applied"');
+    expect(script).toContain("clipCountBefore: clipCountBefore");
+    expect(script).toContain("clipCountAfter: clipCountAfter");
+  });
+});
+
+describe("set_clip_properties verification", () => {
+  it("refuses empty, non-finite, and out-of-range requests before dispatch", async () => {
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1" })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: Number.NaN })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: 101 })).resolves.toMatchObject({ success: false });
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", scale: -1 })).resolves.toMatchObject({ success: false });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("preflights localized Scale before invoking localized write helpers", async () => {
+    let stored = 100;
+    const scale = { displayName: "Escala", getValue: () => stored, setValue: (value: number) => { stored = value; } };
+    const clip = { nodeId: "c1", name: "Clip", components: { numItems: 1, 0: { displayName: "Movimiento", matchName: "AE.ADBE Motion", properties: { numItems: 2, 0: { displayName: "Escala uniforme", getValue: () => true }, 1: scale } } } };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } } } },
+    }))));
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", scale: 110 })).resolves.toMatchObject({ success: true, data: { verified: true } });
+    expect(stored).toBe(110);
+  });
+
+  it("preflights requested properties and reads them back after writing", async () => {
+    await timeline.set_clip_properties.handler({ node_id: "c1", opacity: 50, scale: 110, position_x: 100, rotation: 10 });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain("Opacity value could not be read before mutation");
+    expect(script).toContain("Motion Scale values could not be read before mutation");
+    expect(script).toContain("Position value could not be read before mutation");
+    expect(script).toContain("Rotation value could not be read before mutation");
+    expect(script).toContain('outcome: timelineChanged || unverifiedProperties.length ? "committed_unverified" : "not_applied"');
+    expect(script).toContain("timelineChanged: timelineChanged ? true : (unverifiedProperties.length ? null : false)");
+    expect(script).toContain("readback: readback");
+    expect(script).toContain("verified: true");
+  });
+
+  it.each([{ post: "throw", opacity: 50 }, { post: undefined, opacity: 50 }, { post: null, opacity: 0 }, { post: true, opacity: 1 }, { post: "50", opacity: 50 }])("preserves unknown state after an opacity write with invalid readback ($post)", async ({ post, opacity }) => {
+    const property = {
+      displayName: "Opacity", written: false,
+      getValue() { if (!this.written) return 100; if (post === "throw") throw new Error("unreadable"); return post; },
+      setValue: vi.fn(function (this: { written: boolean }) { this.written = true; }),
+    };
+    const clip = { nodeId: "c1", name: "Clip", components: { numItems: 1, 0: { displayName: "Opacity", matchName: "AE.ADBE Opacity", properties: { numItems: 1, 0: property } } } };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } } } },
+    }))));
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity })).resolves.toMatchObject({
+      success: false, data: { outcome: "committed_unverified", verified: false, timelineChanged: null, unverifiedProperties: ["opacity"], readback: { opacity: null } },
+    });
+    expect(property.setValue).toHaveBeenCalledWith(opacity, true);
+  });
+
+  it.each([false, true])("lists every unreadable requested property with localized names=%s", async (localized) => {
+    function property(displayName: string, value: number | number[]) {
+      let written = false;
+      return { displayName, getValue() { if (written) throw new Error("post-write read failed"); return value; }, setValue: vi.fn(() => { written = true; }) };
+    }
+    const opacity = property(localized ? "Opacidad" : "Opacity", 100);
+    const scale = property(localized ? "Escala" : "Scale", 100);
+    const position = property(localized ? "Posición" : "Position", [0.5, 0.5]);
+    const rotation = property(localized ? "Rotación" : "Rotation", 0);
+    const clip = { nodeId: "c1", name: "Clip", components: { numItems: 2,
+      0: { displayName: "Opacity", matchName: "AE.ADBE Opacity", properties: { numItems: 1, 0: opacity } },
+      1: { displayName: "Motion", matchName: "AE.ADBE Motion", properties: { numItems: 4, 0: { displayName: "Uniform Scale", getValue: () => true }, 1: scale, 2: position, 3: rotation } },
+    } };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { frameSizeHorizontal: 1920, frameSizeVertical: 1080, videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } } } },
+    }))));
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: 50, scale: 110, position_x: 100, rotation: 10 })).resolves.toMatchObject({
+      success: false, data: { outcome: "committed_unverified", timelineChanged: null, unverifiedProperties: ["opacity", "scale", "position", "rotation"] },
+    });
+    for (const prop of [opacity, scale, position, rotation]) expect(prop.setValue).toHaveBeenCalledOnce();
+  });
+});
+
+describe("duplicate_clip verification", () => {
+  it("does not claim the timeline changed when overwrite places no duplicate", async () => {
+    const ticks = (seconds: number) => String(seconds * 254016000000);
+    const item = {
+      getInPoint: () => ({ ticks: "0", seconds: 0 }),
+      getOutPoint: (type: number) => ({ ticks: ticks(type === 2 ? 0 : 2), seconds: type === 2 ? 0 : 2 }),
+      setInPoint: vi.fn(), setOutPoint: vi.fn(),
+    };
+    const clip = { nodeId: "c1", projectItem: item, start: { ticks: "0" }, end: { ticks: ticks(2) }, inPoint: { ticks: "0" } };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 0 }, overwriteClip: () => {} } } },
+    }))));
+    await expect(timeline.duplicate_clip.handler({ node_id: "c1" })).resolves.toMatchObject({ success: false, data: { timelineChanged: null, outcome: "committed_unverified", verified: false } });
+  });
+
+  it("does not report success when a duplicate or linked partner is unverified", async () => {
+    await timeline.duplicate_clip.handler({ node_id: "c1" });
+    const script = mockedSendCommand.mock.calls[0][0];
+    expect(script).toContain('var duplicateVerified = drift <= 2 * frameTicks && inDrift <= frameTicks');
+    expect(script).toContain('if (!duplicateVerified) return __jsonStringify({ success: false');
+    expect(script).toContain('outcome: "committed_unverified"');
+    expect(script).toContain('(!partner || !!(isVideo ? newAudio : newVideo))');
+    expect(script).toContain('timelineChanged: true');
+  });
 });
 
 describe("move_clip verification", () => {
+  it.each([
+    [{ new_start_seconds: Number.NaN }, "new_start_seconds"],
+    [{ new_start_seconds: Number.POSITIVE_INFINITY }, "new_start_seconds"],
+    [{ new_start_seconds: -1 }, "new_start_seconds"],
+    [{ new_start_seconds: 5, new_track_index: -1 }, "new_track_index"],
+    [{ new_start_seconds: 5, new_track_index: 1.5 }, "new_track_index"],
+  ] as const)("refuses invalid generated-script numbers before dispatch", async (args, field) => {
+    const result = await timeline.move_clip.handler({ node_id: "abc", ...args });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining(field) });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
   it("re-finds the clip after the move rather than trusting a stale reference", async () => {
     await timeline.move_clip.handler({ node_id: "abc", new_start_seconds: 5 });
     const script = mockedSendCommand.mock.calls.at(-1)[0];
@@ -392,6 +511,61 @@ describe("track creation verification", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("at least one");
     expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("track state writes verify Premiere readback", () => {
+  it("validates lock and visibility arguments before dispatch", async () => {
+    for (const result of [
+      await tracks.lock_track.handler({ track_index: -1, locked: true }),
+      await tracks.lock_track.handler({ track_index: 0.5, locked: true }),
+      await tracks.toggle_track_visibility.handler({ track_index: 0, visible: "yes" as never }),
+      await tracks.delete_track.handler({ track_type: "subtitle", track_index: 0 }),
+    ]) expect(result.success).toBe(false);
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("uses Premiere's numeric mute contract and returns readback state", async () => {
+    await tracks.toggle_track_visibility.handler({ track_index: 0, visible: true });
+    const visibilityScript = mockedSendCommand.mock.calls[0][0];
+    expect(visibilityScript).toContain("track.setMute(0)");
+    expect(visibilityScript).toContain("track.isMuted()");
+    expect(visibilityScript).toContain('outcome: "verified"');
+    expect(visibilityScript).toContain("timelineChanged: beforeMuted !== actualMuted");
+
+    vi.clearAllMocks();
+    await tracks.toggle_track_visibility.handler({ track_index: 0, visible: false });
+    expect(mockedSendCommand.mock.calls[0][0]).toContain("track.setMute(1)");
+  });
+
+  it("reports lock and visibility mismatch as not_applied or committed_unverified", async () => {
+    await tracks.lock_track.handler({ track_index: 0, locked: true });
+    const lockScript = mockedSendCommand.mock.calls[0][0];
+    expect(lockScript).toContain("track.setLocked(1)");
+    expect(lockScript).toContain("track.isLocked()");
+    expect(lockScript).toContain('outcome: beforeLocked !== actualLocked ? "committed_unverified" : "not_applied"');
+
+    vi.clearAllMocks();
+    await tracks.toggle_track_visibility.handler({ track_index: 0, visible: false });
+    const visibilityScript = mockedSendCommand.mock.calls[0][0];
+    expect(visibilityScript).toContain('outcome: beforeMuted !== actualMuted ? "committed_unverified" : "not_applied"');
+    expect(visibilityScript).toContain("actualMuted: actualMuted");
+  });
+
+  it.each([undefined, null, 0, 1, "false"])("does not verify a non-boolean post-write track state (%s)", async (postState) => {
+    mockedSendCommand.mockImplementationOnce(async (script) => {
+      let reads = 0;
+      const track = { name: "Video 1", isLocked: () => ++reads === 1 ? true : postState, setLocked: () => {} };
+      return JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app: { project: { activeSequence: { videoTracks: { numTracks: 1, 0: track } } } } })));
+    });
+    await expect(tracks.lock_track.handler({ track_index: 0, locked: false })).resolves.toMatchObject({ success: false, data: { outcome: "committed_unverified", verified: false, timelineChanged: null, actualLocked: null } });
+
+    mockedSendCommand.mockImplementationOnce(async (script) => {
+      let reads = 0;
+      const track = { name: "Video 1", isMuted: () => ++reads === 1 ? true : postState, setMute: () => {} };
+      return JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app: { project: { activeSequence: { videoTracks: { numTracks: 1, 0: track } } } } })));
+    });
+    await expect(tracks.toggle_track_visibility.handler({ track_index: 0, visible: true })).resolves.toMatchObject({ success: false, data: { outcome: "committed_unverified", verified: false, timelineChanged: null, actualMuted: null } });
   });
 });
 
