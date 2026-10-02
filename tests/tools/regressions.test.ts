@@ -6,8 +6,10 @@ import { runInNewContext } from "node:vm";
 import { escapeForExtendScript, getHelpersSource } from "../../src/bridge/script-builder.js";
 import { BridgeOptions } from "../../src/bridge/file-bridge.js";
 
+vi.mock("../../src/tools/media-evidence.js", () => ({ probeMediaDurationTicks: vi.fn().mockResolvedValue(3600 * 254016000000) }));
+
 vi.mock("../../src/bridge/file-bridge.js", () => ({
-  sendCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
+  sendCommand: vi.fn().mockResolvedValue({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "/fixture/source.mp4" } }),
   sendRawCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
   getTempDir: vi.fn().mockReturnValue("/tmp/test"),
   cleanupTempDir: vi.fn(),
@@ -59,7 +61,7 @@ async function scriptFor(tool: { handler: (args: never) => Promise<unknown> }, a
   mockedSendCommand.mockClear();
   await tool.handler(args as never);
   expect(mockedSendCommand).toHaveBeenCalled();
-  return mockedSendCommand.mock.calls[0][0] as string;
+  return mockedSendCommand.mock.calls.at(-1)[0] as string; // SEC #712: trim/slip send evidence+script
 }
 
 /**
@@ -80,9 +82,38 @@ async function executePixelAspectRatioScript(sequence: unknown, ratio = "1.4222"
   })));
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); mockedSendCommand.mockResolvedValue({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "/fixture/source.mp4" } }); });
 
 describe("real-host social sequence regressions", () => {
+  // #691: QE's newSequence silently ignores forward-slash preset paths on
+  // Windows, so the handler must hand the host native separators and give a
+  // missing file its own precise error.
+  it("normalizes forward-slash preset_path to native separators before the QE call", async () => {
+    const realFile = join(process.cwd(), "package.json");
+    const forwardSlashed = realFile.split(sep).join("/");
+    const script = await scriptFor(sequence.create_sequence_from_preset, { name: "PresetPathTest", preset_path: forwardSlashed });
+    expect(script).toContain(escapeForExtendScript(resolve(forwardSlashed)));
+    if (process.platform === "win32") {
+      // en Windows los separadores nativos difieren del original: el script no
+      // debe llevar el path forward-slashed (falla silenciosa de QE, #691)
+      expect(script).not.toContain(escapeForExtendScript(forwardSlashed));
+    }
+  });
+
+  it("create_sequence also normalizes preset_path and reports missing files (#714)", async () => {
+    const forwardReal = join(process.cwd(), "package.json").split(sep).join("/");
+    const script = await scriptFor(sequence.create_sequence, { name: "Create714", preset_path: forwardReal });
+    expect(script).toContain(escapeForExtendScript(resolve(forwardReal)));
+    await expect(sequence.create_sequence.handler({ name: "X", preset_path: "C:/no/such.sqpreset" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Preset file not found") });
+  });
+
+  it("reports a missing preset file precisely instead of a bare QE failure", async () => {
+    await expect(sequence.create_sequence_from_preset.handler({
+      name: "PresetPathTest",
+      preset_path: join(process.cwd(), "no-such-dir", "no-such-preset.sqpreset"),
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Preset file not found") });
+  });
+
   const sequence = getSequenceTools(bridgeOptions);
   const playhead = getPlayheadTools(bridgeOptions);
   const utility = getUtilityTools(bridgeOptions);
@@ -303,6 +334,20 @@ describe("issue #9 — frame export uses the QE DOM and verifies the file landed
 
 // Defects found while reviewing PR #3 (repair 6 broken tools on Premiere Pro 2026).
 describe("PR #3 follow-ups — color_correct and export_sequence", () => {
+  // #712: trim_clip and slip_edit must refuse source windows past the media's
+  // own end (Premiere would otherwise extend the clip over nonexistent frames
+  // and report verified: true).
+  it("trim_clip and slip_edit scripts carry the ffprobe media-duration guard", async () => {
+    vi.mocked(sendCommand).mockResolvedValueOnce({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "C:/media/clip.mp4" } } as never);
+    const trim = await scriptFor(getTimelineTools(bridgeOptions, { probeMediaDurationSeconds: async () => 5 }).trim_clip, { node_id: "clip-1", new_out_seconds: 39 });
+    expect(trim).not.toContain("projectItem.getOutPoint()");
+    expect(trim).toContain("real media duration of 5.000s (ffprobe)");
+    vi.mocked(sendCommand).mockResolvedValueOnce({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "C:/media/clip.mp4" } } as never);
+    const slip = await scriptFor(getAdvancedTools(bridgeOptions, { probeMediaDurationSeconds: async () => 10 }).slip_edit, { node_id: "clip-1", offset_seconds: 2 });
+    expect(slip).toContain("past this clip's real media duration of 10.000s (ffprobe)");
+  });
+
+
   const effects = getEffectsTools(bridgeOptions);
   const exportTools = getExportTools(bridgeOptions);
 
@@ -358,6 +403,9 @@ describe("PR #3 follow-ups — color_correct and export_sequence", () => {
 
   it("treats a missing or unchanged export file as failure, not success", async () => {
     const advanced = getAdvancedTools(bridgeOptions);
+
+
+
     const projectScript = await scriptFor(advanced.export_as_project, { output_path: "/tmp/export.prproj" });
     const xmlScript = await scriptFor(exportTools.export_as_fcp_xml, { output_path: "/tmp/export.xml" });
     const sequenceScript = await scriptFor(exportTools.export_sequence, {
@@ -1208,7 +1256,11 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
 
     expect(queued).toContain("var outputFile = new File");
     expect(queued).toContain("var jobId = encoder.encodeSequence");
-    expect(queued).toContain("Queue presence and output-file creation are not verified");
+    // Queueing remains an unverified handoff. Batch start is opt-in because it
+    // affects every ready AME job, including jobs unrelated to this call.
+    expect(queued).toContain("Batch startup and output-file creation are not verified by this tool");
+    expect(queued).toContain("if (false)");
+    expect(queued).toContain("app.encoder.startBatch()");
     expect(projectItem).toContain("outputFile.fsName");
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
   });
@@ -1376,7 +1428,7 @@ describe("issue #326 — sequence creation requires project-collection readback"
 
   it("does not report a QE-active sequence as created unless it is discoverable", async () => {
     const script = await scriptFor(sequence.create_sequence, {
-      name: "Verified Sequence", preset_path: "/tmp/sequence.sqpreset",
+      name: "Verified Sequence", preset_path: join(process.cwd(), "package.json"),
     });
     expect(script).toContain("var beforeSequenceIds = {}");
     expect(script).toContain("var sequenceId = String(seq.sequenceID)");
@@ -1389,7 +1441,7 @@ describe("issue #326 — sequence creation requires project-collection readback"
 
   it("applies the same new-ID readback to create_sequence_from_preset", async () => {
     const script = await scriptFor(sequence.create_sequence_from_preset, {
-      name: "Interview", preset_path: "/tmp/sequence.sqpreset",
+      name: "Interview", preset_path: join(process.cwd(), "package.json"),
     });
     expect(script).toContain("var beforeSequenceIds = {}");
     expect(script).toContain("if (beforeSequenceIds[sequenceId])");
@@ -1415,7 +1467,7 @@ describe("issue #326 — sequence creation requires project-collection readback"
 
     await expect(sequence.create_sequence_from_preset.handler({
       name: "Interview",
-      preset_path: "/tmp/sequence.sqpreset",
+      preset_path: join(process.cwd(), "package.json"),
     })).resolves.toMatchObject({
       success: false,
       error: expect.stringContaining("already existed before the preset request"),
@@ -1435,7 +1487,7 @@ describe("issue #326 — sequence creation requires project-collection readback"
         app: { enableQE() {}, project },
         qe: { project: { newSequence() { project.activeSequence = created; if (listed) items.push(created); } } },
       }))));
-    const result = await sequence.create_sequence_from_preset.handler({ name: "Interview", preset_path: "/tmp/sequence.sqpreset" });
+    const result = await sequence.create_sequence_from_preset.handler({ name: "Interview", preset_path: join(process.cwd(), "package.json") });
     if (listed) {
       expect(result).toMatchObject({ success: true, data: { created: true, verified: true, id: "seq-created", name: "Interview" } });
     } else {
@@ -1577,5 +1629,47 @@ describe("sequence settings setters verify their readback", () => {
     await expect(utility.set_sequence_field_type.handler({ field_type: 7 })).resolves.toMatchObject({ success: false });
     await expect(utility.set_sequence_display_format.handler({})).resolves.toMatchObject({ success: false });
     expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("#712 rework: media bound from real ffprobe duration (owner review)", () => {
+  it("the media bound comes from ffprobe duration, not the editable source Out mark", async () => {
+    vi.mocked(sendCommand).mockResolvedValueOnce({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "C:/media/clip.mp4" } } as never);
+    const tools = getTimelineTools(bridgeOptions, { probeMediaDurationSeconds: async () => 10 });
+    await tools.trim_clip.handler({ node_id: "clip-1", new_out_seconds: 15 });
+    const script = mockedSendCommand.mock.calls.at(-1)[0] as string;
+    expect(script).toContain("__secondsToTicks(targetOut) > 2540160000000");
+    expect(script).toContain('real media duration of 10.000s (ffprobe)');
+    expect(script).not.toContain("projectItem.getOutPoint()");
+  });
+
+  it("does not infer unlimited still media from an image filename when duration is unknown", async () => {
+    vi.mocked(sendCommand).mockResolvedValueOnce({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "C:/media/still.png" } } as never);
+    const tools = getTimelineTools(bridgeOptions, { probeMediaDurationSeconds: async () => null });
+    await expect(tools.trim_clip.handler({ node_id: "clip-1", new_out_seconds: 15 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("Physical media duration") });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("slip_edit carries the same ffprobe-evidence bound", async () => {
+    vi.mocked(sendCommand).mockResolvedValueOnce({ success: true, data: { projectId: "project", sequenceId: "seq", mediaPath: "C:/media/clip.mp4" } } as never);
+    const tools = getAdvancedTools(bridgeOptions, { probeMediaDurationSeconds: async () => 10 });
+    await tools.slip_edit.handler({ node_id: "clip-1", offset_seconds: 2 });
+    const script = mockedSendCommand.mock.calls.at(-1)[0] as string;
+    expect(script).toContain("past this clip's real media duration of 10.000s (ffprobe)");
+  });
+});
+
+describe("source evidence preserves lookup failures", () => {
+  it.each(["trim", "slip"])("%s preserves a missing-clip error and never probes or mutates", async operation => {
+    const failure = { success: false, error: "Clip not found" };
+    mockedSendCommand.mockResolvedValueOnce(failure);
+    const probe = vi.fn().mockResolvedValue(10);
+    const tool = operation === "trim"
+      ? getTimelineTools(bridgeOptions, { probeMediaDurationSeconds: probe }).trim_clip
+      : getAdvancedTools(bridgeOptions, { probeMediaDurationSeconds: probe }).slip_edit;
+    const args = operation === "trim" ? { node_id: "missing", new_out_seconds: 12 } : { node_id: "missing", offset_seconds: 2 };
+    await expect(tool.handler(args as never)).resolves.toEqual(failure);
+    expect(probe).not.toHaveBeenCalled();
+    expect(mockedSendCommand).toHaveBeenCalledTimes(1);
   });
 });

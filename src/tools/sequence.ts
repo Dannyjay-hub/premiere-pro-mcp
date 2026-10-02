@@ -1,7 +1,7 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, extname, join, win32 } from "node:path";
+import { basename, dirname, extname, join, resolve, win32 } from "node:path";
 import { describePresetFolder } from "./encoder-formats.js";
 
 /**
@@ -100,6 +100,13 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
               "creating a sequence without a preset opens a modal dialog in Premiere 26+, which would freeze scripting.",
           };
         }
+        // QE's newSequence silently ignores forward-slash preset paths on Windows
+        // (#714, same root cause as #691): resolve to native separators, and give
+        // a missing file its own precise error instead of the bare QE failure.
+        const resolvedPresetPath = resolve(presetPath);
+        if (!existsSync(resolvedPresetPath)) {
+          return { success: false as const, error: `Preset file not found: ${resolvedPresetPath}` };
+        }
 
         const script = buildToolScript(`
           var beforeSequenceIds = {};
@@ -107,7 +114,7 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
             beforeSequenceIds[String(app.project.sequences[i].sequenceID)] = true;
           }
           app.enableQE();
-          qe.project.newSequence("${escapeForExtendScript(args.name)}", "${escapeForExtendScript(presetPath)}");
+          qe.project.newSequence("${escapeForExtendScript(args.name)}", "${escapeForExtendScript(resolvedPresetPath)}");
           var seq = app.project.activeSequence;
           if (!seq || seq.name !== "${escapeForExtendScript(args.name)}") {
             return __error("Failed to create sequence from preset: ${escapeForExtendScript(presetPath)}");
@@ -702,16 +709,25 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
       },
       handler: async (args: { name: string; preset_path: string }) => {
         // createNewSequenceFromPreset is not a real API (missing in 26.x) — use QE.
+        // QE's newSequence silently ignores forward-slash preset paths on Windows
+        // (#691): the call does not throw but the previous sequence stays active,
+        // so the name check below would report a bare "Failed to create" error.
+        // resolve() normalizes to native separators; a missing file gets its own
+        // precise error instead of leaking into the generic one.
+        const presetPath = resolve(args.preset_path);
+        if (!existsSync(presetPath)) {
+          return { success: false as const, error: `Preset file not found: ${presetPath}` };
+        }
         const script = buildToolScript(`
           var beforeSequenceIds = {};
           for (var i = 0; i < app.project.sequences.numSequences; i++) {
             beforeSequenceIds[String(app.project.sequences[i].sequenceID)] = true;
           }
           app.enableQE();
-          qe.project.newSequence("${escapeForExtendScript(args.name)}", "${escapeForExtendScript(args.preset_path)}");
+          qe.project.newSequence("${escapeForExtendScript(args.name)}", "${escapeForExtendScript(presetPath)}");
           var seq = app.project.activeSequence;
           if (!seq || seq.name !== "${escapeForExtendScript(args.name)}") {
-            return __error("Failed to create sequence from preset: ${escapeForExtendScript(args.preset_path)}");
+            return __error("Failed to create sequence from preset: ${escapeForExtendScript(presetPath)}");
           }
           var sequenceId = String(seq.sequenceID);
           if (beforeSequenceIds[sequenceId]) {
@@ -721,7 +737,7 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
           if (!created || String(created.sequenceID) !== sequenceId) {
             return __error("Premiere did not add the new sequence to the project collection; no creation success is reported.");
           }
-          return __result({ created: true, verified: true, name: created.name, id: sequenceId, presetUsed: "${escapeForExtendScript(args.preset_path)}" });
+          return __result({ created: true, verified: true, name: created.name, id: sequenceId, presetUsed: "${escapeForExtendScript(presetPath)}" });
         `);
         return sendCommand(script, bridgeOptions);
       },

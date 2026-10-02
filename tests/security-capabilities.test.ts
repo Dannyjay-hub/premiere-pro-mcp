@@ -618,8 +618,8 @@ describe("isToolPermitted", () => {
 
   it("agrees with capabilityForTool for every capability in the profile", () => {
     const config = resolveCapabilities("edit");
-    expect(capabilityForTool("trim_clip")).toBe("edit");
-    expect(isToolPermitted("trim_clip", config)).toBe(true);
+    expect(capabilityForTool("move_clip")).toBe("edit");
+    expect(isToolPermitted("move_clip", config)).toBe(true);
   });
 });
 
