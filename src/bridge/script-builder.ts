@@ -1263,7 +1263,7 @@ function __exportStillFrame(outputPath, ticks) {
 // Result helpers for per-clip edit functions that run once for a clip and once
 // for each of its linked partners.
 function __editOk(data) { return { ok: true, data: data }; }
-function __editFail(message) { return { ok: false, error: String(message) }; }
+function __editFail(message, data) { var failure = { ok: false, error: String(message) }; if (data) failure.data = data; return failure; }
 
 // Colour parameters report getValue() as a packed 64-bit integer (live 25.2:
 // 0xff0014002800a0c8 for ARGB 255,20,40,160), which a JS double cannot hold
@@ -1319,10 +1319,47 @@ function __findOpenProject(path) {
 // a linked clip), then verify every removed clip is gone. Every clip's track
 // lock and remove() are checked before anything is removed, so a partner on a
 // locked track refuses the whole removal instead of leaving its audio behind.
-function __removeClipAndPartners(result, includeLinked) {
+function __removalIdentity(sequence) {
+  try {
+    var documentId = app.project.documentID, sequenceId = sequence && sequence.sequenceID;
+    var values = [documentId, sequenceId];
+    for (var vi = 0; vi < values.length; vi++) if ((typeof values[vi] !== "string" && typeof values[vi] !== "number") || (typeof values[vi] === "number" && !isFinite(values[vi])) || !/\\S/.test(String(values[vi]))) return null;
+    return { projectDocumentId:String(documentId), sequenceId:String(sequenceId) };
+  } catch (identityError) { return null; }
+}
+
+function __removalThrowReceipt(ids, identity) {
+  var gone = [], remaining = [], readable = true;
+  try {
+    var sequence = app.project.activeSequence;
+    var currentIdentity = __removalIdentity(sequence);
+    if (!identity || !currentIdentity || currentIdentity.projectDocumentId !== identity.projectDocumentId || currentIdentity.sequenceId !== identity.sequenceId) throw new Error("Removal project or sequence identity is unavailable or changed");
+    var families = [sequence.videoTracks, sequence.audioTracks], present = {};
+    for (var ft = 0; ft < families.length; ft++) {
+      var trackCount = families[ft] && families[ft].numTracks;
+      if (typeof trackCount !== "number" || !isFinite(trackCount) || trackCount < 0 || Math.floor(trackCount) !== trackCount) throw new Error("Track collection is unreadable");
+      for (var ti = 0; ti < trackCount; ti++) {
+        var track = families[ft][ti];
+        var clips = track && track.clips, clipCount = clips && clips.numItems;
+        if (typeof clipCount !== "number" || !isFinite(clipCount) || clipCount < 0 || Math.floor(clipCount) !== clipCount) throw new Error("Clip collection is unreadable");
+        for (var ci = 0; ci < clipCount; ci++) {
+          var clipId = clips[ci] && clips[ci].nodeId;
+          if ((typeof clipId !== "string" && typeof clipId !== "number") || (typeof clipId === "number" && !isFinite(clipId)) || !/\\S/.test(String(clipId))) throw new Error("Clip identity is unreadable");
+          present["$" + String(clipId)] = true;
+        }
+      }
+    }
+    for (var ri = 0; ri < ids.length; ri++) {
+      if (present["$" + ids[ri]]) remaining.push(ids[ri]); else gone.push(ids[ri]);
+    }
+  } catch (readError) { readable = false; }
+  return { mutationAttempted:true, timelineChanged:gone.length > 0 ? true : (readable ? false : null), mutationOutcome:gone.length > 0 ? "changed" : (readable ? "unchanged" : "unknown"), verified:false, readbackComplete:readable, removedClipIds:gone, remainingClipIds:remaining };
+}
+
+function __removeClipAndPartners(result, includeLinked, validatedPartners) {
   var targets = [result];
   if (includeLinked) {
-    var partners = __linkedPartnerClips(result);
+    var partners = validatedPartners !== undefined ? validatedPartners : __linkedPartnerClips(result);
     for (var p = 0; p < partners.length; p++) targets.push(partners[p]);
   }
   var seq = app.project.activeSequence;
@@ -1341,12 +1378,15 @@ function __removeClipAndPartners(result, includeLinked) {
     if (typeof located.clip.remove !== "function") return __editFail("Premiere does not expose remove() for " + names[t] + " on " + label + ". Nothing was changed.");
   }
   var removed = [];
+  var removalIdentity = __removalIdentity(seq);
   for (var r = 0; r < targets.length; r++) {
     try {
       targets[r].clip.remove(false, false);
       removed.push(names[r]);
     } catch (eRemove) {
-      return __editFail((removed.length ? "The timeline changed: " + removed.join(", ") + " was removed, but " : "") + "Premiere could not remove " + names[r] + ": " + eRemove.toString() + (removed.length ? ". The linked clips are now out of sync; inspect the timeline." : ". Nothing was changed."));
+      var receipt = __removalThrowReceipt(ids.slice(0, r + 1), removalIdentity);
+      var evidence = receipt.timelineChanged === true ? " The timeline changed; inspect the linked clips." : (receipt.timelineChanged === null ? " Removal may have changed the timeline; readback is unavailable. Inspect the timeline." : " The attempted removal targets remain on the timeline.");
+      return __editFail("Premiere threw while removing " + names[r] + ": " + eRemove.toString() + evidence, receipt);
     }
   }
   var left = [];
@@ -1358,6 +1398,66 @@ function __removeClipAndPartners(result, includeLinked) {
   return __editOk({ removed: true, clipName: names[0], removedClipIds: ids, linkedPartnersRemoved: ids.length - 1 });
 }
 
+// Marker writes may use a different undo surface than QE. Keep a conservative
+// barrier in the persistent CEP engine, scoped by documented project.documentID.
+function __markerUndoState(create) {
+  try {
+    if (typeof $ === "undefined" || !$.global) return null;
+    var state = $.global.__premiereMcpMarkerUndoBarrierV1;
+    if (!state && create) {
+      state = { unknownProject: false, entries: [] };
+      $.global.__premiereMcpMarkerUndoBarrierV1 = state;
+      if ($.global.__premiereMcpMarkerUndoBarrierV1 !== state) return null;
+    }
+    if (state && (!(state.entries instanceof Array) || typeof state.unknownProject !== "boolean")) return null;
+    if (state) for (var si = 0; si < state.entries.length; si++) {
+      var saved = state.entries[si];
+      if (!saved || typeof saved.projectId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(saved.projectId) ||
+        (saved.index !== null && (typeof saved.index !== "number" || !isFinite(saved.index) || saved.index < 0 || Math.floor(saved.index) !== saved.index))) return null;
+    }
+    return state || { unknownProject: false, entries: [] };
+  } catch (barrierReadError) { return null; }
+}
+function __markerUndoProjectId() {
+  try {
+    var id = String(app.project.documentID || "");
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id.toLowerCase() : null;
+  } catch (identityError) { return null; }
+}
+function __rememberMarkerUndoBarrier(index) {
+  var state = __markerUndoState(true);
+  if (!state) return { ok: false, error: "The CEP engine cannot persist a marker undo barrier; no marker write was attempted." };
+  __markerWriteAttempted = true;
+  var projectId = __markerUndoProjectId();
+  if (!projectId) { state.unknownProject = true; return { ok: true }; }
+  var safeIndex = typeof index === "number" && isFinite(index) && index >= 0 && Math.floor(index) === index ? index : null;
+  for (var i = 0; i < state.entries.length; i++) {
+    var entry = state.entries[i];
+    if (entry.projectId === projectId) {
+      entry.index = entry.index === null || safeIndex === null ? null : Math.max(entry.index, safeIndex);
+      return { ok: true };
+    }
+  }
+  if (state.entries.length >= 128) { state.unknownProject = true; return { ok: true }; }
+  state.entries.push({ projectId: projectId, index: safeIndex });
+  return { ok: true };
+}
+function __markerUndoBarrier(direction, count, index, acknowledged) {
+  var state = __markerUndoState(false);
+  if (!state) return { ok: false, error: "The CEP marker undo barrier could not be read; no " + direction + " was attempted." };
+  var projectId = __markerUndoProjectId(), blocked = state.unknownProject;
+  for (var i = 0; i < state.entries.length; i++) {
+    var entry = state.entries[i];
+    if (entry.projectId !== projectId && projectId !== null) continue;
+    if (entry.index === null || projectId === null ||
+      (direction === "undo" && index - count < entry.index) ||
+      (direction === "redo" && index < entry.index && index + count >= entry.index)) blocked = true;
+  }
+  if (!blocked) return { ok: true };
+  if (acknowledged) return { ok: true, warning: "Marker reversal through QE is not verified. You acknowledged reversing or restoring prior non-marker QE actions; inspect markers separately." };
+  return { ok: false, error: "A marker write occurred at this undo boundary, but QE cannot verify that its steps reverse the marker. No " + direction + " was attempted. Inspect markers separately; pass acknowledge_untracked_markers:true only to deliberately reverse or restore prior non-marker QE actions." };
+}
+
 // EXPERIMENTAL (undocumented QE DOM). Step Premiere's project undo stack with
 // QE and check every step against qe.project.undoStackIndex(), which moved by
 // exactly one per undone or redone action in live 25.2 testing. The check is
@@ -1367,7 +1467,7 @@ function __removeClipAndPartners(result, includeLinked) {
 // different amount or the wrong way), "index_unreadable" (a step ran but the
 // index could not be read), or "rejected" (Premiere threw). The last three may
 // have changed the project and must not be treated as "nothing happened".
-function __qeUndoSteps(direction, count) {
+function __qeUndoSteps(direction, count, acknowledgeMarkers) {
   app.enableQE();
   var stack = null;
   try { stack = qe.project; } catch (eQe) {}
@@ -1377,6 +1477,8 @@ function __qeUndoSteps(direction, count) {
   };
   var start = readIndex();
   if (start === null) return { ok: false, status: "unavailable", error: "This Premiere host does not expose qe.project.undoStackIndex(), so " + direction + " cannot be checked. No " + direction + " was attempted.", done: 0 };
+  var markerBarrier = __markerUndoBarrier(direction, count, start, acknowledgeMarkers === true);
+  if (!markerBarrier.ok) return { ok: false, status: "marker_boundary", error: markerBarrier.error, done: 0, startIndex: start, index: start };
   var step = direction === "undo" ? -1 : 1;
   var done = 0;
   var index = start;
@@ -1421,7 +1523,7 @@ function __qeUndoSteps(direction, count) {
       done: done, startIndex: start, index: index
     };
   }
-  return { ok: true, status: "stack_verified", done: done, startIndex: start, index: index };
+  return { ok: true, status: "stack_verified", markerWarning: markerBarrier.warning || null, done: done, startIndex: start, index: index };
 }
 
 // Result of an undo/redo tool from a __qeUndoSteps outcome. An unexpected or
@@ -1431,6 +1533,7 @@ function __undoStepsResult(outcome, doneKey) {
   var summary = { undoStackIndexBefore: outcome.startIndex, undoStackIndexAfter: outcome.index, stackStatus: outcome.status,
     scope: "Premiere's undo history is project-wide: this steps the most recent project actions, whichever sequence they touched." };
   summary[doneKey] = outcome.done;
+  if (outcome.markerWarning) { summary.markerUndoWarning = outcome.markerWarning; summary.untrackedMarkersAcknowledged = true; }
   // Anything that may have moved the stack, including a run that stopped part
   // way after undoing some steps, is committed_unverified with a do-not-retry
   // warning, so an agent does not undo more of the user's work.
@@ -2150,6 +2253,7 @@ function __jsonStringify(obj) {
 // none. __result reports how many entries the command added so an agent can
 // undo exactly that call.
 var __undoStart = null;
+var __markerWriteAttempted = false;
 function __readUndoIndex() {
   try {
     app.enableQE();
@@ -2160,7 +2264,17 @@ function __readUndoIndex() {
   }
 }
 
+function __markerWriteReceipt(data) {
+  if (!__markerWriteAttempted) return data;
+  if (!data || typeof data !== "object" || data instanceof Array) data = {};
+  var barrier = __rememberMarkerUndoBarrier(__readUndoIndex());
+  data.qeMarkerUndoVerified = false;
+  data.markerUndoBarrier = barrier.ok;
+  if (!data.markerUndoWarning) data.markerUndoWarning = "Marker reversal through QE is not verified. The undo tools protect this observed marker boundary; inspect markers separately.";
+  return data;
+}
 function __result(data) {
+  data = __markerWriteReceipt(data);
   if (__undoStart !== null && data && typeof data === "object" && !(data instanceof Array)) {
     var undoNow = __readUndoIndex();
     if (undoNow !== null && undoNow > __undoStart) {
@@ -2178,6 +2292,16 @@ function __error(msg, extraData) {
   if (extraData && typeof extraData === "object") {
     data = {};
     for (var key in extraData) if (extraData.hasOwnProperty(key)) data[key] = extraData[key];
+  }
+  data = __markerWriteReceipt(data);
+  if (__markerWriteAttempted && data) {
+    // A throwing DOM call may have changed the marker; an attempted write
+    // alone cannot establish that it committed. Preserve observed changes.
+    data.timelineChanged = data.timelineChanged === true ? true : null;
+    data.outcome = data.timelineChanged === true ? "committed_unverified" : "failed";
+    if (data.timelineChanged !== true) data.mutationOutcome = "unknown";
+    data.mutationAttempted = true;
+    data.verified = false;
   }
   if (__undoStart !== null) {
     var undoNow = __readUndoIndex();
@@ -2241,6 +2365,7 @@ export function buildScript(code: string): string {
   return `(function() {
   try {
     ${undoStart}
+    __markerWriteAttempted = false;
     ${code}
   } catch(e) {
     return __error(e.toString());

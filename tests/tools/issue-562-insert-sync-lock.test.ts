@@ -14,7 +14,7 @@ import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getSourceMonitorTools } from "../../src/tools/source-monitor.js";
 import { getTimelineTools } from "../../src/tools/timeline.js";
 import { confirmationToken, getEditPlanTools } from "../../src/tools/edit-plans.js";
-import { staticEditPlanTokenStore } from "../helpers/static-edit-plan-token-store.js";
+import { staticEditPlanTokenStore, fixtureEditPlanBinding } from "../helpers/static-edit-plan-token-store.js";
 import { getCompetitorGapTools } from "../../src/tools/competitor-gaps.js";
 import { getSpotWorkflowTools, spotWorkflowConfirmationToken } from "../../src/tools/spot-workflows.js";
 
@@ -280,6 +280,7 @@ function issue562Host(options: {
     app: {
       enableQE() {},
       project: {
+        documentID: "test-project",
         activeSequence: seq,
         sequences: { 0: seq, get numSequences() { return 1; } },
         rootItem: { children: { numItems: 1, 0: source } },
@@ -596,6 +597,7 @@ describe("issue #562 — insert_from_source honors sync lock", () => {
       auditSink: vi.fn(),
       tokenStore: staticEditPlanTokenStore,
     });
+    staticEditPlanTokenStore.issue(confirmationToken(plan), fixtureEditPlanBinding(plan, "seq-562"));
     const script = await scriptFor(tools.apply_edit_plan, { plan, confirmation_token: confirmationToken(plan) });
     const { sandbox } = issue562Host({ displacePreRazoredTail: true });
     const result = runScript(script, sandbox);
@@ -732,6 +734,7 @@ describe("issue #562 — other Sequence.insertClip callers use the same helper",
       operationIdFactory: () => "apply-562",
       tokenStore: staticEditPlanTokenStore,
     });
+    staticEditPlanTokenStore.issue(confirmationToken(plan), fixtureEditPlanBinding(plan, "seq-562"));
     await tools.apply_edit_plan.handler({ plan, confirmation_token: confirmationToken(plan) });
     expect(String(mockedSendCommand.mock.calls[0][0])).toContain("__insertClipHonoringSyncLock(");
 
