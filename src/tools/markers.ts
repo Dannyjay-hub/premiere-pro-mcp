@@ -301,7 +301,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
     },
 
     list_markers: {
-      description: "List markers on the active sequence, or on a source project item that exposes a marker collection. A timeline-clip node_id returns a clean error instead of a raw TypeError.",
+      description: "List markers on the active sequence, or on a source project item that exposes a marker collection, including marker GUID and color when readable. A timeline-clip node_id returns a clean error instead of a raw TypeError.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -331,6 +331,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
 
         const script = buildToolScript(`
           ${markerTarget}
+          function __markerGuid(marker) { try { return marker.guid ? String(marker.guid) : null; } catch (guidError) { return null; } }
           
           var list = [];
           var marker = markers.getFirstMarker();
@@ -338,6 +339,8 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
             list.push({
               name: marker.name,
               comments: marker.comments,
+              guid: __markerGuid(marker),
+              color: (function () { try { return marker.getColorByIndex(); } catch (colorError) { return null; } })(),
               startSeconds: marker.start.seconds,
               endSeconds: marker.end.seconds,
               type: marker.type

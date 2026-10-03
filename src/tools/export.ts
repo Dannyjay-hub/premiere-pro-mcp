@@ -1,6 +1,6 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { createReadStream, readFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, unlinkSync, existsSync, statSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { extname, join, resolve } from "node:path";
@@ -13,6 +13,69 @@ const execFileAsync = promisify(execFile);
 const VIDEO_QC_TIMEOUT_MS = 300_000;
 const MAX_FAILURE_DIAGNOSTIC_LENGTH = 4_096;
 export const MAX_CAPTURE_FRAME_BYTES = 8 * 1024 * 1024;
+
+const FCP_TRANSLATION_REPORT_LINE_LIMIT = 40;
+
+export function parseFcpTranslationReport(contents: string, lineLimit = FCP_TRANSLATION_REPORT_LINE_LIMIT): {
+  lines: string[];
+  issues: Array<{ sequence: string | null; track: string | null; effect: string | null; clip: string | null }>;
+} {
+  const lines = contents.split(/\r?\n/).slice(0, Math.max(0, lineLimit));
+  let sequence: string | null = null;
+  let track: string | null = null;
+  let clip: string | null = null;
+  const issues: Array<{ sequence: string | null; track: string | null; effect: string | null; clip: string | null }> = [];
+  for (const line of lines) {
+    const field = (pattern: RegExp) => line.match(pattern)?.[1]?.trim().replace(/^['"“]|['"”]$/g, "") ?? null;
+    const nextSequence = field(/^\s*sequence(?:\s+name)?\s*[:=]\s*(.+)$/i);
+    if (nextSequence) { sequence = nextSequence; track = null; clip = null; }
+    const nextTrack = field(/^\s*((?:(?:video|audio)\s+)?track(?:\s+name)?\s*[:=]\s*.+)$/i);
+    if (nextTrack) { track = nextTrack; clip = null; }
+    clip = field(/^\s*clip(?:\s+name)?\s*[:=]\s*(.+)$/i) ?? clip;
+    const effect = field(/^\s*(?:untranslated\s+)?effect\s*[:=]\s*(.+)$/i)
+      ?? field(/^\s*(.+?)\s+(?:could not be translated|is not supported|was not translated)\.?\s*$/i);
+    if (effect) issues.push({ sequence, track, effect, clip });
+  }
+  return { lines, issues };
+}
+
+function fileSnapshot(filePath: string): { exists: boolean; size: number; mtimeMs: number } {
+  try {
+    const stat = statSync(filePath);
+    return { exists: stat.isFile(), size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch { return { exists: false, size: 0, mtimeMs: 0 }; }
+}
+
+function changedOutput(filePath: string, before: ReturnType<typeof fileSnapshot>): ReturnType<typeof fileSnapshot> | null {
+  const after = fileSnapshot(filePath);
+  return after.exists && (!before.exists || after.size !== before.size || after.mtimeMs !== before.mtimeMs) ? after : null;
+}
+
+async function waitForFcpTranslationDialog(
+  outputPath: string,
+  startedAt: number,
+  before: ReturnType<typeof fileSnapshot>,
+  isCommandPending: () => boolean,
+): Promise<{ output: ReturnType<typeof fileSnapshot>; reportPath: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null> {
+  const directory = resolve(outputPath, "..");
+  while (isCommandPending()) {
+    const output = changedOutput(outputPath, before);
+    if (output) {
+      let names: string[] = [];
+      try { names = readdirSync(directory); } catch { /* output might be on a transient volume */ }
+      const reportName = names.find((name) => /^FCP Translation Results .*\.txt$/i.test(name)
+        && fileSnapshot(resolve(directory, name)).mtimeMs >= startedAt);
+      if (reportName) {
+        const reportPath = resolve(directory, reportName);
+        let contents = "";
+        try { contents = readFileSync(reportPath, "utf8"); } catch { /* retain modal detection with empty bounded details */ }
+        return { output, reportPath, parsed: parseFcpTranslationReport(contents) };
+      }
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+  return null;
+}
 
 export type ConformanceStatus = "pass" | "fail" | "not_evaluated";
 
@@ -1173,7 +1236,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_as_fcp_xml: {
-      description: "Export the active sequence as a Final Cut Pro XML file. Fails when Premiere writes no file or leaves a pre-existing output unchanged.",
+      description: "Export the active sequence as a Final Cut Pro XML file. Sequences with effects FCP XML cannot represent can make Premiere show a Translation Report modal after writing the XML; dismiss it in Premiere before any queued command can run. Detects the written XML and fresh report if the modal blocks the host. Default wait is 60 minutes for long sequences.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1181,10 +1244,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Full output file path (e.g., '/Users/me/export.xml')",
           },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for the host (default: 60 minutes for long sequences)." },
         },
         required: ["output_path"],
       },
-      handler: async (args: { output_path: string }) => {
+      handler: async (args: { output_path: string; timeout_minutes?: number }) => {
+        const timeoutMinutes = args.timeout_minutes ?? 60;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
+          return { success: false, error: "timeout_minutes must be between 1 and 240" };
+        }
+        const outputBefore = fileSnapshot(args.output_path);
+        const startedAt = Date.now();
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1206,7 +1276,36 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           }
           return __result({ exported: true, verified: true, outputPath: outputFile.fsName, format: "FCP XML" });
         `);
-        return sendCommand(script, bridgeOptions);
+        let commandPending = true;
+        const command = sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 })
+          .finally(() => { commandPending = false; });
+        const modal = waitForFcpTranslationDialog(args.output_path, startedAt, outputBefore, () => commandPending);
+        const first = await Promise.race([
+          command.then((result) => ({ kind: "command" as const, result })),
+          modal.then((details) => details ? ({ kind: "modal" as const, details }) : new Promise<never>(() => {})),
+        ]);
+        if (first.kind === "modal") {
+          return { success: true, data: {
+            outcome: "committed_unverified",
+            verified: false,
+            xmlWritten: true,
+            xmlSizeBytes: first.details.output.size,
+            translationReportPath: first.details.reportPath,
+            translationReportLines: first.details.parsed.lines,
+            untranslatedEffects: first.details.parsed.issues,
+            hostBlockedByModal: true,
+            message: "Premiere wrote the XML and opened a Translation Report dialog. Dismiss the dialog in Premiere before any other command can run; the export receipt is committed_unverified because Premiere has not returned its final result.",
+          } };
+        }
+        if (!first.result.success) {
+          const output = changedOutput(args.output_path, outputBefore);
+          if (output) return { success: true, data: {
+            outcome: "committed_unverified", verified: false, xmlWritten: true, xmlSizeBytes: output.size,
+            hostBlockedByModal: false,
+            message: "Premiere wrote the XML, but the host did not return a verified export receipt before timeout. Inspect the file before relying on it.",
+          } };
+        }
+        return first.result;
       },
     },
 
@@ -1493,7 +1592,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_omf: {
-      description: "Export the active sequence as an OMF file (Open Media Framework, for audio post-production)",
+      description: "Export the active sequence as an OMF file (Open Media Framework, for audio post-production). Long sequences can use a longer wait (default 60 minutes); if Premiere writes the file but times out, the receipt includes its size as committed_unverified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1529,6 +1628,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: "Include pan information in the OMF (default: false)",
           },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for Premiere to write the OMF (default: 60 minutes for long sequences)." },
         },
         required: ["output_path"],
       },
@@ -1541,7 +1641,13 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         trim_audio_files?: boolean;
         handle_frames?: number;
         include_pan?: boolean;
+        timeout_minutes?: number;
       }) => {
+        const timeoutMinutes = args.timeout_minutes ?? 60;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
+          return { success: false, error: "timeout_minutes must be between 1 and 240" };
+        }
+        const outputBefore = fileSnapshot(args.output_path);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1569,7 +1675,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           
           return __result({ exported: true, outputPath: outputFile.fsName, format: "OMF", verified: true });
         `);
-        return sendCommand(script, { ...bridgeOptions, timeoutMs: 120000 });
+        const result = await sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 });
+        if (!result.success) {
+          const output = changedOutput(args.output_path, outputBefore);
+          if (output) return { success: true, data: {
+            outcome: "committed_unverified", verified: false, outputPath: args.output_path, outputSizeBytes: output.size, format: "OMF",
+            message: "Premiere wrote the OMF, but did not return a verified export receipt before timeout. Inspect the file before relying on it.",
+          } };
+        }
+        return result;
       },
     },
 

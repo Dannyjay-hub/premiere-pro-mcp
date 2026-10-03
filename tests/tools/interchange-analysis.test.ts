@@ -149,13 +149,14 @@ describe("FCPXML inspection and approved-root reference verification", () => {
     expect(result).toMatchObject({
       success: true,
       data: {
-        checkedReferenceCount: 5,
+        checkedReferenceCount: 4,
+        generatedNoFileCount: 1,
         references: [
           { assetId: "r1", status: "available", path: allowedMedia },
           { assetId: "r2", status: "missing", path: missingMedia },
           { assetId: "r3", status: "outside_allowed_roots" },
           { assetId: "r4", status: "non_file_url" },
-          { assetId: "r5", status: "missing_source" },
+          { assetId: "r5", status: "generated_no_file" },
         ],
       },
     });

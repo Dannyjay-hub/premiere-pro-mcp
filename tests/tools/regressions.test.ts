@@ -29,6 +29,7 @@ import { getMediaTools } from "../../src/tools/media.js";
 import { getTextTools } from "../../src/tools/text.js";
 import { getKeyframeTools } from "../../src/tools/keyframes.js";
 import { getCaptionTools } from "../../src/tools/captions.js";
+import { getInspectionTools } from "../../src/tools/inspection.js";
 import { getSequenceTools } from "../../src/tools/sequence.js";
 import { getPlayheadTools } from "../../src/tools/playhead.js";
 import { getAudioTools } from "../../src/tools/audio.js";
@@ -226,6 +227,15 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
     expect(script).toContain("startSeconds: marker.start.seconds");
     expect(script).toContain("endSeconds: marker.end.seconds");
     expect(script).not.toContain("__ticksToSeconds(marker.start.ticks)");
+    expect(script).toContain("guid: __markerGuid(marker)");
+    expect(script).toContain("marker.getColorByIndex()");
+  });
+
+  it("keeps zero-based media track strings and adds 1-based track labels", async () => {
+    const script = await scriptFor(getInspectionTools(bridgeOptions).get_used_media_report, {});
+    expect(script).toContain('tracks.push(trackType + " " + t)');
+    expect(script).toContain('trackLabel: trackType + (t + 1)');
+    expect(script).toContain("mediaMap[key].trackDetails = trackDetails");
   });
 
   it("delete_marker still compares ticks against ticks", async () => {
