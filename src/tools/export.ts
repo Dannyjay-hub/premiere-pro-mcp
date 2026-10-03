@@ -51,6 +51,10 @@ function changedOutput(filePath: string, before: ReturnType<typeof fileSnapshot>
   return after.exists && (!before.exists || after.size !== before.size || after.mtimeMs !== before.mtimeMs) ? after : null;
 }
 
+function isBridgeTimeout(error: string | undefined): boolean {
+  return typeof error === "string" && /timed?\s*out|not finish within|panel appears stuck/i.test(error);
+}
+
 async function waitForFcpTranslationDialog(
   outputPath: string,
   startedAt: number,
@@ -1297,7 +1301,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             message: "Premiere wrote the XML and opened a Translation Report dialog. Dismiss the dialog in Premiere before any other command can run; the export receipt is committed_unverified because Premiere has not returned its final result.",
           } };
         }
-        if (!first.result.success) {
+        if (!first.result.success && isBridgeTimeout(first.result.error)) {
           const output = changedOutput(args.output_path, outputBefore);
           if (output) return { success: true, data: {
             outcome: "committed_unverified", verified: false, xmlWritten: true, xmlSizeBytes: output.size,
@@ -1676,7 +1680,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           return __result({ exported: true, outputPath: outputFile.fsName, format: "OMF", verified: true });
         `);
         const result = await sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 });
-        if (!result.success) {
+        if (!result.success && isBridgeTimeout(result.error)) {
           const output = changedOutput(args.output_path, outputBefore);
           if (output) return { success: true, data: {
             outcome: "committed_unverified", verified: false, outputPath: args.output_path, outputSizeBytes: output.size, format: "OMF",

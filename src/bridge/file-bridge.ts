@@ -566,11 +566,7 @@ async function sendCommandUnchecked(
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
 
-<<<<<<< HEAD
     return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
-=======
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
->>>>>>> f53845b2 (fix: handle long Premiere host operations)
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);

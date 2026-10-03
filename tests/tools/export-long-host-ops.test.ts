@@ -65,6 +65,25 @@ describe("long host export receipts", () => {
     expect(result).toMatchObject({ success: true, data: { outcome: "committed_unverified", xmlWritten: true, xmlSizeBytes: 9, hostBlockedByModal: false } });
   });
 
+  it("preserves explicit Premiere export failures even when a partial output file changed", async () => {
+    const xmlPath = join(root, "rejected.xml");
+    writeFileSync(xmlPath, "old");
+    mockedSendCommand.mockImplementationOnce(async () => {
+      writeFileSync(xmlPath, "partial xml");
+      return { success: false, error: "Premiere rejected the XML export." };
+    });
+    const xmlFailure = await getExportTools(bridgeOptions).export_as_fcp_xml.handler({ output_path: xmlPath });
+    expect(xmlFailure).toEqual({ success: false, error: "Premiere rejected the XML export." });
+
+    const omfPath = join(root, "rejected.omf");
+    mockedSendCommand.mockImplementationOnce(async () => {
+      writeFileSync(omfPath, "partial omf");
+      return { success: false, error: "Premiere rejected the OMF export." };
+    });
+    const omfFailure = await getExportTools(bridgeOptions).export_omf.handler({ output_path: omfPath });
+    expect(omfFailure).toEqual({ success: false, error: "Premiere rejected the OMF export." });
+  });
+
   it("uses the requested long timeout on OMF and EDL host readback tools", async () => {
     const tools = getExportTools(bridgeOptions);
     await tools.export_omf.handler({ output_path: join(root, "mix.omf"), timeout_minutes: 42 } as never);
