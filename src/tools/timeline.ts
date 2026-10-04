@@ -1,5 +1,6 @@
 import { probeMediaDurationTicks } from "./media-evidence.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
+import { rippleTimeoutMs } from "./ripple-timeout.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -182,10 +183,12 @@ export function getTimelineTools(
             description:
               "Also remove the clip's linked audio/video partners (default: true). A ripple removal always includes them, since closing the gap on one side only would desync the timeline.",
           },
+          allow_large_ripple: { type: "boolean", description: "Allow a ripple above large_ripple_threshold after its read-only mover estimate." },
+          large_ripple_threshold: { type: "integer", minimum: 1, maximum: 5000, description: "Mover count above which ripple removal refuses unless allow_large_ripple is true (default: 400)." },
         },
         required: ["node_id"],
       },
-      handler: async (args: { node_id: string; ripple?: boolean; include_linked?: boolean }) => {
+      handler: async (args: { node_id: string; ripple?: boolean; include_linked?: boolean; allow_large_ripple?: boolean; large_ripple_threshold?: number }) => {
         const nodeId = escapeForExtendScript(args.node_id);
         if (args.ripple === true) {
           if (args.include_linked === false) {
@@ -194,9 +197,21 @@ export function getTimelineTools(
               error: "A ripple removal always includes linked partners; use ripple_delete with scope 'own_track' to close the gap on one track only (this desyncs other tracks).",
             };
           }
-          return sendCommand(
-            buildToolScript(rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false })),
+          const threshold = args.large_ripple_threshold ?? 400;
+          if (!Number.isInteger(threshold) || threshold < 1 || threshold > 5000) return { success: false, error: "large_ripple_threshold must be an integer from 1 to 5000." };
+          const preflight = await sendCommand(
+            buildToolScript(rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: true, allowLargeRipple: true, largeRippleThreshold: threshold })),
             bridgeOptions,
+          );
+          if (!preflight.success) return preflight;
+          const counts = preflight.data as { totalMovers?: number; estimatedSeconds?: number } | undefined;
+          const movers = counts?.totalMovers ?? 0;
+          if (movers > threshold && args.allow_large_ripple !== true) {
+            return { success: false, error: `Large ripple refused before mutation: ${movers} clips would move (estimated ${counts?.estimatedSeconds ?? Math.ceil(movers * 0.15 + 0.5)} seconds). Pass allow_large_ripple: true to proceed.`, data: { movers, estimatedSeconds: counts?.estimatedSeconds, largeRippleThreshold: threshold, mutationOutcome: "not_applied", timelineChanged: false } };
+          }
+          return sendCommand(
+            buildToolScript(rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false, allowLargeRipple: args.allow_large_ripple === true, largeRippleThreshold: threshold })),
+            { ...bridgeOptions, timeoutMs: Math.max(bridgeOptions.timeoutMs ?? 30000, rippleTimeoutMs(movers)), mutationOnTimeout: true },
           );
         }
         const script = buildToolScript(`

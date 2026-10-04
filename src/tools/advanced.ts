@@ -48,6 +48,8 @@ export function getAdvancedTools(
             description:
               "Validate and report the shift plan without changing the timeline (default: false)",
           },
+          allow_large_ripple: { type: "boolean", description: "Allow a ripple above large_ripple_threshold after its preflight estimate." },
+          large_ripple_threshold: { type: "integer", minimum: 1, maximum: 5000, description: "Mover count above which ripple_delete refuses unless allow_large_ripple is true (default: 400)." },
         },
         required: ["node_id"],
       },
@@ -56,13 +58,25 @@ export function getAdvancedTools(
         scope?: "sync_locked" | "own_track";
         range_content?: "refuse" | "delete";
         dry_run?: boolean;
+        allow_large_ripple?: boolean;
+        large_ripple_threshold?: number;
       }) => {
         const nodeId = escapeForExtendScript(args.node_id);
         const scope = args.scope === "own_track" ? "own_track" : "sync_locked";
         const rangeDelete = args.range_content === "delete";
         const dryRun = args.dry_run === true;
-        const script = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun }));
-        return sendCommand(script, bridgeOptions);
+        const threshold = args.large_ripple_threshold ?? 400;
+        if (!Number.isInteger(threshold) || threshold < 1 || threshold > 5000) return { success: false, error: "large_ripple_threshold must be an integer from 1 to 5000." };
+        const preflightScript = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun: true, allowLargeRipple: true, largeRippleThreshold: threshold }));
+        const preflight = await sendCommand(preflightScript, bridgeOptions);
+        if (!preflight.success || dryRun) return preflight;
+        const counts = preflight.data as { totalMovers?: number; estimatedSeconds?: number } | undefined;
+        const movers = counts?.totalMovers ?? 0;
+        if (movers > threshold && args.allow_large_ripple !== true) return { success: false, error: `Large ripple refused before mutation: ${movers} clips would move (estimated ${counts?.estimatedSeconds ?? Math.ceil(movers * 0.15 + 0.5)} seconds). Pass allow_large_ripple: true to proceed.`, data: { movers, estimatedSeconds: counts?.estimatedSeconds, largeRippleThreshold: threshold, mutationOutcome: "not_applied", timelineChanged: false } };
+        // Budget 400ms per mover plus 30s startup/readback headroom, capped at 15 minutes.
+        const timeoutMs = Math.max(bridgeOptions.timeoutMs ?? 30000, Math.min(900000, 30000 + movers * 400));
+        const script = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun: false, allowLargeRipple: args.allow_large_ripple === true, largeRippleThreshold: threshold }));
+        return sendCommand(script, { ...bridgeOptions, timeoutMs, mutationOnTimeout: true });
       },
     },
 

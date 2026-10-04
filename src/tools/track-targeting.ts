@@ -4,6 +4,7 @@ import {
 } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { describePresetFolder } from "./encoder-formats.js";
+import { rippleTimeoutMs } from "./ripple-timeout.js";
 
 /**
  * Premiere's audio `Volume > Level` property is NOT in decibels. It is a
@@ -416,7 +417,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     razor_all_tracks: {
       description:
-        "Razor (split) all clips at the playhead position across all tracks, or at a specific time.",
+        "Razor (split) all clips at the playhead position across all tracks, or at a specific time. A read-only preflight counts eligible track cuts; the host wait scales by that count (400 ms per cut plus 30 seconds headroom, capped at 15 minutes).",
       parameters: {
         type: "object" as const,
         properties: {
@@ -433,7 +434,30 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         },
       },
       handler: async (args: { time_seconds?: number; track_type?: string }) => {
-        const trackType = args.track_type || "both";
+        const trackType = args.track_type === "video" || args.track_type === "audio" ? args.track_type : "both";
+        const cutTime = args.time_seconds !== undefined
+          ? `var ticks = __secondsToTicks(${args.time_seconds}).toString();`
+          : `var ticks = seq.getPlayerPosition().ticks;`;
+        const preflightScript = buildToolScript(`
+          var seq = app.project.activeSequence;
+          if (!seq) return __error("No active sequence");
+          ${cutTime}
+          function __trackSpans(domTrack, tickValue) {
+            var point = parseFloat(tickValue);
+            for (var c = 0; c < domTrack.clips.numItems; c++) {
+              var clip = domTrack.clips[c];
+              if (point > parseFloat(clip.start.ticks) && point < parseFloat(clip.end.ticks)) return true;
+            }
+            return false;
+          }
+          var eligibleTracks = 0;
+          if ("${trackType}" !== "audio") for (var v = 0; v < seq.videoTracks.numTracks; v++) if (__trackSpans(seq.videoTracks[v], ticks)) eligibleTracks++;
+          if ("${trackType}" !== "video") for (var a = 0; a < seq.audioTracks.numTracks; a++) if (__trackSpans(seq.audioTracks[a], ticks)) eligibleTracks++;
+          return __result({ eligibleTracks: eligibleTracks });
+        `);
+        const preflight = await sendCommand(preflightScript, bridgeOptions);
+        if (!preflight.success) return preflight;
+        const eligibleTracks = Number((preflight.data as { eligibleTracks?: number } | undefined)?.eligibleTracks) || 0;
         const script = buildToolScript(`
           app.enableQE();
           var seq = app.project.activeSequence;
@@ -526,7 +550,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             atSeconds: __ticksToSeconds(ticks)
           });
         `);
-        return sendCommand(script, bridgeOptions);
+        // Each eligible track cut is one structural mutation. Scale by the
+        // measured preflight count with startup/readback headroom and a cap.
+        return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(bridgeOptions.timeoutMs ?? 30000, rippleTimeoutMs(eligibleTracks)), mutationOnTimeout: true });
       },
     },
 

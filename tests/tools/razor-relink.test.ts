@@ -111,6 +111,10 @@ describe("razor_all_tracks keeps linked video and audio linked", () => {
         success: true,
         data: { relinkedGroups: 1, verified: true },
       });
+      expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+      expect(mockedSendCommand.mock.calls[0][0]).toContain("eligibleTracks");
+      expect(mockedSendCommand.mock.calls[1][1]).toMatchObject({ timeoutMs: 30800, mutationOnTimeout: true });
+      mockedSendCommand.mockClear();
     }
     expect(video.map((c) => c.start.seconds)).toEqual([0, 10, 30]);
     for (let i = 0; i < 3; i++) {

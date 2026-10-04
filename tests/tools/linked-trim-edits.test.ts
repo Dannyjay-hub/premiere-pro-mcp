@@ -190,11 +190,50 @@ describe("remove_from_timeline takes linked partners and verifies", () => {
   });
 
   it("routes ripple removal through the verified ripple delete, never remove(true, ...)", async () => {
-    mockedSendCommand.mockResolvedValue({ success: true, data: {} });
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { totalMovers: 12, estimatedSeconds: 3 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
     await timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true });
-    const script = String(mockedSendCommand.mock.calls.at(-1)?.[0]);
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+    const preflight = String(mockedSendCommand.mock.calls[0]?.[0]);
+    expect(preflight).toContain("dryRun: true");
+    const script = String(mockedSendCommand.mock.calls[1]?.[0]);
     expect(script).not.toMatch(/\.remove\(true/);
     expect(script).toContain("Ripple delete refused");
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 34800, mutationOnTimeout: true });
+  });
+
+  it("does not shorten a configured timeout for ripple removal", async () => {
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { totalMovers: 1, estimatedSeconds: 1 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
+    await getTimelineTools({ ...bridgeOptions, timeoutMs: 240_000 }).remove_from_timeline.handler({ node_id: "v1", ripple: true });
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 240_000, mutationOnTimeout: true });
+  });
+
+  it("refuses a large ripple from the read-only preflight unless explicitly opted in", async () => {
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { totalMovers: 401, estimatedSeconds: 61 } });
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("401 clips would move (estimated 61 seconds)"),
+      data: { mutationOutcome: "not_applied", timelineChanged: false, largeRippleThreshold: 400 },
+    });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(1);
+
+    mockedSendCommand.mockReset();
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { totalMovers: 401, estimatedSeconds: 61 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
+    await timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true, allow_large_ripple: true });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 190400, mutationOnTimeout: true });
+  });
+
+  it("validates large-ripple threshold before issuing a ripple command", async () => {
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true, large_ripple_threshold: 0 })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("large_ripple_threshold must be an integer from 1 to 5000"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
 
