@@ -154,6 +154,10 @@ if the connection is unavailable.
 
 ### Release highlights
 
+- **1.19.1 timeline fixes:** bounded sequence pages with continuation, measured unlinked-clip compatibility, and faster ripple movement with a large-edit opt-in and scaled host waits.
+- **1.19.1 safer handoffs:** AME queue-wide start requires explicit opt-in, malformed MOGRT files refuse before host import, and uncertain committed edits retain inspection guidance.
+- **1.19.1 transcript and capture fixes:** empty host-attached transcripts can accept guarded imports; stored values and still files do not establish temporal animation. A short actual video export is needed to assess keyframe curves.
+
 - **Editorial planning:** film evidence, transcript cleanup, caption authoring, shorts and chapter planning, rhythm and speaker layouts, timeline QA, and platform delivery plans.
 - **Cross-app handoff:** capability-aware workflow routes and guarded After Effects render-to-Premiere handoff.
 - **Editing correctness:** verified readback and explicit capability or committed-but-unverified failures across transition, import, effects, source identity, and track operations. Insert edits ripple QE sync-locked tracks instead of silently desyncing neighbours.
