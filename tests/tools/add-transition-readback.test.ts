@@ -43,10 +43,12 @@ function hostWith(place: (cutSeconds: number) => [number, number], existing: Arr
     domTransitions.push(placed);
   }
   let calls = 0;
+  const durations: string[] = [];
   const qeClips = clips.map((clip) => ({
     type: "Clip",
     start: clip.start,
-    addTransition: () => {
+    addTransition: (_transition: unknown, _head: unknown, duration: string) => {
+      durations.push(duration);
       calls += 1;
       if (options.ignoreAll) return;
       if (options.ignoreAfterFirst && calls > 1) return;
@@ -77,13 +79,20 @@ function hostWith(place: (cutSeconds: number) => [number, number], existing: Arr
     },
   };
   mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))));
-  return { calls: () => calls };
+  return { calls: () => calls, durations };
 }
 
 const add = (cut: number) =>
   tools.add_transition.handler({ transition_name: "Cross Dissolve", track_index: 0, cut_point_seconds: cut, duration_seconds: 1 }) as Promise<{ success: boolean; error?: string; data?: Record<string, unknown> }>;
 
 describe("add_transition readback", () => {
+  it("passes frame-grid timecode and discloses handle-limited duration", async () => {
+    const host = hostWith(cut => [cut, cut + 0.28]);
+    const result = await add(6);
+    expect(host.durations).toEqual(["00:00:01:00"]);
+    expect(result).toMatchObject({ success: true, data: { verified: true, durationMatched: false, durationSeconds: 0.28 } });
+  });
+
   it.each([
     [{ track_index: -1, cut_point_seconds: 6, duration_seconds: 1 }, "track_index"],
     [{ track_index: 0.5, cut_point_seconds: 6, duration_seconds: 1 }, "track_index"],

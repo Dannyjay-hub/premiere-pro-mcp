@@ -50,6 +50,25 @@
       return value;
     }
 
+    function hasSegmentText(document) {
+      function textIn(value) {
+        if (!value || typeof value !== "object") return false;
+        if (typeof value.text === "string" && value.text.trim()) return true;
+        return Object.keys(value).some(function (key) { return textIn(value[key]); });
+      }
+      return !!(document && Array.isArray(document.segments) && document.segments.some(textIn));
+    }
+
+    // Ignore JSON object-key order and numeric spelling, but compare every
+    // field, timing, speaker and array position. Raw revisions remain CAS keys.
+    function canonicalJSON(value) {
+      if (Array.isArray(value)) return "[" + value.map(canonicalJSON).join(",") + "]";
+      if (value && typeof value === "object") return "{" + Object.keys(value).sort().map(function (key) {
+        return JSON.stringify(key) + ":" + canonicalJSON(value[key]);
+      }).join(",") + "}";
+      return JSON.stringify(value);
+    }
+
     function validateImportArgs(args) {
       assertObject(args);
       assertOnlyKeys(args, ["projectItemId", "expectedProjectGuid", "expectedTranscriptRevision", "json", "confirmDestructive", "operationId"]);
@@ -63,7 +82,9 @@
       if (transcript.utf8ByteLength(json) > MAX_IMPORT_BYTES) {
         throw commandError("UXP_INVALID_ARGUMENT", "json exceeds the 24 KiB transcript-import bridge limit");
       }
-      try { transcript.parseTranscriptJSON(json); } catch (error) {
+      try {
+        if (!hasSegmentText(transcript.parseTranscriptJSON(json))) throw new Error("Transcript import requires nonempty segment text");
+      } catch (error) {
         throw commandError("UXP_INVALID_ARGUMENT", error && error.message ? error.message : "json is not valid transcript JSON");
       }
       return {
@@ -150,11 +171,11 @@
       try { transcript.parseTranscriptJSON(json); } catch (error) {
         throw commandError("UXP_VERIFICATION_FAILED", error && error.message ? error.message : "Premiere returned invalid transcript JSON");
       }
-      return { hasTranscript: true, transcriptRevision: transcript.transcriptRevision(json) };
+      return { hasTranscript: true, empty: !hasSegmentText(transcript.parseTranscriptJSON(json)), transcriptRevision: transcript.transcriptRevision(json), canonicalRevision: transcript.transcriptRevision(canonicalJSON(transcript.parseTranscriptJSON(json))) };
     }
 
     function requireExpectedSnapshot(snapshot, expected) {
-      if (!snapshot.hasTranscript && expected === null) return;
+      if ((!snapshot.hasTranscript || snapshot.empty) && expected === null) return;
       if (snapshot.hasTranscript && snapshot.transcriptRevision === expected) return;
       throw commandError("UXP_STALE_TRANSCRIPT", "The source transcript no longer matches expectedTranscriptRevision");
     }
@@ -188,7 +209,7 @@
         // Overwriting cannot be undone reliably: on Premiere 26.5.1 a live import
         // cleared an existing transcript and it could not be restored (#642).
         // Only import onto clips with no transcript until a verified restore exists.
-        if (before.hasTranscript) {
+        if (before.hasTranscript && !before.empty) {
           throw commandError("UXP_TRANSCRIPT_OVERWRITE_REFUSED", "This clip already has a transcript. Importing over it is disabled because a failed import can clear the existing transcript with no restore. Nothing was changed.");
         }
 
@@ -197,16 +218,14 @@
         // from passing the same stale preflight concurrently.
         const actionTarget = await resolveTarget(input), actionSnapshot = await transcriptSnapshot(actionTarget.clip);
         requireExpectedSnapshot(actionSnapshot, input.expectedTranscriptRevision);
-        let textSegments;
-        try { textSegments = ppro.Transcript.importFromJSON(input.json); } catch (error) {
-          throw commandError("UXP_INVALID_ARGUMENT", error && error.message ? error.message : "Premiere rejected transcript JSON");
-        }
-        if (!textSegments) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create transcript text segments");
         if (typeof actionTarget.project.lockedAccess !== "function" || typeof actionTarget.project.executeTransaction !== "function") {
           throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere transaction APIs are unavailable for transcript import");
         }
         let committed = false;
         actionTarget.project.lockedAccess(function () {
+          // Adobe TextSegments must be created in the same locked callback.
+          const textSegments = ppro.Transcript.importFromJSON(input.json);
+          if (!textSegments) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create transcript text segments");
           const action = ppro.Transcript.createImportTextSegmentsAction(textSegments, actionTarget.clip);
           if (!action) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create a transcript import action");
           committed = actionTarget.project.executeTransaction(function (compoundAction) {
@@ -220,7 +239,9 @@
         const requestedRevision = transcript.transcriptRevision(input.json);
         try {
           const afterTarget = await resolveTarget(input), after = await transcriptSnapshot(afterTarget.clip);
-          const verified = after.hasTranscript && after.transcriptRevision === requestedRevision;
+          const exact = after.transcriptRevision === requestedRevision;
+          const verified = after.hasTranscript && !after.empty && (exact || after.canonicalRevision === transcript.transcriptRevision(canonicalJSON(transcript.parseTranscriptJSON(input.json))));
+          const boundary = exact ? "transcript_export_exact_readback" : "transcript_export_canonical_content_readback";
           return {
             committed: true,
             verified,
@@ -230,14 +251,14 @@
             requestedTranscriptRevision: requestedRevision,
             after,
             outcome: verified ? "verified" : "committed_unverified",
-            verificationBoundary: verified ? "transcript_export_exact_readback" : "transcript_transaction_commit_with_readback_mismatch",
+            verificationBoundary: verified ? boundary : "transcript_transaction_commit_with_readback_mismatch",
             undoLabel: "Import transcript",
             operation: operation(
               verified,
-              verified ? "transcript_export_exact_readback" : "transcript_transaction_commit_with_readback_mismatch",
+              verified ? boundary : "transcript_transaction_commit_with_readback_mismatch",
               verified
-                ? [{ type: "transcript_export_sha256", expected: requestedRevision, actual: after.transcriptRevision }]
-                : [{ type: "transcript_export_sha256", expected: requestedRevision, actual: after.transcriptRevision }]
+                ? [{ type: "transcript_export_sha256", expected: requestedRevision, actual: after.transcriptRevision, canonicalContentVerified: verified && !exact }]
+                : [{ type: "transcript_export_sha256", expected: requestedRevision, actual: after.transcriptRevision, canonicalContentVerified: verified && !exact }]
             )
           };
         } catch (error) {

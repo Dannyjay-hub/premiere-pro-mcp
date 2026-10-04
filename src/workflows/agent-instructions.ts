@@ -15,6 +15,8 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "Use an explicit source/scene manifest for film coverage, marker or stringout review, independent picture/audio preferences, versioned notes and turnover. Preserve packet revisions and unresolved exceptions. Packet ranges are declarations; verify them in the host before separately previewing any edit or export.");
   route(["preview_edit_plan", "apply_edit_plan"],
     "For compound insert/remove edits, preview the exact plan, then apply only that unchanged plan with its issued confirmation token and required approval. Changed plans need a fresh preview.");
+  route(["get_active_sequence", "get_sequence_structure", "get_full_sequence_info", "get_timeline_gaps"],
+    "Sequence reads return bounded pages, default 50 clips or gaps. Keep track counts and pagination; follow nextOffset with the same filters until truncated is false before treating a snapshot as complete for QA or edit planning. Re-read after edits; offsets are not stable across timeline mutations. Inspect markers and transitions separately when their capped collections are truncated. Clip node IDs resolve in the active sequence; re-check sequence identity after switching sequences.");
   route(["get_clip_transcript_uxp", "search_clip_transcript_uxp"],
     "Retrieve native transcript evidence when this UXP backend is connected. Preserve source timing and speaker evidence; do not infer speech from filenames.");
   route(["set_clip_duration"],

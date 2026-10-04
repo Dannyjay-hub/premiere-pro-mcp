@@ -132,6 +132,12 @@ Add workspace.ts module with get/set workspace tools
 
 ## Releases and the website
 
+Follow [release naming and version conventions](docs/release-conventions.md): GitHub
+release titles equal their tags, using `v<SemVer>` (for example, `v1.19.0`). Put
+summaries in release notes, not titles. Package and manifest versions omit `v`.
+The release-name workflow repairs title drift; the linked guide includes preview,
+check, and repair commands. Historical cleanup changes display titles only.
+
 The website (`premiere-pro-mcp.com`) lives in
 [leancoderkavy/premiere-pro-mcp-site](https://github.com/leancoderkavy/premiere-pro-mcp-site).
 It syncs version, tool counts, and provenance from the published npm package on its own

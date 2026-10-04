@@ -134,6 +134,9 @@ The published v1.19.0 npm artifact contains **386 core tools**, 384 in its defau
 and 480 with a compatible UXP connection. The development catalog above can include
 unreleased work. See the [versioned facts and package provenance](https://premiere-pro-mcp.com/facts/).
 
+GitHub releases use `v<SemVer>` for both title and tag, such as `v1.19.0`.
+See [release naming and version conventions](docs/release-conventions.md).
+
 ### Try a bounded workflow
 
 Choose a setup guide: [Claude Desktop](https://premiere-pro-mcp.com/blog/claude-desktop-premiere-pro-mcp-setup/),

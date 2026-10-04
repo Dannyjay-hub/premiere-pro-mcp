@@ -1,3 +1,4 @@
+import { validateMogrtArchive } from "./mogrt-validation.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { buildMogrtTextWriteScript, compareMogrtText, MOGRT_TEXT_WRITE_HELPER, summarizeMogrtText, validateMogrtTextMap } from "./mogrt-text.js";
@@ -139,6 +140,8 @@ export function getTextTools(bridgeOptions: BridgeOptions) {
         text_values?: Record<string, string>;
       }) => {
         const textValues = validateMogrtTextMap(args.text_values, "text_values");
+        const archiveError = validateMogrtArchive(args.mogrt_path);
+        if (archiveError) return { success: false, error: archiveError };
         const trackIndex = args.track_index ?? 0;
         const startSeconds = args.start_seconds ?? 0;
         const durationSeconds = args.duration_seconds ?? 5;

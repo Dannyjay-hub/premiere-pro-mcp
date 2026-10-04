@@ -15,7 +15,7 @@ function revision(json: string) {
   return `sha256:${createHash("sha256").update(json, "utf8").digest("hex")}`;
 }
 
-function fixture(options: { initialJson?: string | null; apply?: boolean; itemCount?: number; readbackFailure?: boolean } = {}) {
+function fixture(options: { initialJson?: string | null; apply?: boolean; itemCount?: number; readbackFailure?: boolean; normalize?: boolean; lockedSegments?: boolean } = {}) {
   const state = { json: options.initialJson === undefined ? null : options.initialJson };
   const clip = { kind: "clip", getId: vi.fn(async () => "clip-1") };
   const filler = Array.from({ length: options.itemCount ?? 1 }, (_, index) => ({
@@ -37,6 +37,9 @@ function fixture(options: { initialJson?: string | null; apply?: boolean; itemCo
     }),
   };
   let exportCalls = 0;
+  let inLock = false;
+  const originalLock = project.lockedAccess;
+  project.lockedAccess = vi.fn((work: () => void) => { inLock = true; try { return originalLock(work); } finally { inLock = false; } });
   const ppro = {
     Project: { getActiveProject: vi.fn(async () => project) },
     FolderItem: { cast: vi.fn((item: { kind?: string }) => item.kind === "folder" ? item : null) },
@@ -49,9 +52,9 @@ function fixture(options: { initialJson?: string | null; apply?: boolean; itemCo
         if (state.json === null) throw new Error("no transcript");
         return state.json;
       }),
-      importFromJSON: vi.fn((json: string) => ({ json })),
+      importFromJSON: vi.fn((json: string) => { if (options.lockedSegments && !inLock) throw new Error("Segments created outside lock"); return { json }; }),
       createImportTextSegmentsAction: vi.fn((segments: { json: string }) => ({
-        apply: () => { if (options.apply !== false) state.json = segments.json; },
+        apply: () => { if (options.apply !== false) state.json = options.normalize ? JSON.stringify(JSON.parse(segments.json), null, 2) : segments.json; },
       })),
     },
   };
@@ -72,6 +75,28 @@ function args(overrides: Record<string, unknown> = {}) {
 }
 
 describe("guarded UXP transcript import", () => {
+  it("imports onto host-attached empty transcript with segments created inside lockedAccess", async () => {
+    const { runtime, state } = fixture({ initialJson: '{"language":"und-zz","segments":[],"speakers":[]}', lockedSegments: true });
+    await expect(runtime.importTranscript(args())).resolves.toMatchObject({ committed: true, verified: true });
+    expect(state.json).toBe(replacementJson);
+  });
+  it("verifies canonical full-content JSON without changing raw revision semantics", async () => {
+    const { runtime } = fixture({ normalize: true });
+    const receipt = await runtime.importTranscript(args());
+    expect(receipt).toMatchObject({ verified: true, verificationBoundary: "transcript_export_canonical_content_readback", requestedTranscriptRevision: revision(replacementJson) });
+    expect(receipt.after.transcriptRevision).toBe(revision(JSON.stringify(JSON.parse(replacementJson), null, 2)));
+  });
+  it("does not verify matching words with different timing", async () => {
+    const { runtime, ppro } = fixture();
+    ppro.Transcript.exportToJSON.mockResolvedValue('{"segments":[{"text":"after","start":2}]}');
+    await expect(runtime.importTranscript(args({ json: '{"segments":[{"text":"after","start":1}]}' }))).resolves.toMatchObject({ committed: true, verified: false, outcome: "committed_unverified" });
+  });
+  it("refuses speaker-only text and empty segments before native calls", async () => {
+    const { runtime, ppro } = fixture();
+    await expect(runtime.importTranscript(args({ json: '{"segments":[],"speakers":[{"text":"name"}]}' }))).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(ppro.Transcript.importFromJSON).not.toHaveBeenCalled();
+  });
+
   it("refuses to import over an existing transcript and changes nothing (#642)", async () => {
     const { state, runtime, project, ppro } = fixture({ initialJson: beforeJson });
     await expect(runtime.importTranscript(args({ expectedTranscriptRevision: revision(beforeJson) }))).rejects.toMatchObject({

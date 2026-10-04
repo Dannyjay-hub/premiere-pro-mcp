@@ -1,3 +1,4 @@
+import { sequenceReadProperties, sequenceReadScript, type SequenceReadArgs } from "./sequence-read.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -243,22 +244,25 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
     },
 
     get_full_sequence_info: {
-      description: "Get exhaustive information about a sequence: settings, all tracks with lock/mute/target state, all clips with positions/effects/speed/enabled state, all markers, transitions, in/out points, and work area.",
+      description: "Get bounded information about a sequence (50 clips by default; follow pagination.nextOffset; markers and transitions capped at 50 per collection): settings, all tracks with lock/mute/target state, paged clips with positions/effects/speed/enabled state, bounded markers, transitions, in/out points, and work area.",
       parameters: {
         type: "object" as const,
         properties: {
+          ...sequenceReadProperties,
           sequence_id: {
             type: "string",
             description: "Sequence name or ID. Uses active sequence if omitted.",
           },
         },
       },
-      handler: async (args: { sequence_id?: string }) => {
+      handler: async (args: SequenceReadArgs & { sequence_id?: string }) => {
         const seqLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found");`
           : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
 
+        const bounds = sequenceReadScript(args);
         const script = buildToolScript(`
+          ${bounds}
           ${seqLookup}
 
           // Settings
@@ -302,10 +306,10 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
           var markers = [];
           try {
             var m = seq.markers.getFirstMarker();
-            while (m) {
+            while (m && markers.length < 50) {
               var mInfo = {
                 name: m.name,
-                comments: m.comments,
+                comments: String(m.comments || "").substr(0, 2048),
                 startSeconds: __ticksToSeconds(m.start.ticks),
                 endSeconds: __ticksToSeconds(m.end.ticks),
                 type: m.type
@@ -316,7 +320,8 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
             }
           } catch(e) {}
           info.markers = markers;
-          info.markerCount = markers.length;
+          try { info.markerCount = seq.markers.numMarkers; } catch (markerCountError) { info.markerCount = null; }
+          info.markersTruncated = !!m;
 
           // Video tracks
           info.videoTracks = [];
@@ -334,6 +339,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
             trackInfo.clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
+              if (!__readInclude(clip, "video", t)) continue;
               var ci = {
                 index: c,
                 nodeId: clip.nodeId,
@@ -365,18 +371,19 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               try {
                 ci.effectCount = clip.components.numItems;
                 ci.effects = [];
-                for (var e = 0; e < clip.components.numItems; e++) {
+                for (var e = 0; e < clip.components.numItems && e < 64; e++) {
                   ci.effects.push(clip.components[e].displayName);
                 }
+                ci.effectsTruncated = ci.effectCount > ci.effects.length;
               } catch(e) {}
 
-              trackInfo.clips.push(ci);
+              __readPush(trackInfo.clips, ci);
             }
 
             // Transitions
             trackInfo.transitions = [];
             try {
-              for (var tr = 0; tr < track.transitions.numItems; tr++) {
+              for (var tr = 0; tr < track.transitions.numItems && tr < 50; tr++) {
                 var trans = track.transitions[tr];
                 trackInfo.transitions.push({
                   index: tr,
@@ -387,8 +394,9 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               }
             } catch(e) {}
 
-            trackInfo.clipCount = trackInfo.clips.length;
-            trackInfo.transitionCount = trackInfo.transitions.length;
+            trackInfo.clipCount = track.clips.numItems;
+            trackInfo.transitionCount = track.transitions ? track.transitions.numItems : 0;
+            trackInfo.transitionsTruncated = trackInfo.transitionCount > trackInfo.transitions.length;
             info.videoTracks.push(trackInfo);
           }
 
@@ -407,6 +415,7 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
             trackInfo.clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
+              if (!__readInclude(clip, "audio", t)) continue;
               var ci = {
                 index: c,
                 nodeId: clip.nodeId,
@@ -430,16 +439,17 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               try {
                 ci.effectCount = clip.components.numItems;
                 ci.effects = [];
-                for (var e = 0; e < clip.components.numItems; e++) {
+                for (var e = 0; e < clip.components.numItems && e < 64; e++) {
                   ci.effects.push(clip.components[e].displayName);
                 }
+                ci.effectsTruncated = ci.effectCount > ci.effects.length;
               } catch(e) {}
-              trackInfo.clips.push(ci);
+              __readPush(trackInfo.clips, ci);
             }
 
             trackInfo.transitions = [];
             try {
-              for (var tr = 0; tr < track.transitions.numItems; tr++) {
+              for (var tr = 0; tr < track.transitions.numItems && tr < 50; tr++) {
                 var trans = track.transitions[tr];
                 trackInfo.transitions.push({
                   index: tr,
@@ -449,15 +459,18 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               }
             } catch(e) {}
 
-            trackInfo.clipCount = trackInfo.clips.length;
-            trackInfo.transitionCount = trackInfo.transitions.length;
+            trackInfo.clipCount = track.clips.numItems;
+            trackInfo.transitionCount = track.transitions ? track.transitions.numItems : 0;
+            trackInfo.transitionsTruncated = trackInfo.transitionCount > trackInfo.transitions.length;
             info.audioTracks.push(trackInfo);
           }
 
           info.videoTrackCount = info.videoTracks.length;
           info.audioTrackCount = info.audioTracks.length;
 
-          return __result(info);
+          info.pagination = __readReceipt();
+          if (__readError) return __error(__readError);
+          return __readResult(info);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -797,10 +810,11 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
     },
 
     get_timeline_gaps: {
-      description: "Find all gaps (empty spaces) on the timeline between clips. Useful for identifying where content is missing or where clips can be tightened.",
+      description: "Find a bounded page of gaps (50 by default; follow pagination.nextOffset) on the timeline between clips. Useful for identifying where content is missing or where clips can be tightened.",
       parameters: {
         type: "object" as const,
         properties: {
+          ...sequenceReadProperties,
           sequence_id: {
             type: "string",
             description: "Sequence name or ID. Uses active sequence if omitted.",
@@ -816,22 +830,28 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
           },
         },
       },
-      handler: async (args: { sequence_id?: string; track_type?: string; min_gap_seconds?: number }) => {
+      handler: async (args: SequenceReadArgs & { sequence_id?: string; min_gap_seconds?: number }) => {
         const seqLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found");`
           : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
         const minGap = args.min_gap_seconds ?? 0.04;
-        const trackType = args.track_type || "both";
+        if (!Number.isFinite(minGap) || minGap < 0) throw new Error("min_gap_seconds must be finite and nonnegative");
+        const bounds = sequenceReadScript(args);
 
         const script = buildToolScript(`
           ${seqLookup}
+          ${bounds}
 
           var gaps = [];
+          var trackCounts = [];
           var minGapTicks = __secondsToTicks(${minGap});
 
           function findGaps(tracks, type) {
             for (var t = 0; t < tracks.numTracks; t++) {
               var track = tracks[t];
+              __readTotalClips += track.clips.numItems;
+              trackCounts.push({ trackType: type, trackIndex: t, clipCount: track.clips.numItems });
+              if (!__readTrack(type, t)) continue;
               if (track.clips.numItems === 0) continue;
               var prevEnd = 0;
               for (var c = 0; c < track.clips.numItems; c++) {
@@ -839,8 +859,10 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                 var startTicks = parseFloat(clip.start.ticks);
                 var endTicks = parseFloat(clip.end.ticks);
                 var gapTicks = startTicks - prevEnd;
-                if (gapTicks > minGapTicks) {
-                  gaps.push({
+                if (gapTicks > minGapTicks && __readWindow(__ticksToSeconds(prevEnd), __ticksToSeconds(startTicks))) {
+                  var ordinal = __readMatched++;
+                  if (ordinal >= ${args.clip_offset ?? 0} && __readReturned < ${args.clip_limit ?? 50} && !__readBlocked)
+                  __readPush(gaps, {
                     trackType: type,
                     trackIndex: t,
                     trackName: track.name,
@@ -851,19 +873,24 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                     afterClip: clip.name
                   });
                 }
-                prevEnd = endTicks;
+                prevEnd = Math.max(prevEnd, endTicks);
               }
             }
           }
 
-          if ("${trackType}" !== "audio") findGaps(seq.videoTracks, "video");
-          if ("${trackType}" !== "video") findGaps(seq.audioTracks, "audio");
+          findGaps(seq.videoTracks, "video");
+          findGaps(seq.audioTracks, "audio");
 
-          return __result({
+          if (__readError) return __error(__readError);
+          var pagination = __readReceipt();
+          pagination.totalGaps = __readMatched;
+          return __readResult({
+            pagination: pagination,
             sequenceName: seq.name,
-            gapCount: gaps.length,
+            gapCount: __readMatched,
             minGapSeconds: ${minGap},
-            gaps: gaps
+            gaps: gaps,
+            tracks: trackCounts
           });
         `);
         return sendCommand(script, bridgeOptions);

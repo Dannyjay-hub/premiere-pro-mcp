@@ -23,6 +23,16 @@ function fixture(accepted = true, duplicateName = false) {
 const input = { projectItemId: "clip-1", confirmDestructive: true, operationId: "start-1" };
 
 describe("guarded transcription start", () => {
+  it.each(["missing", "throwing", "null"])("starts by unique name with %s optional identity access", async kind => {
+    const { registry, clip, transcribe } = fixture();
+    if (kind === "missing") delete (clip as Partial<typeof clip>).getId;
+    else clip.getId = () => { if (kind === "throwing") throw new Error("unsupported"); return null as unknown as string; };
+    const args = { ...input, projectItemId: undefined, projectItemName: "Interview" };
+    await expect(registry.dispatch("transcript.start", args)).resolves.toMatchObject({ started: true, projectItemId: null, outcome: "committed_unverified" });
+    await expect(registry.dispatch("transcript.start", args)).resolves.toMatchObject({ replayed: true });
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves the exact nested clip and passes Adobe's language options object once", async () => {
     const { registry, clip, transcribe } = fixture();
     const args = { ...input, language: " en-US " };

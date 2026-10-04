@@ -523,7 +523,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     automate_effect_parameters_uxp: {
-      description: "Inspect or transactionally set scalar effect parameters; inspect or guardedly set static PointF x/y and Color RGBA parameters; locate individual keyframes including a bounded native nearest-range lookup; adjust keyframes/interpolation; and control explicit time-varying animation mode through documented UXP actions. Disabling animation requires a complete inspected keyframe-time snapshot and confirmation.",
+      description: "Inspect or transactionally set scalar effect parameters; inspect or guardedly set static PointF x/y and Color RGBA parameters; locate individual keyframes including a bounded native nearest-range lookup; adjust keyframes/interpolation; and control explicit time-varying animation mode through documented UXP actions. Interpolation verification covers the stored mode only, not rendering; Premiere 26.5.2 Windows has a reported temporal-curve render gap. Inspect playback or exported pixels. Disabling animation requires a complete inspected keyframe-time snapshot and confirmation.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,

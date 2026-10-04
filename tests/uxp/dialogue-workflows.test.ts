@@ -9,7 +9,7 @@ describe("UXP dialogue command module", () => {
     expect(definitions["dialogue.deriveSequence"]).toMatchObject({ destructive: true, undoable: false, idempotent: true, minHostVersion: "26.3.0" });
     expect(definitions["dialogue.deriveSequence"].probe()).toBe(false);
   });
-  it.each(["method", "guid_string", "guid_object", "empty_methods", "invalid_methods", "throwing_getid", "throwing_methods"])("creates linked subclips with %s project identity and structural-only proof", async (identity) => {
+  it.each(["method", "guid_string", "guid_object", "empty_methods", "invalid_methods", "throwing_getid", "throwing_methods", "cast_items"])("creates linked subclips with %s project identity and structural-only proof", async (identity) => {
     const children: any[] = [];
     const parent = { name: "Media", getId: async () => "bin", getItems: async () => children };
     const source = { name: "Source", getId: async () => "clip", getParentBin: async () => parent, isMulticamClip: async () => false,
@@ -25,6 +25,19 @@ describe("UXP dialogue command module", () => {
       createSequenceFromMedia: async (name: string) => { const sequence = { name, guid: { toString: () => "sequence" } }; createdSequences.push(sequence); return sequence; } };
     const ppro = { Project: { getActiveProject: async () => project }, ClipProjectItem: { cast: (item: any) => item.createSubClipAction ? item : null }, FolderItem: { cast: (item: any) => item.getItems ? item : null },
       TickTime: { createWithSeconds: (seconds: number) => ({ seconds }) }, SequenceEditor: { getEditor: () => ({ createInsertProjectItemAction: () => ({ apply() {} }) }) } };
+    if (identity === "cast_items") {
+      const identities = new WeakMap<object, () => Promise<string>>();
+      identities.set(source, source.getId);
+      delete (source as any).getId;
+      const originalCreate = source.createSubClipAction;
+      source.createSubClipAction = (name: string) => ({ apply: () => {
+        originalCreate(name).apply();
+        const child = children.at(-1);
+        const stableId = `sub-${children.length}`;
+        identities.set(child, async () => stableId); delete child.getId;
+      } });
+      (ppro as any).ProjectItem = { cast: (item: object) => identities.has(item) ? { getId: identities.get(item) } : null };
+    }
     const command = api.createDialogueWorkflowDefinitions({ ppro })["dialogue.deriveSequence"];
     const result = await command.handler({ operationId: "op-1", plan: { schema_version: 1, project_guid: "project", mode: "talking_head", sequence_name: "Reviewed", segments: [
       { id: "one", source_project_item_id: "clip", transcript_revision: `sha256:${"a".repeat(64)}`, source_start_seconds: 0, source_end_seconds: 1 },

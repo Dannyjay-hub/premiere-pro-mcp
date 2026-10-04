@@ -1,3 +1,4 @@
+import { sequenceReadProperties, sequenceReadScript, type SequenceReadArgs } from "./sequence-read.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -117,10 +118,12 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
     },
 
     get_active_sequence: {
-      description: "Get detailed information about the currently active sequence",
-      parameters: {},
-      handler: async () => {
+      description: "Get bounded, paged information about the currently active sequence (50 clips by default). Follow pagination.nextOffset for more",
+      parameters: { type: "object" as const, properties: sequenceReadProperties },
+      handler: async (args: SequenceReadArgs = {}) => {
+        const bounds = sequenceReadScript(args);
         const script = buildToolScript(`
+          ${bounds}
           var seq = __getCurrentActiveSequence();
           if (!seq) return __error("No active sequence in the current project");
           
@@ -130,7 +133,8 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
             var clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
-              clips.push({
+              if (!__readInclude(clip, "video", t)) continue;
+              __readPush(clips, {
                 nodeId: clip.nodeId,
                 name: clip.name,
                 start: __ticksToSeconds(clip.start.ticks),
@@ -154,7 +158,8 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
             var clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
-              clips.push({
+              if (!__readInclude(clip, "audio", t)) continue;
+              __readPush(clips, {
                 nodeId: clip.nodeId,
                 name: clip.name,
                 start: __ticksToSeconds(clip.start.ticks),
@@ -170,7 +175,9 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
             });
           }
           
-          return __result({
+          if (__readError) return __error(__readError);
+          return __readResult({
+            pagination: __readReceipt(),
             name: seq.name,
             id: seq.sequenceID,
             frameSizeHorizontal: seq.frameSizeHorizontal,
