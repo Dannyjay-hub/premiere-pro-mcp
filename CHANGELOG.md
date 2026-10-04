@@ -6,11 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-10-04
+
 ### Fixed
 
 - Sequence inspection reads now return bounded clip/gap pages, track counts and continuation offsets, with track/time filters and a response budget (#769).
 - Transcription start tolerates unavailable optional ClipProjectItem identity access while preserving target resolution and replay guards (#772).
-- UXP interpolation receipts state that stored-mode readback does not verify rendered curves; the reported Premiere 26.5.2 Windows render gap remains unresolved (#771).
+- CEP/UXP interpolation and still-capture receipts separate stored values and file existence from temporal animation. The 26.5.2 Windows capture report remains unresolved; contributor 25.2.3 macOS evidence distinguishes a QE still artifact from correctly encoded video curves (#771).
+- Save As refuses unverified destination existence without overwrite confirmation. Committed duplicate, slide and slip edits retain replayable partial receipts when readback fails.
 - Transcript import permits host-attached empty transcripts, creates TextSegments inside lockedAccess and compares full canonical JSON content when Adobe reformats the export. Nonempty transcript overwrite remains refused (#773).
 - Transition duration arguments use frame-grid timecode. Direct MOGRT import refuses malformed ZIP/JSON templates before host dispatch (#773).
 
