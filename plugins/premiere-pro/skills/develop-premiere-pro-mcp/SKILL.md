@@ -67,6 +67,14 @@ Premiere Pro host.
 
 ## Handle releases and compatibility claims
 
+- Follow `docs/release-conventions.md`: GitHub release titles equal their Git tags,
+  exactly `v<SemVer>` (for example, `v1.19.0` or `v1.20.0-rc.1`). Put summaries in
+  release bodies; omit `v` in package and manifest versions. Preserve the README
+  `### Latest release:` heading and existing changelog heading format.
+- Use `scripts/normalize-release-names.mjs` to preview title drift, `--check` to
+  fail on drift, and `--apply` for authorized repairs with GitHub readback. Historical
+  cleanup edits display titles only; never retag or republish existing versions.
+  A naming task does not authorize a new publication.
 - Search all version-bearing package, lock, manifest, marketplace, MCP configuration,
   updater, and installation files when changing a version.
 - After an npm release is verified, update the README `### Latest release:` heading, README
