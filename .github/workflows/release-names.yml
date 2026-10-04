@@ -1,0 +1,34 @@
+name: Normalize release names
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-names
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Naming policy comes from the default branch, even for historical releases.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Normalize and verify release titles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ github.event.release.id }}
+        run: node scripts/normalize-release-names.mjs --apply

@@ -32,6 +32,7 @@ Read only what the task needs. Current source and release metadata beat dated sn
 | Product claims governance | `docs/claims-registry.md`, `docs/claims-registry.json` |
 | Published-package facts | npm tarball, synced by [`leancoderkavy/premiere-pro-mcp-site`](https://github.com/leancoderkavy/premiere-pro-mcp-site) to <https://premiere-pro-mcp.com/facts/> |
 | Development source metadata | `release-metadata.json` |
+| Release titles, tags, and versions | `docs/release-conventions.md` |
 | MCP runtime instructions for clients | `src/workflows/agent-instructions.ts` |
 | Hosted HTTP boundary | `docs/hosted-mcp-product-boundary.md` |
 | UXP 26.3 coverage | `docs/adobe-uxp-26.3-coverage.md` |
@@ -171,6 +172,17 @@ The marketing site (`premiere-pro-mcp.com`) lives in [`leancoderkavy/premiere-pr
 - Generated inventories under `src/resources/*.json` and matching `docs/*-inventory.md` / drift docs — use the `npm run …:check` / generate scripts.
 - Version strings: search package, lockfile, CEP/UXP manifests, marketplace, MCP config, updater, README and plugin pins, and installer files together.
 - `.worktrees/` — local checkouts; do not commit.
+
+## Release naming
+
+Follow `docs/release-conventions.md`. GitHub release titles must equal their Git tags:
+`v<SemVer>` (for example, `v1.19.0` or `v1.20.0-rc.1`). No product prefix or summary
+suffix; summaries belong in release notes. Package and manifest versions omit `v`.
+Keep the README `### Latest release:` heading and existing changelog format intact.
+For historical cleanup, edit display titles only; never retag or republish versions.
+Preview or check drift with `scripts/normalize-release-names.mjs`; apply authorized
+title repairs with `--apply` and verify GitHub readback. New publication still needs
+its own authorization and evidence. Keep both development skill copies aligned.
 
 ## Pull requests
 
