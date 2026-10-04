@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `clear_item_in_out` verifies a cleared Out mark against the item's `MediaDuration` and `MediaTimebase` (frames for video, samples for audio), so audio items verify too, and reports the In and Out results separately. Live on Premiere 25.2.3: a cleared Out reads the full media length, and `MediaTimebase` is `48000 Hz` for audio and `25.00 fps` for video. (#696)
 - An empty Source Monitor returns `undefined`, not `null`, on Premiere 25.2.3. The close and playback tools now treat a getter that returns `null` or `undefined` without throwing as an empty monitor; only a throwing getter is unreadable. Previously `close_all_source_clips` reported a genuinely empty monitor as `committed_unverified`. (#694)
 - `add_to_timeline` counts only clips that match the inserted source and start at the insertion time as inserted, and reports split remainders separately (`splitRemainders`). A same-source mid-clip insert on 25.2.3 previously reported `insertedTrackItems: 2` for one inserted clip. (#680)
+- `encode_project_item`, `encode_file`, and `manage_proxies` `create` no longer call `app.encoder.startBatch()` after queueing. That API starts every ready Adobe Media Encoder job, including unrelated jobs already in the queue. Batch start is now opt-in with `start_batch: true`, matching `add_to_render_queue`. Use `start_batch_encode` to start the queue later.
 
 ## [1.19.0] - 2026-10-02
 
