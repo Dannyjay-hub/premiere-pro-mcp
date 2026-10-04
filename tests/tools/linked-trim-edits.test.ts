@@ -639,6 +639,26 @@ describe("adjacent edits preserve validated linked membership", () => {
     expect(probeMediaDurationTicks).not.toHaveBeenCalled();
     for (const write of writes) expect(write).not.toHaveBeenCalled();
   });
+  it.each(["roll", "slide"])("%s treats null linkage as unlinked and leaves audio untouched", async (operation) => {
+    const { video, audio } = host();
+    for (const clip of video) clip.getLinkedItems = () => null;
+    const beforeAudio = audio.map((clip) => clip.snapshot());
+    const result = await edit(operation);
+    expect(result).toMatchObject({ success: true });
+    expect(audio.map((clip) => clip.snapshot())).toEqual(beforeAudio);
+  });
+  it.each(["roll", "slide"])("%s accepts the numeric 0 reverse state Premiere 25.2.3 returns", async (operation) => {
+    const { video, audio } = host();
+    for (const clip of [...video, ...audio]) clip.isSpeedReversed = (() => 0) as unknown as () => false;
+    expect(await edit(operation)).toMatchObject({ success: true });
+  });
+  it.each(["roll", "slide"])("%s still refuses a reversed clip reported as 1", async (operation) => {
+    const { video, audio } = host();
+    const writes = observeWrites([...video, ...audio]);
+    video[1].isSpeedReversed = (() => 1) as unknown as () => false;
+    expect(await edit(operation)).toMatchObject({ success: false, error: expect.stringContaining("normal-speed") });
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+  });
   it.each(["roll", "slide"])("%s refuses unreadable second linkage before writing", async (operation) => {
     const { video, audio } = host();
     const writes = observeWrites([...video, ...audio]);
@@ -673,7 +693,7 @@ describe("trim/slip default linked coverage fails closed", () => {
     : tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1, include_linked: includeLinked });
   const unreadable = [
     { name: "throwing accessor", read: () => { throw new Error("unreadable linkage"); } },
-    { name: "null collection", read: () => null },
+    { name: "undefined collection", read: () => undefined },
     { name: "missing count", read: () => ({}) },
     { name: "fractional count", read: () => ({ numItems: 1.5 }) },
     { name: "missing member", read: () => ({ numItems: 1 }) },
@@ -687,6 +707,13 @@ describe("trim/slip default linked coverage fails closed", () => {
       video[1].getLinkedItems = read as typeof video[1]["getLinkedItems"];
       expect(await edit(operation)).toMatchObject({ success: false, error: expect.stringContaining("Linked membership could not be verified") });
       for (const write of writes) expect(write).not.toHaveBeenCalled();
+    });
+    it(operation + " treats a null linkage as an unlinked clip and edits it alone", async () => {
+      const { video, audio } = host();
+      const beforeAudio = audio[1].snapshot();
+      video[1].getLinkedItems = () => null;
+      expect(await edit(operation)).toMatchObject({ success: true, data: { linkedPartnersEdited: [] } });
+      expect(audio[1].snapshot()).toEqual(beforeAudio);
     });
     it(operation + " keeps explicit include_linked false usable despite unreadable linkage", async () => {
       const { video, audio } = host();

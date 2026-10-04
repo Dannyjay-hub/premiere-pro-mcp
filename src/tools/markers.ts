@@ -129,7 +129,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
                  sourceSpeed = clipResult.clip.getSpeed();
                  sourceReverse = clipResult.clip.isSpeedReversed();
                } catch (eIn) {}
-               if (!isFinite(sourceIn) || (sourceSpeed !== 1 && sourceSpeed !== 100) || sourceReverse !== false) return __error("Timeline clips have no marker collection on this Premiere host. Nothing was changed. Use add_marker_to_project_item after inspecting the source clock; this clip's timing or speed cannot establish a simple clip-to-source time conversion.");
+               if (!isFinite(sourceIn) || (sourceSpeed !== 1 && sourceSpeed !== 100) || (sourceReverse !== false && sourceReverse !== 0)) return __error("Timeline clips have no marker collection on this Premiere host. Nothing was changed. Use add_marker_to_project_item after inspecting the source clock; this clip's timing or speed cannot establish a simple clip-to-source time conversion.");
                return __error("Timeline clips have no marker collection on this Premiere host; clip markers belong to the source project item and appear on every use of that media. Nothing was changed. Use add_marker_to_project_item with the source time instead: this clip's in-point is " + sourceIn + "s, so clip time t is source time t + " + sourceIn + "s.");
              }`
           : `var seq = app.project.activeSequence;
@@ -201,7 +201,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
                  sourceSpeed = clipResult.clip.getSpeed();
                  sourceReverse = clipResult.clip.isSpeedReversed();
                } catch (eIn) {}
-               if (!isFinite(sourceIn) || (sourceSpeed !== 1 && sourceSpeed !== 100) || sourceReverse !== false) return __error("Timeline clips have no marker collection on this Premiere host. Nothing was changed. Use add_marker_to_project_item after inspecting the source clock; this clip's timing or speed cannot establish a simple clip-to-source time conversion.");
+               if (!isFinite(sourceIn) || (sourceSpeed !== 1 && sourceSpeed !== 100) || (sourceReverse !== false && sourceReverse !== 0)) return __error("Timeline clips have no marker collection on this Premiere host. Nothing was changed. Use add_marker_to_project_item after inspecting the source clock; this clip's timing or speed cannot establish a simple clip-to-source time conversion.");
                return __error("Timeline clips have no marker collection on this Premiere host; clip markers belong to the source project item and appear on every use of that media. Nothing was changed. Use add_marker_to_project_item with the source time instead: this clip's in-point is " + sourceIn + "s, so clip time t is source time t + " + sourceIn + "s.");
              }`
           : `var seq = app.project.activeSequence;
