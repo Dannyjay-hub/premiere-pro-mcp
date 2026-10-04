@@ -859,7 +859,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_frame: {
-      description: "Export the current frame as an image file",
+      description: "Export a file-verified still image. QE frame capture may not evaluate keyframed animation like an actual video export; it does not verify temporal curves or playback.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -884,7 +884,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           var res = __exportStillFrame(outputPath, ticks);
           if (!res.ok) return __error(res.error + " [" + res.notes.join("; ") + "]");
 
-          return __result({ exported: true, outputPath: res.path, method: res.method });
+          return __result({ exported: true, outputPath: res.path, method: res.method, renderVerified: false, verificationScope: "Output file exists only; still capture does not establish temporal animation, playback or audio. QE exportFramePNG has a reported keyframed-opacity capture artifact on Premiere 25.2.3 macOS; compare an actual short video export." });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: 60000 });
       },
@@ -892,7 +892,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_review_frames: {
       description:
-        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. This samples rendered output; it does not prove playback, audio, or editorial quality.",
+        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. Still capture does not verify temporal animation, playback, audio, or editorial quality; QE frames can differ from actual video exports.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -979,7 +979,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             complete: frames.length === requested,
             frames: frames,
             failures: failures,
-            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge. Playback, audio, and editorial quality remain unverified."
+            renderVerified: false,
+            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge. Temporal animation, playback, audio, and editorial quality remain unverified; QE still capture can differ from an actual video export."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, frameCount * 30000) });
@@ -988,7 +989,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_marker_review_frames: {
       description:
-        "Export up to 24 file-verified composite frames at active-sequence marker positions in one bridge request for marker-driven review. It reads markers and writes image files only; it does not add, update, or remove Premiere markers.",
+        "Export up to 24 file-verified still frames at active-sequence marker positions in one bridge request for marker-driven review. It reads markers and writes image files only; it does not add, update, or remove Premiere markers.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -1106,7 +1107,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             truncated: matched.length > requested,
             frames: frames,
             failures: failures,
-            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge at the matched marker start. This reads existing markers and does not prove playback, audio, marker intent, or editorial quality."
+            renderVerified: false,
+            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge at the matched marker start. This reads existing markers and does not prove temporal animation, playback, audio, marker intent, or editorial quality; QE still capture can differ from actual video exports."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, limit * 30000) });
@@ -1115,7 +1117,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_clip_review_frames: {
       description:
-        "Export one file-verified composite frame at the midpoint of each clip on a chosen video track in one bridge request. Read-only in Premiere; it does not mute tracks or claim visual quality.",
+        "Export one file-verified still frame at the midpoint of each clip on a chosen video track in one bridge request. Read-only in Premiere; it does not mute tracks or claim visual quality.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1162,7 +1164,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           return __result({
             trackIndex: ${trackIndex}, requested: count, exported: frames.length,
             complete: frames.length === count, frames: frames, failures: failures,
-            verificationScope: "Each returned path exists on disk. Frames show the finished composite at each selected clip midpoint; composition and editorial quality require human or vision review."
+            renderVerified: false,
+            verificationScope: "Each returned path exists on disk. Still capture samples each selected clip midpoint but does not establish the finished composite or temporal animation. QE still capture can differ from actual video exports; composition and editorial quality require review."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, limit * 30000) });
@@ -1424,7 +1427,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     capture_frame: {
-      description: "Capture the current frame and return it as inline image data for the LLM to see. This lets the AI visually inspect the current state of the timeline.",
+      description: "Capture the current frame and return it as inline image data for the LLM to see. This supports still-image review only; QE capture may differ from actual video exports and cannot verify temporal animation.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1475,6 +1478,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             success: true,
             data: {
               captured: true,
+              renderVerified: false,
+              verificationScope: "Still-image capture only. QE frames may not evaluate animated properties like an actual video export; compare a short actual video export before verifying temporal curves.",
               mimeType: "image/png",
               base64: base64,
             },

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { BridgeOptions, sendCommand } from "../bridge/file-bridge.js";
 import { validateBridgeScriptSize } from "../bridge/script-size.js";
-import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
+import { buildToolScript, escapeForExtendScript, escapeUnsafeLiteralCharacters } from "../bridge/script-builder.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 import { rippleTimeoutMs } from "./ripple-timeout.js";
 import { createEditPlanTokenStore, EditPlanTokenStore, EditPlanHostBinding, validateEditPlanHostBinding } from "./edit-plan-token-store.js";
@@ -97,6 +97,17 @@ function describe(plan: EditPlan) {
   }));
 }
 
+/** Build ES3 object literals without raw host strings or a JSON.parse dependency. */
+function linkedBindingLiteral(partners: Extract<EditPlanHostBinding["targets"][number], { type: "remove_clip" }>["linkedPartners"]): string {
+  return "[" + partners.map((partner) => {
+    const fields = Object.entries(partner).map(([key, value]) => {
+      const literal = typeof value === "string" ? `"${escapeForExtendScript(value)}"` : JSON.stringify(value);
+      return `"${escapeForExtendScript(key)}":${literal}`;
+    });
+    return "{" + fields.join(",") + "}";
+  }).join(",") + "]";
+}
+
 /** Resolve and snapshot every target without activating a sequence or editing the host. */
 function hostBindingScript(plan: EditPlan, boundPartners?: EditPlanHostBinding): string {
   const sequence = plan.sequence_id
@@ -114,7 +125,7 @@ function hostBindingScript(plan: EditPlan, boundPartners?: EditPlanHostBinding):
     const reuseBoundPartners = boundPartners !== undefined && (operation.ripple === true || operation.include_linked !== false);
     const linkedBindings = boundPartners?.targets[index]?.type === "remove_clip" ? boundPartners.targets[index].linkedPartners : [];
     const partnerPrelude = reuseBoundPartners
-      ? `var partnerBindings${index} = ${JSON.stringify(linkedBindings)};
+      ? `var partnerBindings${index} = ${linkedBindingLiteral(linkedBindings)};
         for (var pb${index} = 0; pb${index} < partnerBindings${index}.length; pb${index}++) {
           var partnerLocated${index} = __planLocateClip(seq, partnerBindings${index}[pb${index}].targetId);
           if (!partnerLocated${index} || __jsonStringify(__planClipBinding(partnerLocated${index})) !== __jsonStringify(partnerBindings${index}[pb${index}])) return __error("A linked removal target changed since preview for operation ${index}");
@@ -203,7 +214,8 @@ function buildApplyPreflightScript(plan: EditPlan, binding: EditPlanHostBinding)
     probes.push(`var estimate${index} = (function () { var __result = function (d) { return { success:true, data:d }; }; var __error = function (m,d) { return { success:false, error:String(m), data:d }; }; ${body} })(); if (!estimate${index}.success) return __error("Ripple preflight operation ${index} failed: " + estimate${index}.error, estimate${index}.data); rippleEstimates.push({index:${index}, movers:estimate${index}.data.totalMovers || 0, removals:(estimate${index}.data.alsoRemoves || []).length + 1, estimatedSeconds:estimate${index}.data.estimatedSeconds || 0}); totalMovers += estimate${index}.data.totalMovers || 0;`);
   });
   return buildToolScript(`${hostBindingScript(plan, binding)}
-    if (__jsonStringify(hostBinding) !== "${escapeForExtendScript(JSON.stringify(binding))}") return __error("Edit-plan host targets changed since preview; preview the edit again. No sequence activation or mutation was attempted.");
+    if (__jsonStringify(hostBinding) !== "${escapeForExtendScript(escapeUnsafeLiteralCharacters(JSON.stringify(binding)))}") return __error("Edit-plan host targets changed since preview; preview the edit again. No sequence activation or mutation was attempted.");
+    if (!app.project.activeSequence || String(app.project.activeSequence.sequenceID) !== String(seq.sequenceID)) return __error("Activate the reviewed sequence in Premiere and preview the ripple plan again; its QE sync-lock state cannot be inspected while another sequence is active. Nothing was changed.");
     var rippleEstimates = [], totalMovers = 0;
     ${probes.join("\n")}
     return __result({preflight:true, totalMovers:totalMovers, ripples:rippleEstimates});`);
@@ -262,7 +274,7 @@ function buildApplyScript(plan: EditPlan, binding: EditPlanHostBinding): string 
   });
 
   return buildToolScript(`${hostBindingScript(plan)}
-    if (__jsonStringify(hostBinding) !== "${escapeForExtendScript(JSON.stringify(binding))}") return __error("Edit-plan host targets changed since preview; preview the edit again. No sequence activation or mutation was attempted.");
+    if (__jsonStringify(hostBinding) !== "${escapeForExtendScript(escapeUnsafeLiteralCharacters(JSON.stringify(binding)))}") return __error("Edit-plan host targets changed since preview; preview the edit again. No sequence activation or mutation was attempted.");
     ${activation}\nvar results = [];\n${failure}\n${mutations.join("\n")}\nreturn __result({applied:true, sequence: seq.name, operations:results});`);
 }
 
@@ -327,7 +339,7 @@ export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: Edi
       },
     },
     apply_edit_plan: {
-      description: "Apply a previously previewed compound edit after revalidating stable project, sequence and target identities before activation or mutation. Requires the edit capability and exact preview confirmation token; changed targets require a fresh preview.",
+      description: "Apply a previously previewed compound edit after revalidating stable project, sequence and target identities before activation or mutation. Requires the edit capability and exact preview confirmation token; changed targets require a fresh preview. Ripple plans require the reviewed sequence to be active for the read-only QE sync-lock preflight.",
       parameters: {
         type: "object" as const,
         properties: { plan: planParameter, confirmation_token: { type: "string", description: "Exact token returned by preview_edit_plan" } },
@@ -343,7 +355,7 @@ export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: Edi
           const rippleOps = plan.operations.filter((operation) => operation.type === "remove_clip" && operation.ripple === true).length;
           let result;
           if (rippleOps === 0) {
-            result = await sendCommand(buildApplyScript(plan, binding), { ...bridgeOptions, timeoutMs: 900000, mutationOnTimeout: true });
+            result = await sendCommand(buildApplyScript(plan, binding), { ...bridgeOptions, mutationOnTimeout: true });
           } else {
             const preflight = await sendCommand(buildApplyPreflightScript(plan, binding), bridgeOptions);
             if (!preflight.success) return preflight;

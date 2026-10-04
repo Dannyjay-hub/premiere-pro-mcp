@@ -82,6 +82,15 @@ describe("apply_edit_plan failure reporting", () => {
 });
 
 describe("apply_edit_plan ripple preflight and timeout", () => {
+  it.each([240_000, 1_500_000])("preserves configured timeout %s for non-ripple edits", async (timeoutMs) => {
+    const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: false }] };
+    const configuredTools = getEditPlanTools({ timeoutMs }, { capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" }, auditSink: vi.fn(), operationIdFactory: () => "op", tokenStore: staticEditPlanTokenStore });
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });
+    const preview = await configuredTools.preview_edit_plan.handler({ plan }) as Result;
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { applied: true } });
+    await configuredTools.apply_edit_plan.handler({ plan, confirmation_token: String(preview.data?.confirmationToken) });
+    expect(mockedSendCommand.mock.calls.at(-1)?.[1]).toMatchObject({ timeoutMs, mutationOnTimeout: true });
+  });
   it("refuses an oversized ripple before sending any mutation unless opted in", async () => {
     const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: true }] };
     mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });

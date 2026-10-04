@@ -582,7 +582,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
     },
 
     set_keyframe_interpolation: {
-      description: "Set the interpolation type of an existing keyframe (Linear, Hold, or Bezier). Premiere exposes no interpolation readback, so a write is reported as committed_unverified. Stored curves do not establish rendering; Premiere 26.5.2 es-ES Windows is reported to render linear, hold and bezier identically.",
+      description: "Set the interpolation type of an existing keyframe (Linear, Hold, or Bezier). Premiere exposes no interpolation readback, so a write is reported as committed_unverified. Stored curves do not establish rendering; A 26.5.2 Windows capture report shows identical modes; 25.2.3 macOS evidence distinguishes a QE still-capture artifact from correctly rendered video curves.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -641,7 +641,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             verified: false,
             verificationScope: "Premiere has no interpolation getter; get_value_at_time samples stored property values only, not rendered pixels.",
             renderVerified: false,
-            renderHonesty: "Premiere 26.5.2 es-ES Windows is reported to ignore stored temporal curves on CEP and UXP write paths. Inspect playback or exported pixels before delivery.",
+            renderHonesty: "The 26.5.2 Windows curve-capture report remains unresolved. On 25.2.3 macOS QE stills showed identical modes while actual video exports honored them. Verify temporal curves using an actual short video export, not still capture alone.",
             interpolation: "${args.interpolation}",
             time: __clipSecondsFromKey(keyBase, key)
           });

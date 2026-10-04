@@ -72,6 +72,29 @@ describe("persisted preview host-target binding", () => {
     expect(f.remove).not.toHaveBeenCalled(); expect(f.activation).not.toHaveBeenCalled();
     await expect(f.tools.apply_edit_plan.handler({ plan: insert, confirmation_token: token })).rejects.toThrow("already consumed");
   });
+  it("refuses a named ripple on an inactive sequence without inspecting the wrong QE timeline or activating it", async () => {
+    const f = fixture(); const plan = { sequence_id: "Target", operations: [{ ...removal.operations[0], ripple: true }] };
+    const token = await preview(f.tools, plan);
+    f.project.activeSequence = f.other; f.activation.mockClear();
+    const result = await f.tools.apply_edit_plan.handler({ plan, confirmation_token: token });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Activate the reviewed sequence") });
+    expect(f.project.activeSequence).toBe(f.other);
+    expect(f.activation).not.toHaveBeenCalled(); expect(f.remove).not.toHaveBeenCalled();
+  });
+  it("escapes ES3 line separators and quotes in persisted linked identities during ripple preflight", async () => {
+    const f = linkedFixture(); f.audio.splice(1, 1);
+    f.partner.nodeId = "linked\u2028\"quoted";
+    f.partner.projectItem.nodeId = "source\u2029'quoted";
+    const plan = { operations: [{ ...removal.operations[0], ripple: true }] };
+    const token = await preview(f.tools, plan);
+    vi.mocked(sendCommand).mockClear();
+    expect(await f.tools.apply_edit_plan.handler({ plan, confirmation_token: token })).toMatchObject({ success: true });
+    const preflightScript = String(vi.mocked(sendCommand).mock.calls[0][0]);
+    expect(preflightScript).not.toContain("\u2028");
+    expect(preflightScript).not.toContain("\u2029");
+    expect(preflightScript).toContain("\\u2028");
+    expect(f.partnerRemove).toHaveBeenCalledOnce();
+  });
   it("rejects a different project even if sequence IDs are reused", async () => {
     const f = fixture(); const token = await preview(f.tools);
     f.project.documentID = "document-B";

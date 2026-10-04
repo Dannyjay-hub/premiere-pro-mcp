@@ -1528,7 +1528,7 @@
       return mutationResult(verified, {
         updated: true, interpolation: modeName, interpolationValue: readback,
         renderVerified: false,
-        renderHonesty: "Verification covers the stored interpolation mode only. Premiere 26.5.2 Windows has a reported render gap where linear, hold and bezier render identically; inspect playback or exported pixels before delivery."
+        renderHonesty: "Verification covers the stored interpolation mode only. The 26.5.2 Windows curve-capture report remains unresolved. On 25.2.3 macOS QE stills showed identical modes while actual video exports honored them; verify using a short video export, not still capture alone."
       }, "keyframe_interpolation_readback", "Set keyframe interpolation");
     }
 
