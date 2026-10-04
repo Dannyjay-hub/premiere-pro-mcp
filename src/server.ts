@@ -11,6 +11,7 @@ import { getProjectTools } from "./tools/project.js";
 import { getMediaTools } from "./tools/media.js";
 import { getSequenceTools } from "./tools/sequence.js";
 import { getTimelineTools } from "./tools/timeline.js";
+import { getRippleRemoveRangesTools } from "./tools/ripple-remove-ranges.js";
 import { getEffectsTools } from "./tools/effects.js";
 import { getTransitionsTools } from "./tools/transitions.js";
 import { getAudioTools } from "./tools/audio.js";
@@ -274,6 +275,7 @@ function collectStaticTools(
     ...getMediaTools(bridgeOptions),
     ...getSequenceTools(bridgeOptions),
     ...getTimelineTools(bridgeOptions),
+    ...getRippleRemoveRangesTools(bridgeOptions, { capabilities }),
     ...getEffectsTools(bridgeOptions),
     ...getTransitionsTools(bridgeOptions),
     ...getAudioTools(bridgeOptions),

@@ -675,6 +675,24 @@ describe("sendCommand", () => {
     expect(result.error).toContain("MCP connector panel running in Premiere Pro");
   });
 
+  it("reports unknown mutation state when an edit times out with a stuck busy marker", async () => {
+    mockedExistsSync.mockImplementation((path) => String(path).includes("busy_"));
+    mockedStatSync.mockImplementation((path) => String(path).includes("busy_")
+      ? ({ mtimeMs: 0 } as unknown as ReturnType<typeof statSync>)
+      : ({ uid: myUid, mode: 0o700 } as unknown as ReturnType<typeof statSync>));
+
+    const promise = sendCommand("edit script", { tempDir: "/tmp/test-bridge", timeoutMs: 50, mutationOnTimeout: true });
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await promise;
+
+    expect(result).toMatchObject({
+      success: false,
+      data: { mutationOutcome: "unknown", timelineChanged: null },
+    });
+    expect(result.error).toContain("timeline state is unknown");
+    expect(result.error).toContain("inspect the timeline");
+  });
+
   it("fails health-style commands before publication when a current connector is waiting", async () => {
     vi.setSystemTime(new Date(10_000));
     mockedExistsSync.mockImplementation((path) => String(path).includes("bridge-heartbeat"));
