@@ -166,6 +166,8 @@ function watchResponseFile(resFile: string, listener: ResponseListener): () => v
 export interface BridgeOptions {
   tempDir?: string;
   timeoutMs?: number;
+  /** Mark a command as mutating so accepted-but-unanswered timeouts report unknown state. */
+  mutationOnTimeout?: boolean;
   /** Host application named in timeout guidance (default "Premiere Pro"). */
   hostLabel?: string;
   /**
@@ -562,7 +564,7 @@ async function sendCommandUnchecked(
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
 
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel);
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -644,6 +646,7 @@ async function pollForResponse(
   busyFile: string,
   timeoutMs: number,
   hostLabel = "Premiere Pro",
+  mutationOnTimeout = false,
 ): Promise<CommandResult> {
   const start = Date.now();
   // The CEP plugin writes busy_<id>.json every ~2s while evalScript is in flight.
@@ -740,7 +743,10 @@ async function pollForResponse(
         if (busy === "stuck") {
           finish({
             success: false,
-            error:
+            ...(mutationOnTimeout ? { data: { mutationOutcome: "unknown", timelineChanged: null } } : {}),
+            error: mutationOnTimeout
+              ? `${hostLabel} accepted the edit but stopped responding; the timeline state is unknown and ${hostLabel} may still be applying it. Wait until the host is idle, inspect the timeline, then decide whether a retry is safe.`
+              :
               `The CEP panel appears stuck: its busy marker for this command has not changed for ${Math.round(busyAgeMs / 1000)} s. ` +
               `Reload it in ${hostLabel} (Window > Extensions > MCP Bridge). The command may or may not have run; check ${hostLabel} before retrying.`,
           });
@@ -752,8 +758,11 @@ async function pollForResponse(
         }
         finish({
           success: false,
+          ...(mutationOnTimeout && sawBusy ? { data: { mutationOutcome: "unknown", timelineChanged: null } } : {}),
           error: sawBusy
-            ? `${hostLabel} accepted the script but did not finish within ${elapsed}ms. ` +
+            ? mutationOnTimeout
+              ? `${hostLabel} accepted the edit but did not finish within ${elapsed}ms. The timeline state is unknown; ${hostLabel} may still be applying it. Wait until the host is idle, inspect the timeline, and only then consider a retry.`
+              : `${hostLabel} accepted the script but did not finish within ${elapsed}ms. ` +
               `A modal dialog or a long analysis inside ${hostLabel} is likely blocking the scripting engine — ` +
               `check the ${hostLabel} window and dismiss any open dialog. ` +
               `(The result, if any, will be discarded.)`

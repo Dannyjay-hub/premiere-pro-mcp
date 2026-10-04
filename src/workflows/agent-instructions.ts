@@ -25,8 +25,10 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "Inspect the returned image when composition, text, or visual continuity matters. A path or a successful capture alone is not visual verification.");
   route(["compute_mask_fit_motion", "set_clip_scale", "set_clip_position", "capture_frame"],
     "To frame a still inside an existing Rounded Crop or Crop mask, give the subject box as source-image fractions, apply the returned Scale and Position in the host units it reports, then inspect a captured frame. The computation reads no pixels.");
-  route(["export_sequence_review_frames"],
+  route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
     "Create scoped review images when requested. Inspect the resulting images in a client that can view local artifacts; distinguish image review from playback and audio review.");
+  route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
+    "Still capture verifies output files, not temporal animation. QE exportFramePNG can show held opacity while actual video exports honor keyframe curves; compare a short actual video export before claiming animation or rendered-curve correctness.");
   route(["export_sequence", "verify_delivery_file", "verify_delivery_conformance"],
     "Preflight the requested destination and preset, export, then verify the actual file and delivery requirements. Queue acceptance is not render completion.");
   route(["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder"],

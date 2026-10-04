@@ -190,11 +190,50 @@ describe("remove_from_timeline takes linked partners and verifies", () => {
   });
 
   it("routes ripple removal through the verified ripple delete, never remove(true, ...)", async () => {
-    mockedSendCommand.mockResolvedValue({ success: true, data: {} });
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { totalMovers: 12, estimatedSeconds: 3 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
     await timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true });
-    const script = String(mockedSendCommand.mock.calls.at(-1)?.[0]);
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+    const preflight = String(mockedSendCommand.mock.calls[0]?.[0]);
+    expect(preflight).toContain("dryRun: true");
+    const script = String(mockedSendCommand.mock.calls[1]?.[0]);
     expect(script).not.toMatch(/\.remove\(true/);
     expect(script).toContain("Ripple delete refused");
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 34800, mutationOnTimeout: true });
+  });
+
+  it("does not shorten a configured timeout for ripple removal", async () => {
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { totalMovers: 1, estimatedSeconds: 1 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
+    await getTimelineTools({ ...bridgeOptions, timeoutMs: 240_000 }).remove_from_timeline.handler({ node_id: "v1", ripple: true });
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 240_000, mutationOnTimeout: true });
+  });
+
+  it("refuses a large ripple from the read-only preflight unless explicitly opted in", async () => {
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { totalMovers: 401, estimatedSeconds: 61 } });
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("401 clips would move (estimated 61 seconds)"),
+      data: { mutationOutcome: "not_applied", timelineChanged: false, largeRippleThreshold: 400 },
+    });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(1);
+
+    mockedSendCommand.mockReset();
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { totalMovers: 401, estimatedSeconds: 61 } })
+      .mockResolvedValueOnce({ success: true, data: {} });
+    await timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true, allow_large_ripple: true });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+    expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 190400, mutationOnTimeout: true });
+  });
+
+  it("validates large-ripple threshold before issuing a ripple command", async () => {
+    await expect(timeline.remove_from_timeline.handler({ node_id: "v1", ripple: true, large_ripple_threshold: 0 })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("large_ripple_threshold must be an integer from 1 to 5000"),
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
 
@@ -639,6 +678,26 @@ describe("adjacent edits preserve validated linked membership", () => {
     expect(probeMediaDurationTicks).not.toHaveBeenCalled();
     for (const write of writes) expect(write).not.toHaveBeenCalled();
   });
+  it.each(["roll", "slide"])("%s treats null linkage as unlinked and leaves audio untouched", async (operation) => {
+    const { video, audio } = host();
+    for (const clip of video) clip.getLinkedItems = () => null;
+    const beforeAudio = audio.map((clip) => clip.snapshot());
+    const result = await edit(operation);
+    expect(result).toMatchObject({ success: true });
+    expect(audio.map((clip) => clip.snapshot())).toEqual(beforeAudio);
+  });
+  it.each(["roll", "slide"])("%s accepts the numeric 0 reverse state Premiere 25.2.3 returns", async (operation) => {
+    const { video, audio } = host();
+    for (const clip of [...video, ...audio]) clip.isSpeedReversed = (() => 0) as unknown as () => false;
+    expect(await edit(operation)).toMatchObject({ success: true });
+  });
+  it.each(["roll", "slide"])("%s still refuses a reversed clip reported as 1", async (operation) => {
+    const { video, audio } = host();
+    const writes = observeWrites([...video, ...audio]);
+    video[1].isSpeedReversed = (() => 1) as unknown as () => false;
+    expect(await edit(operation)).toMatchObject({ success: false, error: expect.stringContaining("normal-speed") });
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+  });
   it.each(["roll", "slide"])("%s refuses unreadable second linkage before writing", async (operation) => {
     const { video, audio } = host();
     const writes = observeWrites([...video, ...audio]);
@@ -673,7 +732,7 @@ describe("trim/slip default linked coverage fails closed", () => {
     : tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1, include_linked: includeLinked });
   const unreadable = [
     { name: "throwing accessor", read: () => { throw new Error("unreadable linkage"); } },
-    { name: "null collection", read: () => null },
+    { name: "undefined collection", read: () => undefined },
     { name: "missing count", read: () => ({}) },
     { name: "fractional count", read: () => ({ numItems: 1.5 }) },
     { name: "missing member", read: () => ({ numItems: 1 }) },
@@ -687,6 +746,13 @@ describe("trim/slip default linked coverage fails closed", () => {
       video[1].getLinkedItems = read as typeof video[1]["getLinkedItems"];
       expect(await edit(operation)).toMatchObject({ success: false, error: expect.stringContaining("Linked membership could not be verified") });
       for (const write of writes) expect(write).not.toHaveBeenCalled();
+    });
+    it(operation + " treats a null linkage as an unlinked clip and edits it alone", async () => {
+      const { video, audio } = host();
+      const beforeAudio = audio[1].snapshot();
+      video[1].getLinkedItems = () => null;
+      expect(await edit(operation)).toMatchObject({ success: true, data: { linkedPartnersEdited: [] } });
+      expect(audio[1].snapshot()).toEqual(beforeAudio);
     });
     it(operation + " keeps explicit include_linked false usable despite unreadable linkage", async () => {
       const { video, audio } = host();

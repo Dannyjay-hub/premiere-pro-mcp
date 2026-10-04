@@ -12,7 +12,7 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { confirmationToken, getEditPlanTools } from "../../src/tools/edit-plans.js";
-import { staticEditPlanTokenStore } from "../helpers/static-edit-plan-token-store.js";
+import { fixtureEditPlanBinding, staticEditPlanTokenStore } from "../helpers/static-edit-plan-token-store.js";
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const TICKS = 254016000000;
@@ -69,7 +69,7 @@ describe("apply_edit_plan failure reporting", () => {
     expect(result.error).not.toMatch(/undo count/);
     expect(list.map((clip) => clip.nodeId)).toEqual(["v1"]);
     // The pattern must survive the TS template literal as \s and \. in ExtendScript.
-    expect(String(mockedSendCommand.mock.calls[0][0])).toContain("replace(/\\s*Nothing was changed\\.?/g");
+    expect(String(mockedSendCommand.mock.calls.at(-1)?.[0])).toContain("replace(/\\s*Nothing was changed\\.?/g");
   });
 
   it("does not say nothing changed when the failed operation recorded undo entries", async () => {
@@ -78,5 +78,55 @@ describe("apply_edit_plan failure reporting", () => {
     expect(result).toMatchObject({ success: false, data: { timelineChanged: true, undoSteps: 1 } });
     expect(result.error).toContain("may have changed");
     expect(result.error).not.toContain("Nothing was changed");
+  });
+});
+
+describe("apply_edit_plan ripple preflight and timeout", () => {
+  it.each([240_000, 1_500_000])("preserves configured timeout %s for non-ripple edits", async (timeoutMs) => {
+    const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: false }] };
+    const configuredTools = getEditPlanTools({ timeoutMs }, { capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" }, auditSink: vi.fn(), operationIdFactory: () => "op", tokenStore: staticEditPlanTokenStore });
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });
+    const preview = await configuredTools.preview_edit_plan.handler({ plan }) as Result;
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { applied: true } });
+    await configuredTools.apply_edit_plan.handler({ plan, confirmation_token: String(preview.data?.confirmationToken) });
+    expect(mockedSendCommand.mock.calls.at(-1)?.[1]).toMatchObject({ timeoutMs, mutationOnTimeout: true });
+  });
+  it("refuses an oversized ripple before sending any mutation unless opted in", async () => {
+    const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: true }] };
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });
+    const preview = await tools.preview_edit_plan.handler({ plan }) as Result;
+    const token = String(preview.data?.confirmationToken);
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { preflight: true, totalMovers: 1201, ripples: [{ index: 0, movers: 1201, removals: 1 }] } });
+
+    const result = await tools.apply_edit_plan.handler({ plan, confirmation_token: token }) as Result;
+    expect(result).toMatchObject({ success: false, data: { mutationOutcome: "not_applied", timelineChanged: false, refusedRipples: [{ index: 0, movers: 1201, threshold: 400 }] } });
+    expect(result.error).toContain("estimated 181 seconds");
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("supports explicit large-ripple opt-in and scales the bounded apply timeout", async () => {
+    const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: true, allow_large_ripple: true }] };
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });
+    const preview = await tools.preview_edit_plan.handler({ plan }) as Result;
+    const token = String(preview.data?.confirmationToken);
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { preflight: true, totalMovers: 2500, ripples: [{ index: 0, movers: 2500, removals: 1 }] } })
+      .mockResolvedValueOnce({ success: true, data: { applied: true } });
+
+    const result = await tools.apply_edit_plan.handler({ plan, confirmation_token: token }) as Result;
+    expect(result.success).toBe(true);
+    expect(mockedSendCommand.mock.calls.at(-1)?.[1]).toMatchObject({ timeoutMs: 900000, mutationOnTimeout: true });
+    expect(String(mockedSendCommand.mock.calls.at(-1)?.[0])).toContain("if (!true && totalMovers > 400)");
+  });
+
+  it("does not shorten the configured timeout for a ripple apply", async () => {
+    const plan = { operations: [{ type: "remove_clip" as const, node_id: "v0", ripple: true }] };
+    const configuredTools = getEditPlanTools({ timeoutMs: 240_000 }, { capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" }, auditSink: vi.fn(), operationIdFactory: () => "op", tokenStore: staticEditPlanTokenStore });
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { targetsValidated: true, hostBinding: fixtureEditPlanBinding(plan) } });
+    const preview = await configuredTools.preview_edit_plan.handler({ plan }) as Result;
+    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { preflight: true, totalMovers: 1, ripples: [{ index: 0, movers: 1, removals: 1 }] } })
+      .mockResolvedValueOnce({ success: true, data: { applied: true } });
+    await configuredTools.apply_edit_plan.handler({ plan, confirmation_token: String(preview.data?.confirmationToken) });
+    expect(mockedSendCommand.mock.calls.at(-1)?.[1]).toMatchObject({ timeoutMs: 240_000, mutationOnTimeout: true });
   });
 });

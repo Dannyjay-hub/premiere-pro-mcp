@@ -44,6 +44,6 @@ describe("export_sequence_review_frames", () => {
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("failures.push");
     expect(script).toContain("complete: frames.length === requested");
-    expect(script).toContain("Playback, audio, and editorial quality remain unverified");
+    expect(script).toContain("Temporal animation, playback, audio, and editorial quality remain unverified");
   });
 });

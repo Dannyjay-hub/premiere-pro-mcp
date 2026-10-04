@@ -20,8 +20,8 @@ const TICKS = 254016000000;
 async function scriptFor(args: Record<string, unknown>) {
   mockedSendCommand.mockClear();
   await getAdvancedTools(bridgeOptions).ripple_delete.handler(args as never);
-  expect(mockedSendCommand).toHaveBeenCalledTimes(1);
-  return String(mockedSendCommand.mock.calls[0][0]);
+  expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+  return String(mockedSendCommand.mock.calls[1][0]);
 }
 
 function secondsOf(ticks: string | number) {
@@ -279,4 +279,3 @@ describe("ripple_delete and the clip's linked partners", () => {
     expect(rangesOf(a1)).toEqual([[0, 4], [4, 10]]);
   });
 });
-

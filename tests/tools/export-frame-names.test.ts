@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import { getHelpersSource } from "../../src/bridge/script-builder.js";
 
+vi.mock("../../src/bridge/file-bridge.js", () => ({ sendCommand: vi.fn() }));
+import { sendCommand } from "../../src/bridge/file-bridge.js";
+import { getExportTools } from "../../src/tools/export.js";
 const TICKS = 254016000000;
 
 /**
@@ -58,6 +61,15 @@ describe("export_frame file names", () => {
     expect(files).toEqual(["/Users/me/frames/shot-12.5s.png"]);
   });
 
+  it("qualifies animation separately from a file-verified QE capture receipt", async () => {
+    vi.mocked(sendCommand).mockImplementation(async (script) => JSON.parse(String(runInNewContext(String(script), {
+      __exportStillFrame: () => ({ ok: true, method: "qe", path: "/work/frame.png" }),
+      __result: (data: unknown) => JSON.stringify({ success: true, data }),
+    }))));
+    const result = await getExportTools({}).export_frame.handler({ output_path: "/work/frame.png" });
+    expect(result).toMatchObject({ success: true, data: { exported: true, method: "qe", renderVerified: false,
+      verificationScope: expect.stringContaining("actual short video export") } });
+  });
   it("still works for plain names", () => {
     const { result, files } = run("/Users/me/frames/plain.png");
     expect(result).toMatchObject({ ok: true, method: "qe" });

@@ -1680,6 +1680,9 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label, validatedPa
     else {
       try {
         var linked = target.clip.getLinkedItems();
+        // A clip with no linked partner returns null without throwing (measured
+        // on 25.2.3); that is a readable "no partners", not an unreadable one.
+        if (linked === null) linked = { numItems: 0 };
         if (!linked || typeof linked.numItems !== "number" || !isFinite(linked.numItems) || linked.numItems < 0 || Math.floor(linked.numItems) !== linked.numItems || linked.numItems > 256) throw new Error("Linked collection is unreadable");
         var linkedSeen = {};
         for (var li = 0; li < linked.numItems; li++) {
