@@ -93,6 +93,7 @@
         });
         if (!committed) throw commandError("UXP_TRANSACTION_FAILED", "Premiere did not commit the slide transaction");
 
+        try {
         // Re-resolve all coordinates. A failed postcondition can follow a
         // committed host transaction, so callers must inspect before another
         // mutation if this verification throws.
@@ -113,6 +114,13 @@
           verificationBoundary: "three_track_item_source_and_timeline_readback",
           undoLabel: "Slide timeline item"
         };
+        } catch (error) {
+          return { slid: false, committed: true, verified: false, partial: true,
+            outcome: "committed_unverified", before: before, after: null, timelineChanged: null, rollbackPerformed: false,
+            verificationBoundary: "committed_transaction_with_failed_readback",
+            readbackError: error && error.message ? error.message : String(error),
+            nextStep: "Inspect the affected track before any retry. The committed transaction was not rolled back; use Premiere Undo only after reviewing the change." };
+        }
       });
     }
 

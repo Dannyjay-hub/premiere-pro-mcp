@@ -80,7 +80,8 @@ function valueFor(schema: Schema, field: string, includeOptional: boolean): unkn
   if (schema.default !== undefined) return schema.default;
   switch (schema.type) {
     case "boolean": return includeOptional;
-    case "number": return 1;
+    case "number":
+    case "integer": return 1;
     case "array": return [valueFor(schema.items ?? { type: "string" }, field, includeOptional)];
     case "object": return argsFor(schema, includeOptional);
     default: return `coverage-${field}`;

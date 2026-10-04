@@ -71,6 +71,14 @@ const expectedSnapshot = {
 const targetCoordinates = { mediaType: "video", trackIndex: 0, clipIndex: 1 };
 
 describe("guarded documented UXP track-item slide workflow", () => {
+  it("retains an unverified commit when the host ignores part of the slide", async () => {
+    const value = slideHost();
+    value.following.createSetInPointAction.mockImplementation(() => ({ apply: () => undefined }));
+    const input = { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, confirmSlide: true, operationId: "partial-slide" };
+    await expect(value.registry.dispatch("trackItem.slide", input)).resolves.toMatchObject({ outcome: "committed_unverified", committed: true, partial: true, rollbackPerformed: false });
+    await expect(value.registry.dispatch("trackItem.slide", input)).resolves.toMatchObject({ replayed: true });
+    expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
+  });
   it("advertises bounded inspection and a replay-safe undoable transaction command", async () => {
     const value = slideHost();
     await expect(value.registry.capabilities()).resolves.toMatchObject({ commands: {

@@ -110,6 +110,10 @@
       let value = "";
       try { if (typeof item.getId === "function") value = guidString(await item.getId()); } catch (_) {}
       try { if (!value && typeof item.getGuid === "function") value = guidString(await item.getGuid()); } catch (_) {}
+      // Some ClipProjectItem/FolderItem wrappers expose identity only via ProjectItem.cast.
+      if (!value && ppro.ProjectItem && typeof ppro.ProjectItem.cast === "function") {
+        try { const base = ppro.ProjectItem.cast(item); if (base && typeof base.getId === "function") value = guidString(await base.getId()); } catch (_) {}
+      }
       // Project and Sequence expose a Guid property on supported Premiere hosts.
       if (value) return value;
       try { return guidString(item.guid); } catch (_) { return ""; }

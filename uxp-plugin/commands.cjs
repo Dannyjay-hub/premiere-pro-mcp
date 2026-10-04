@@ -913,7 +913,9 @@
       const project = await ppro.Project.getActiveProject();
       if (!project) throw commandError("UXP_NO_ACTIVE_PROJECT", "No active project");
       const clip = await resolveClipProjectItem(project, { projectItemId: wantedId, projectItemName: wantedName });
-      const itemId = await clip.getId();
+      // ClipProjectItem casts on some 26.5 builds lack getId. Receipt identity
+      // is optional; resolution and replay guards still apply before dispatch.
+      const itemId = await projectItemIdentifier(clip) || null;
       const accepted = await ppro.Transcript.transcribeClipProjectItem(clip, language ? { language } : undefined);
       if (accepted !== true) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm the transcription start request");
       return {

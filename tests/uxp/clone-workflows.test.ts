@@ -74,6 +74,18 @@ const expectedSnapshot = { projectGuid: "project-1", sequenceId: "sequence-1", m
 const targetCoordinates = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
 
 describe("guarded documented UXP append-only track-item duplicate workflow", () => {
+  it("retains a partial commit receipt and prevents a replay from cloning again", async () => {
+    const value = cloneHost();
+    const original = value.cloneAction.getMockImplementation()!;
+    value.cloneAction.mockImplementation((...args) => {
+      const action = original(...args);
+      return { apply: () => { action.apply(); value.states[0].end = 8; } };
+    });
+    const input = { ...targetCoordinates, expectedSnapshot, confirmDuplicate: true, operationId: "partial-copy" };
+    await expect(value.registry.dispatch("trackItem.clone", input)).resolves.toMatchObject({ outcome: "committed_unverified", partial: true, committed: true, rollbackPerformed: false });
+    await expect(value.registry.dispatch("trackItem.clone", input)).resolves.toMatchObject({ replayed: true });
+    expect(value.cloneAction).toHaveBeenCalledTimes(1);
+  });
   it("advertises bounded inspection and an idempotent undoable transaction command", async () => {
     const value = cloneHost();
     await expect(value.registry.capabilities()).resolves.toMatchObject({ commands: {

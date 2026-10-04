@@ -1,3 +1,4 @@
+import { sequenceReadProperties, sequenceReadScript, type SequenceReadArgs } from "./sequence-read.js";
 import { buildToolScript, buildScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, sendRawCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -275,10 +276,11 @@ Examples:
     },
 
     get_sequence_structure: {
-      description: "Get a complete structural overview of the active sequence: all tracks, all clips with positions, gaps, and clip metadata. Essential for understanding timeline state before making edits.",
+      description: "Get a bounded structural page of the active sequence (50 clips by default; follow pagination.nextOffset): all track counts, paged clips with positions, gaps, and clip metadata. Essential for understanding timeline state before making edits.",
       parameters: {
         type: "object" as const,
         properties: {
+          ...sequenceReadProperties,
           sequence_id: {
             type: "string",
             minLength: 1,
@@ -287,12 +289,14 @@ Examples:
           },
         },
       },
-      handler: async (args: { sequence_id?: string }) => {
+      handler: async (args: SequenceReadArgs & { sequence_id?: string }) => {
         const seqLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found");`
           : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
 
+        const bounds = sequenceReadScript(args);
         const script = buildToolScript(`
+          ${bounds}
           ${seqLookup}
           
           var videoTracks = [];
@@ -301,6 +305,7 @@ Examples:
             var clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
+              if (!__readInclude(clip, "video", t)) continue;
               var clipInfo = {
                 index: c,
                 nodeId: clip.nodeId,
@@ -315,12 +320,12 @@ Examples:
               };
               try { clipInfo.enabled = !__isClipDisabled(clip); } catch(e) {}
               try { clipInfo.speed = clip.getSpeed(); } catch(e) {}
-              clips.push(clipInfo);
+              __readPush(clips, clipInfo);
             }
             videoTracks.push({
               index: t,
               name: track.name,
-              clipCount: clips.length,
+              clipCount: track.clips.numItems,
               clips: clips,
               isMuted: track.isMuted(),
               isLocked: track.isLocked()
@@ -333,7 +338,8 @@ Examples:
             var clips = [];
             for (var c = 0; c < track.clips.numItems; c++) {
               var clip = track.clips[c];
-              clips.push({
+              if (!__readInclude(clip, "audio", t)) continue;
+              __readPush(clips, {
                 index: c,
                 nodeId: clip.nodeId,
                 name: clip.name,
@@ -348,14 +354,16 @@ Examples:
             audioTracks.push({
               index: t,
               name: track.name,
-              clipCount: clips.length,
+              clipCount: track.clips.numItems,
               clips: clips,
               isMuted: track.isMuted(),
               isLocked: track.isLocked()
             });
           }
           
-          return __result({
+          if (__readError) return __error(__readError);
+          return __readResult({
+            pagination: __readReceipt(),
             name: seq.name,
             id: seq.sequenceID,
             durationSeconds: __ticksToSeconds(seq.end),

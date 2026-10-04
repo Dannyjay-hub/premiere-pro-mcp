@@ -3,6 +3,12 @@ import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
 // A native write may mutate before throwing; never present that as an untouched failure.
 const TRANSITION_FAILURE_RECEIPT = `
+  function __transitionTimecode(frames, frameTicks) {
+    var fps = Math.round(TICKS_PER_SECOND / frameTicks);
+    function pad(value) { return value < 10 ? "0" + value : String(value); }
+    return pad(Math.floor(frames / (fps * 3600))) + ":" + pad(Math.floor(frames / (fps * 60)) % 60) + ":" + pad(Math.floor(frames / fps) % 60) + ":" + pad(frames % fps);
+  }
+
   function __transitionReadbacks(track, beforeKeys) {
     var placements = [];
     for (var i = 0; i < track.transitions.numItems; i++) {
@@ -140,9 +146,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           var transitionCountBefore = domTrack.transitions.numItems;
           try {
             // QE transition writes belong to the clip. The legacy method takes
-            // a clip edge, duration in sequence frames, offset, alignment, and
+            // a clip edge, duration as timecode on the sequence frame grid, offset, alignment, and
             // single-sided flags; DOM readback below decides whether it worked.
-            qeClip.addTransition(transitionQE, targetHead, String(durationFrames), "0", 0.5, false, true);
+            qeClip.addTransition(transitionQE, targetHead, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true);
           } catch (transitionError) {
             return __transitionAttemptFailure(domTrack, transitionCountBefore, "QE clip addTransition rejected the transition: " + transitionError.toString());
           }
@@ -168,6 +174,8 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             trackIndex: ${args.track_index},
             atSeconds: ${args.cut_point_seconds},
             requestedDurationSeconds: ${duration},
+            durationMatched: Math.abs(__transitionReadbacks(domTrack, transitionKeysBefore)[0].durationSeconds - ${duration}) <= frameTicks / TICKS_PER_SECOND,
+            verificationScope: "Placement and stored duration only; limited source handles may shorten or offset the transition. Rendered appearance is not verified.",
             durationSeconds: __transitionReadbacks(domTrack, transitionKeysBefore)[0].durationSeconds,
             placements: __transitionReadbacks(domTrack, transitionKeysBefore)
           });
@@ -272,14 +280,14 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           
           if (position === "start" || position === "both") {
             try {
-              qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true);
+              qeClip.addTransition(transitionQE, true, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true);
             } catch (startTransitionError) {
               return __transitionAttemptFailure(domTrack, transitionCountBefore, "QE clip addTransition rejected the transition at the clip start: " + startTransitionError.toString(), { requestedEdges: requestedEdges });
             }
           }
           if (position === "end" || position === "both") {
             try {
-              qeClip.addTransition(transitionQE, false, String(durationFrames), "0", 0.5, false, true);
+              qeClip.addTransition(transitionQE, false, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true);
             } catch (endTransitionError) {
               var completedEdges = [];
               try {
@@ -416,7 +424,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
               continue;
             }
             try {
-              qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true);
+              qeClip.addTransition(transitionQE, true, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true);
             } catch(e) { failures.push("cut " + c + ": " + e.toString()); }
           }
 

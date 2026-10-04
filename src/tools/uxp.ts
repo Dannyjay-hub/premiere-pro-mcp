@@ -604,7 +604,7 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
       },
     },
     import_transcript_uxp: {
-      description: "Import native transcript JSON onto one untranscribed source media clip through documented Premiere 26.3+ UXP APIs. Check has_transcript_uxp first and omit expected_transcript_revision (or pass null). Importing over an existing transcript is refused (UXP_TRANSCRIPT_OVERWRITE_REFUSED): on Premiere 26.5.1 a failed import cleared an existing transcript that could not be restored. This destructive import requires explicit confirmation and an operation_id, serializes competing imports for the same project item, runs one undoable transaction, and reports exact bounded export SHA-256 readback rather than claiming a licensed-host result.",
+      description: "Import native transcript JSON onto one untranscribed source media clip through documented Premiere 26.3+ UXP APIs. Check has_transcript_uxp first and omit expected_transcript_revision (or pass null). Importing over an existing transcript is refused (UXP_TRANSCRIPT_OVERWRITE_REFUSED): on Premiere 26.5.1 a failed import cleared an existing transcript that could not be restored. This destructive import requires explicit confirmation and an operation_id, serializes competing imports for the same project item, runs one undoable transaction, and reports bounded exact or canonical full-content export readback; JSON key order and numeric spelling may change while timings, speakers and text must match. Host-attached empty transcripts permit import, but nonempty transcripts still refuse overwrite.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,

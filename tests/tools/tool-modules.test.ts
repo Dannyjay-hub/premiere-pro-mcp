@@ -764,7 +764,7 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain("var targetClip = incomingClip || outgoingClip");
       expect(script).toContain("__findQeClipByDomClip(qeTrack, targetClip)");
       expect(script).toContain('typeof qeClip.addTransition !== "function"');
-      expect(script).toContain('qeClip.addTransition(transitionQE, targetHead, String(durationFrames), "0", 0.5, false, true)');
+      expect(script).toContain('qeClip.addTransition(transitionQE, targetHead, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true)');
       expect(script).not.toContain("qeTrack.addTransition(");
       expect(script).toContain("__newTransitionCovers(domTrack, transitionKeysBefore, cutTicks, frameTicks)");
       expect(script).toContain("DOM readback did not find a new one at the requested cut point");
@@ -777,8 +777,8 @@ describe("Tool Handler Behavior", () => {
       expect(clipScript).toContain('result.trackType !== "video"');
       expect(clipScript).toContain("__findQeClipByDomClip(qeTrack, result.clip)");
       expect(clipScript).toContain("var requestedCount = position === \"both\" ? 2 : 1");
-      expect(clipScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
-      expect(clipScript).toContain('qeClip.addTransition(transitionQE, false, String(durationFrames), "0", 0.5, false, true)');
+      expect(clipScript).toContain('qeClip.addTransition(transitionQE, true, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true)');
+      expect(clipScript).toContain('qeClip.addTransition(transitionQE, false, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true)');
       expect(clipScript).toContain("startVerified");
       expect(clipScript).toContain("endVerified");
       expect(clipScript).toContain("__newTransitionCovers(domTrack, transitionKeysBefore, clipStartTicks, frameTicks)");
@@ -790,7 +790,7 @@ describe("Tool Handler Behavior", () => {
       await (tools.batch_add_transitions.handler as any)({ transition_name: "Cross Dissolve" });
       const batchScript = mockedSendCommand.mock.calls[0][0];
       expect(batchScript).toContain("__findQeClipByDomClip(qeTrack, incomingClip)");
-      expect(batchScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
+      expect(batchScript).toContain('qeClip.addTransition(transitionQE, true, __transitionTimecode(durationFrames, frameTicks), "0", 0.5, false, true)');
       expect(batchScript).toContain("verifiedCount !== requestedCount");
       expect(batchScript).toContain("__newTransitionCovers(track, transitionKeysBefore, requestedCuts[rc].ticks, frameTicks)");
       expect(batchScript).toContain("DOM readback did not find a new transition at cut");

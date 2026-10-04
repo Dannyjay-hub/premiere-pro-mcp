@@ -1,3 +1,4 @@
+vi.mock("../../src/tools/mogrt-validation.js", () => ({ validateMogrtArchive: vi.fn(() => null) }));
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import { deflateRawSync } from "node:zlib";

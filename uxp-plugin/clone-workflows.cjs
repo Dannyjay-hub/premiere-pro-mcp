@@ -102,6 +102,7 @@
         });
         if (!committed) throw commandError("UXP_TRANSACTION_FAILED", "Premiere did not commit the duplicate transaction");
 
+        try {
         // Re-resolve by the original coordinate plus the one deterministic
         // append coordinate. Do not walk or read unrelated item fields after
         // a committed action.
@@ -121,6 +122,13 @@
           verificationBoundary: "source_and_appended_track_item_readback",
           undoLabel: "Duplicate timeline item after source"
         };
+        } catch (error) {
+          return { duplicated: false, committed: true, verified: false, partial: true,
+            outcome: "committed_unverified", before: before, after: null, timelineChanged: null, rollbackPerformed: false,
+            verificationBoundary: "committed_transaction_with_failed_readback",
+            readbackError: error && error.message ? error.message : String(error),
+            nextStep: "Inspect the affected track before any retry. The committed transaction was not rolled back; use Premiere Undo only after reviewing the change." };
+        }
       });
     }
 

@@ -1525,7 +1525,11 @@
       });
       let verified = false, readback = null;
       try { const keyframe = context.param.getKeyframePtr(tick(timeSeconds)); readback = await keyframe.getTemporalInterpolationMode(); verified = readback === mode; } catch (_) {}
-      return mutationResult(verified, { updated: true, interpolation: modeName, interpolationValue: readback }, "keyframe_interpolation_readback", "Set keyframe interpolation");
+      return mutationResult(verified, {
+        updated: true, interpolation: modeName, interpolationValue: readback,
+        renderVerified: false,
+        renderHonesty: "Verification covers the stored interpolation mode only. Premiere 26.5.2 Windows has a reported render gap where linear, hold and bezier render identically; inspect playback or exported pixels before delivery."
+      }, "keyframe_interpolation_readback", "Set keyframe interpolation");
     }
 
     async function trackItemContext(args, mutation) {

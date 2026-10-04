@@ -145,3 +145,5 @@ Use the Premiere MCP planners before styling captions in the host UI.
 4. Premiere cannot create speaker-colored stacked captions from raw text. Apply
    reviewed colors and stack positions in Essential Graphics or a MOGRT, then
    inspect `export_sequence_review_frames` before export.
+
+Sequence inspection tools return bounded pages (50 clips or gaps by default). Follow `pagination.nextOffset` with unchanged filters until `truncated` is false before using the snapshot as complete QA or edit-plan evidence. Re-read after timeline mutations. Marker and transition collections have separate caps; inspect them separately when truncated.
