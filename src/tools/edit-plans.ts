@@ -3,6 +3,7 @@ import { BridgeOptions, sendCommand } from "../bridge/file-bridge.js";
 import { validateBridgeScriptSize } from "../bridge/script-size.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
+import { rippleTimeoutMs } from "./ripple-timeout.js";
 import { createEditPlanTokenStore, EditPlanTokenStore, EditPlanHostBinding, validateEditPlanHostBinding } from "./edit-plan-token-store.js";
 import {
   AuditSink,
@@ -22,11 +23,11 @@ type InsertClip = {
   audio_track_index?: number;
 };
 
-type RemoveClip = { type: "remove_clip"; node_id: string; ripple?: boolean; include_linked?: boolean };
+type RemoveClip = { type: "remove_clip"; node_id: string; ripple?: boolean; include_linked?: boolean; allow_large_ripple?: boolean; large_ripple_threshold?: number };
 
 const OPERATION_KEYS: Record<EditPlanOperation["type"], string[]> = {
   insert_clip: ["type", "item_id", "start_seconds", "video_track_index", "audio_track_index"],
-  remove_clip: ["type", "node_id", "ripple", "include_linked"],
+  remove_clip: ["type", "node_id", "ripple", "include_linked", "allow_large_ripple", "large_ripple_threshold"],
 };
 export type EditPlanOperation = InsertClip | RemoveClip;
 export interface EditPlan { sequence_id?: string; operations: EditPlanOperation[] }
@@ -78,6 +79,8 @@ export function validateEditPlan(value: unknown): EditPlan {
       for (const key of ["ripple", "include_linked"] as const) {
         if (operation[key] !== undefined && typeof operation[key] !== "boolean") throw new Error(`operation ${index} ${key} must be a boolean`);
       }
+      if (operation.allow_large_ripple !== undefined && typeof operation.allow_large_ripple !== "boolean") throw new Error(`operation ${index} allow_large_ripple must be a boolean`);
+      if (operation.large_ripple_threshold !== undefined && (!Number.isInteger(operation.large_ripple_threshold) || operation.large_ripple_threshold < 1 || operation.large_ripple_threshold > 5000)) throw new Error(`operation ${index} large_ripple_threshold must be an integer from 1 to 5000`);
     } else {
       throw new Error(`operation ${index} has unsupported type`);
     }
@@ -95,7 +98,7 @@ function describe(plan: EditPlan) {
 }
 
 /** Resolve and snapshot every target without activating a sequence or editing the host. */
-function hostBindingScript(plan: EditPlan): string {
+function hostBindingScript(plan: EditPlan, boundPartners?: EditPlanHostBinding): string {
   const sequence = plan.sequence_id
     ? `var seq = __findSequence("${escapeForExtendScript(plan.sequence_id)}"); if (!seq) return __error("Sequence not found");`
     : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
@@ -108,10 +111,22 @@ function hostBindingScript(plan: EditPlan): string {
         if (!seq.audioTracks || ${audio} >= seq.audioTracks.numTracks) return __error("audio track not found for operation ${index}");
         targets.push({type:"insert_clip",targetId:__bindingIdentity(item${index}.nodeId),videoTrackIndex:${video},audioTrackIndex:${audio}});`;
     }
+    const reuseBoundPartners = boundPartners !== undefined && (operation.ripple === true || operation.include_linked !== false);
+    const linkedBindings = boundPartners?.targets[index]?.type === "remove_clip" ? boundPartners.targets[index].linkedPartners : [];
+    const partnerPrelude = reuseBoundPartners
+      ? `var partnerBindings${index} = ${JSON.stringify(linkedBindings)};
+        for (var pb${index} = 0; pb${index} < partnerBindings${index}.length; pb${index}++) {
+          var partnerLocated${index} = __planLocateClip(seq, partnerBindings${index}[pb${index}].targetId);
+          if (!partnerLocated${index} || __jsonStringify(__planClipBinding(partnerLocated${index})) !== __jsonStringify(partnerBindings${index}[pb${index}])) return __error("A linked removal target changed since preview for operation ${index}");
+          validatedPartners${index}.push(partnerLocated${index});
+        }`
+      : "";
+    const partnerExpression = reuseBoundPartners ? `partnerBindings${index}` : `__planLinkedBindings(seq, located${index}, validatedPartners${index})`;
     return `var located${index} = __planLocateClip(seq, "${escapeForExtendScript(operation.node_id)}"); if (!located${index}) return __error("Clip not found for operation ${index}");
       var removal${index} = __planClipBinding(located${index});
       var validatedPartners${index} = [];
-      var boundRemoval${index} = {type:"remove_clip",targetId:removal${index}.targetId,sourceProjectItemId:removal${index}.sourceProjectItemId,trackType:removal${index}.trackType,trackIndex:removal${index}.trackIndex,startTicks:removal${index}.startTicks,endTicks:removal${index}.endTicks,inTicks:removal${index}.inTicks,outTicks:removal${index}.outTicks,linkedPartners: ${operation.ripple === true || operation.include_linked !== false ? `__planLinkedBindings(seq, located${index}, validatedPartners${index})` : "[]"}};
+      ${partnerPrelude}
+      var boundRemoval${index} = {type:"remove_clip",targetId:removal${index}.targetId,sourceProjectItemId:removal${index}.sourceProjectItemId,trackType:removal${index}.trackType,trackIndex:removal${index}.trackIndex,startTicks:removal${index}.startTicks,endTicks:removal${index}.endTicks,inTicks:removal${index}.inTicks,outTicks:removal${index}.outTicks,linkedPartners: ${operation.ripple === true || operation.include_linked !== false ? partnerExpression : "[]"}};
       targets.push(boundRemoval${index});`;
   });
   return `${sequence}
@@ -170,6 +185,30 @@ function buildPreviewScript(plan: EditPlan): string {
   return buildToolScript(`${hostBindingScript(plan)}\nreturn __result({targetsValidated:true, hostBinding:hostBinding, applied:false});`);
 }
 
+/** Read-only estimate, bound to the same inspected host targets as the apply. */
+function buildApplyPreflightScript(plan: EditPlan, binding: EditPlanHostBinding): string {
+  const probes: string[] = [];
+  plan.operations.forEach((operation, index) => {
+    if (operation.type !== "remove_clip" || operation.ripple !== true) return;
+    const nodeId = escapeForExtendScript(operation.node_id);
+    const body = rippleDeleteScriptBody({
+      nodeId,
+      scope: "sync_locked",
+      rangeDelete: false,
+      dryRun: true,
+      allowLargeRipple: true,
+      largeRippleThreshold: operation.large_ripple_threshold ?? 400,
+      validatedPartnersExpression: `validatedPartners${index}`,
+    });
+    probes.push(`var estimate${index} = (function () { var __result = function (d) { return { success:true, data:d }; }; var __error = function (m,d) { return { success:false, error:String(m), data:d }; }; ${body} })(); if (!estimate${index}.success) return __error("Ripple preflight operation ${index} failed: " + estimate${index}.error, estimate${index}.data); rippleEstimates.push({index:${index}, movers:estimate${index}.data.totalMovers || 0, removals:(estimate${index}.data.alsoRemoves || []).length + 1, estimatedSeconds:estimate${index}.data.estimatedSeconds || 0}); totalMovers += estimate${index}.data.totalMovers || 0;`);
+  });
+  return buildToolScript(`${hostBindingScript(plan, binding)}
+    if (__jsonStringify(hostBinding) !== "${escapeForExtendScript(JSON.stringify(binding))}") return __error("Edit-plan host targets changed since preview; preview the edit again. No sequence activation or mutation was attempted.");
+    var rippleEstimates = [], totalMovers = 0;
+    ${probes.join("\n")}
+    return __result({preflight:true, totalMovers:totalMovers, ripples:rippleEstimates});`);
+}
+
 function buildApplyScript(plan: EditPlan, binding: EditPlanHostBinding): string {
   const activation = plan.sequence_id ? `
     if (!app.project.activeSequence || String(app.project.activeSequence.sequenceID) !== String(seq.sequenceID)) {
@@ -213,7 +252,7 @@ function buildApplyScript(plan: EditPlan, binding: EditPlanHostBinding): string 
     } else {
       const nodeId = escapeForExtendScript(operation.node_id);
       if (operation.ripple === true) {
-        const body = rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false, validatedPartnersExpression: `validatedPartners${index}` });
+        const body = rippleDeleteScriptBody({ nodeId, scope: "sync_locked", rangeDelete: false, dryRun: false, allowLargeRipple: operation.allow_large_ripple === true, largeRippleThreshold: operation.large_ripple_threshold ?? 400, validatedPartnersExpression: `validatedPartners${index}` });
         // __result/__error are shadowed so the body hands back a plain object.
         mutations.push(`var ripple${index} = (function () { var __result = function (d) { return { success: true, data: d }; }; var __error = function (m, d) { return { success: false, error: String(m), data: d }; }; ${body} })(); if (!ripple${index}.success) return __planFail(${index}, ripple${index}.error, ripple${index}.data); results.push({index:${index}, type:"remove_clip", ripple:true, applied:true, verified:true, gapClosedSeconds: ripple${index}.data.gapClosedSeconds, clipsShifted: ripple${index}.data.clipsShifted});`);
       } else {
@@ -252,6 +291,8 @@ export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: Edi
             audio_track_index: { type: "integer", minimum: 0, description: "insert_clip: audio track (default 0)" },
             node_id: { type: "string", description: "remove_clip: timeline clip node ID" },
             ripple: { type: "boolean", description: "remove_clip: close the gap with a verified sync-locked ripple delete (always takes linked partners)" },
+            allow_large_ripple: { type: "boolean", description: "ripple remove_clip: allow execution above large_ripple_threshold after the read-only mover estimate" },
+            large_ripple_threshold: { type: "integer", minimum: 1, maximum: 5000, description: "ripple remove_clip: refuse above this mover count unless allow_large_ripple is true (default 400)" },
             include_linked: { type: "boolean", description: "remove_clip without ripple: also remove linked audio/video partners (default true)" },
           },
           required: ["type"],
@@ -299,7 +340,31 @@ export function getEditPlanTools(bridgeOptions: BridgeOptions, dependencies: Edi
           const plan = validateEditPlan(args.plan);
           const binding = validateEditPlanHostBinding(tokenStore.consume(args.confirmation_token, confirmationToken(plan)));
           emitAudit(auditSink, { operationId, action: "apply_edit_plan", outcome: "started", details: { operationCount: plan.operations.length } });
-          const result = await sendCommand(buildApplyScript(plan, binding), bridgeOptions);
+          const rippleOps = plan.operations.filter((operation) => operation.type === "remove_clip" && operation.ripple === true).length;
+          let result;
+          if (rippleOps === 0) {
+            result = await sendCommand(buildApplyScript(plan, binding), { ...bridgeOptions, timeoutMs: 900000, mutationOnTimeout: true });
+          } else {
+            const preflight = await sendCommand(buildApplyPreflightScript(plan, binding), bridgeOptions);
+            if (!preflight.success) return preflight;
+            const estimate = preflight.data as { totalMovers?: number; ripples?: Array<{ index: number; movers: number; removals: number }> } | undefined;
+            const moverCount = estimate?.totalMovers ?? 0;
+            const refused = plan.operations.flatMap((operation, index) => {
+              if (operation.type !== "remove_clip" || operation.ripple !== true) return [];
+              const rippleEstimate = estimate?.ripples?.find((entry) => entry.index === index);
+              const movers = rippleEstimate?.movers ?? 0;
+              const threshold = operation.large_ripple_threshold ?? 400;
+              return movers > threshold && operation.allow_large_ripple !== true ? [{ index, movers, threshold, estimatedSeconds: Math.ceil(movers * 0.15 + (rippleEstimate?.removals ?? 1) * 0.5) }] : [];
+            });
+            if (refused.length) {
+              const first = refused[0];
+              return { success: false, error: `Large ripple refused before mutation in operation ${first.index}: ${first.movers} clips would move (estimated ${first.estimatedSeconds} seconds). Pass allow_large_ripple: true to proceed.`, data: { mutationOutcome: "not_applied", timelineChanged: false, refusedRipples: refused } };
+            }
+            // Read-only host preflight counts ripple movers. Give 400 ms per
+            // mover plus 30 s startup/readback headroom, bounded at 15 minutes.
+            const timeoutMs = Math.max(bridgeOptions.timeoutMs ?? 30000, Math.min(900000, rippleTimeoutMs(moverCount) + Math.max(0, rippleOps - 1) * 30000));
+            result = await sendCommand(buildApplyScript(plan, binding), { ...bridgeOptions, timeoutMs, mutationOnTimeout: true });
+          }
           emitAudit(auditSink, { operationId, action: "apply_edit_plan", outcome: result.success ? "succeeded" : "failed" });
           return result.success ? { ...result, data: { ...(result.data as object), operationId } } : { ...result, error: `${result.error ?? "Edit plan failed"} (operation ${operationId})` };
         } catch (error) {

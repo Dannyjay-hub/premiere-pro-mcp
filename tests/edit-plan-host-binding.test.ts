@@ -117,7 +117,7 @@ describe("persisted preview host-target binding", () => {
     const token = await preview(f.tools, plan);
     f.linkage.push(f.additional);
     const result = await f.restart().apply_edit_plan.handler({ plan, confirmation_token: token });
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining("host targets changed") });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining(ripple ? "Ripple preflight operation 0 failed" : "host targets changed") });
     expect(f.remove).not.toHaveBeenCalled(); expect(f.partnerRemove).not.toHaveBeenCalled(); expect(f.additionalRemove).not.toHaveBeenCalled(); expect(f.activation).not.toHaveBeenCalled();
   });
   it("applies unchanged linked targets after restart despite linkage enumeration order", async () => {

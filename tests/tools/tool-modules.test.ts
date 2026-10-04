@@ -705,7 +705,7 @@ describe("Tool Handler Behavior", () => {
 
     it("verifies ripple delete and passes QE razor a sequence timecode", async () => {
       await (getAdvancedTools(bridgeOptions).ripple_delete.handler as any)({ node_id: "clip-1" });
-      let script = mockedSendCommand.mock.calls[0][0];
+      let script = mockedSendCommand.mock.calls[1][0];
       // Ripple is implemented explicitly: QE rippleDelete() is never called.
       expect(script).not.toContain("rippleDelete()");
       // Sync-locked tracks participate, and a locked one refuses before mutating.
@@ -747,10 +747,24 @@ describe("Tool Handler Behavior", () => {
 
       vi.clearAllMocks();
       await (getTrackTargetingTools(bridgeOptions).razor_all_tracks.handler as any)({ time_seconds: 2 });
-      script = mockedSendCommand.mock.calls[0][0];
+      script = mockedSendCommand.mock.calls.at(-1)![0];
       expect(script).toContain("var __razorTc");
       expect(script).toContain("getVideoTrackAt(t).razor(__razorTc)");
       expect(script).toContain("getAudioTrackAt(t).razor(__razorTc)");
+    });
+
+    it("preserves a longer configured timeout for ripple_delete", async () => {
+      mockedSendCommand.mockResolvedValueOnce({ success: true, data: { totalMovers: 1 } })
+        .mockResolvedValueOnce({ success: true, data: {} });
+      await (getAdvancedTools({ ...bridgeOptions, timeoutMs: 240_000 }).ripple_delete.handler as any)({ node_id: "clip-1" });
+      expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 240_000, mutationOnTimeout: true });
+    });
+
+    it("preserves a longer configured timeout for razor_all_tracks", async () => {
+      mockedSendCommand.mockResolvedValueOnce({ success: true, data: { eligibleTracks: 1 } })
+        .mockResolvedValueOnce({ success: true, data: {} });
+      await (getTrackTargetingTools({ ...bridgeOptions, timeoutMs: 240_000 }).razor_all_tracks.handler as any)({ time_seconds: 2 });
+      expect(mockedSendCommand.mock.calls[1]?.[1]).toMatchObject({ timeoutMs: 240_000, mutationOnTimeout: true });
     });
 
     it("targets the QE clip, preserves an unsupported speed boundary, and verifies track state", async () => {

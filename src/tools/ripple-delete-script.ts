@@ -9,10 +9,13 @@ export function rippleDeleteScriptBody(options: {
   scope: "sync_locked" | "own_track";
   rangeDelete: boolean;
   dryRun: boolean;
+  allowLargeRipple?: boolean;
+  largeRippleThreshold?: number;
   /** Internal edit-plan reference to partners already checked against its token. */
   validatedPartnersExpression?: string;
 }): string {
   const { nodeId, scope, rangeDelete, dryRun } = options;
+  const largeRippleThreshold = options.largeRippleThreshold ?? 400;
   return `
           var result = __findClip("${nodeId}");
           if (!result) return __error("Clip not found: ${nodeId}");
@@ -165,8 +168,14 @@ export function rippleDeleteScriptBody(options: {
           }
 
           var planSummary = [];
+          var totalMovers = 0;
           for (pi = 0; pi < plan.length; pi++) {
             planSummary.push({ track: plan[pi].type + " " + plan[pi].index, clipsToShift: plan[pi].movers.length });
+            totalMovers += plan[pi].movers.length;
+          }
+          var estimatedSeconds = Math.ceil(totalMovers * 0.15 + (insiders.length + 1) * 0.5);
+          if (!${options.allowLargeRipple ? "true" : "false"} && totalMovers > ${largeRippleThreshold}) {
+            return __error("Large ripple refused before mutation: " + totalMovers + " clips would move (estimated " + estimatedSeconds + " seconds). Pass allow_large_ripple: true to proceed.", { movers: totalMovers, estimatedSeconds: estimatedSeconds, largeRippleThreshold: ${largeRippleThreshold}, mutationOutcome: "not_applied", timelineChanged: false });
           }
 
           // Reportable view of the in-range clips: the entries themselves hold a
@@ -187,6 +196,8 @@ export function rippleDeleteScriptBody(options: {
             gapStartSeconds: __ticksToSeconds(gapStartT),
             gapSeconds: __ticksToSeconds(shiftT),
             tracksAffected: planSummary,
+            totalMovers: totalMovers,
+            estimatedSeconds: estimatedSeconds,
             alsoRemoves: insidersReport,
             linkedPartnersKept: linkedPartnersKept,
             note: "Validation passed. Re-run without dry_run to remove the clip and close the gap." + (insiders.length ? " NOTE: " + insiders.length + " clip(s) on other tracks sit inside the range and WILL ALSO BE REMOVED (range_content: delete)." : "")
@@ -209,12 +220,17 @@ export function rippleDeleteScriptBody(options: {
           // (range_content: delete). Without this the shifted clips would land
           // on top of them.
           var removedInRange = [];
+          var liveInsiderById = {};
+          for (var lpi2 = 0; lpi2 < plan.length; lpi2++) {
+            var liveTrack = plan[lpi2].domTrack;
+            for (var lci = 0; lci < liveTrack.clips.numItems; lci++) {
+              var liveClip = liveTrack.clips[lci];
+              liveInsiderById[String(liveClip.nodeId)] = liveClip;
+            }
+          }
           for (var ri = 0; ri < insiders.length; ri++) {
             var ins = insiders[ri];
-            var victim = null;
-            for (var xi = 0; xi < ins.domTrack.clips.numItems; xi++) {
-              if (String(ins.domTrack.clips[xi].nodeId) === ins.nodeId) { victim = ins.domTrack.clips[xi]; break; }
-            }
+            var victim = liveInsiderById[ins.nodeId] || null;
             if (!victim) {
               // Premiere may already have taken the clip out with the target
               // (linked audio). The range is being lifted either way, so an
@@ -240,18 +256,49 @@ export function rippleDeleteScriptBody(options: {
           var moved = 0;
           var failures = [];
 
+          var moverMaps = [];
+          for (pi = 0; pi < plan.length; pi++) {
+            var initialMap = {};
+            for (var mii = 0; mii < plan[pi].domTrack.clips.numItems; mii++) {
+              var mapClip = plan[pi].domTrack.clips[mii];
+              initialMap[String(mapClip.nodeId)] = mii;
+            }
+            moverMaps.push(initialMap);
+          }
+
           for (pi = 0; pi < plan.length; pi++) {
             var tp = plan[pi];
             for (var mi = 0; mi < tp.movers.length; mi++) {
               var want = tp.movers[mi];
               var found = null;
-              for (var fi = 0; fi < tp.domTrack.clips.numItems; fi++) {
-                if (String(tp.domTrack.clips[fi].nodeId) === want.nodeId) { found = tp.domTrack.clips[fi]; break; }
+              var moverIndex = moverMaps[pi][want.nodeId];
+              if (moverIndex !== undefined) {
+                var indexedClip = tp.domTrack.clips[moverIndex];
+                if (String(indexedClip.nodeId) === want.nodeId) found = indexedClip;
+                else {
+                  var rebuiltMap = {};
+                  for (var rmi = 0; rmi < tp.domTrack.clips.numItems; rmi++) {
+                    var rebuiltClip = tp.domTrack.clips[rmi];
+                    rebuiltMap[String(rebuiltClip.nodeId)] = rmi;
+                  }
+                  moverMaps[pi] = rebuiltMap;
+                  moverIndex = rebuiltMap[want.nodeId];
+                  if (moverIndex !== undefined) {
+                    indexedClip = tp.domTrack.clips[moverIndex];
+                    if (String(indexedClip.nodeId) === want.nodeId) found = indexedClip;
+                  }
+                }
               }
               if (!found) { failures.push(tp.type + " " + tp.index + ": clip " + want.nodeId + " vanished before it could be shifted"); continue; }
               try {
-                found.start = (want.start - shiftT).toString();
-                found.end = (want.end - shiftT).toString();
+                if (typeof found.move === "function") {
+                  var delta = new Time();
+                  delta.ticks = String(-shiftT);
+                  found.move(delta);
+                } else {
+                  found.start = (want.start - shiftT).toString();
+                  found.end = (want.end - shiftT).toString();
+                }
                 moved++;
               } catch (shiftErr) {
                 failures.push(tp.type + " " + tp.index + ": " + want.nodeId + " -> " + shiftErr.toString());
@@ -261,17 +308,23 @@ export function rippleDeleteScriptBody(options: {
 
           // Verify every shifted clip landed where intended with its duration intact.
           var verifyProblems = [];
+          var verifyMaps = [];
+          for (pi = 0; pi < plan.length; pi++) {
+            var verifyMap = {};
+            for (var vmi = 0; vmi < plan[pi].domTrack.clips.numItems; vmi++) {
+              var verifyClip = plan[pi].domTrack.clips[vmi];
+              verifyMap[String(verifyClip.nodeId)] = { start: parseFloat(verifyClip.start.ticks), end: parseFloat(verifyClip.end.ticks) };
+            }
+            verifyMaps.push(verifyMap);
+          }
           for (pi = 0; pi < plan.length; pi++) {
             var tv = plan[pi];
             for (var vi = 0; vi < tv.movers.length; vi++) {
               var w = tv.movers[vi];
-              var got = null;
-              for (var gi = 0; gi < tv.domTrack.clips.numItems; gi++) {
-                if (String(tv.domTrack.clips[gi].nodeId) === w.nodeId) { got = tv.domTrack.clips[gi]; break; }
-              }
+              var got = verifyMaps[pi][w.nodeId];
               if (!got) { verifyProblems.push(tv.type + " " + tv.index + ": " + w.nodeId + " not found after shifting"); continue; }
-              var gs = parseFloat(got.start.ticks);
-              var gd = parseFloat(got.end.ticks) - gs;
+              var gs = got.start;
+              var gd = got.end - gs;
               if (Math.abs(gs - (w.start - shiftT)) > tol) {
                 verifyProblems.push(tv.type + " " + tv.index + ": expected start " + __ticksToSeconds(w.start - shiftT) + "s, got " + __ticksToSeconds(gs) + "s");
               }

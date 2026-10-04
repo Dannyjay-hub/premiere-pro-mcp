@@ -216,7 +216,9 @@ describe("edit plan validation and apply coverage", () => {
       ],
     };
     const auditSink = vi.fn();
-    mockedSendCommand.mockResolvedValueOnce({ success: false, error: "Premiere rejected the edit" });
+    mockedSendCommand
+      .mockResolvedValueOnce({ success: true, data: { totalMovers: 1, ripples: [{ index: 0, movers: 1, removals: 1 }] } })
+      .mockResolvedValueOnce({ success: false, error: "Premiere rejected the edit" });
     const tools = getEditPlanTools(bridgeOptions, {
       capabilities: { capabilities: new Set(["inspect", "edit"]), source: "explicit" },
       auditSink,
@@ -229,7 +231,7 @@ describe("edit plan validation and apply coverage", () => {
       plan,
       confirmation_token: confirmationToken(plan),
     });
-    const script = String(mockedSendCommand.mock.calls[0][0]);
+    const script = String(mockedSendCommand.mock.calls.at(-1)?.[0]);
 
     expect(script).toContain('__findSequence("seq\\"one")');
     expect(script).toContain("function __planFindClip");
