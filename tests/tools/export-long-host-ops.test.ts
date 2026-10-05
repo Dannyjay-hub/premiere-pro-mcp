@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
@@ -111,6 +111,20 @@ describe("long host export receipts", () => {
       untranslatedEffects: [{ kind: "synthetic_item", item: "Black Video", detail: "Slug used as a placeholder" }],
       warning: expect.stringContaining("1 item(s)"),
     } });
+  });
+
+  it("accepts a report whose mtime is slightly earlier than the export start (coarse Windows file times)", async () => {
+    const outputPath = join(root, "coarse-clock.xml");
+    const reportPath = join(root, "FCP Translation Results coarse.txt");
+    mockedSendCommand.mockImplementationOnce(async () => {
+      writeFileSync(outputPath, "<xmeml />");
+      writeFileSync(reportPath, "Translation issue:\n\tSynthetic Item (Black Video) not translated, Slug used as a placeholder.\n");
+      const earlier = new Date(Date.now() - 50);
+      utimesSync(reportPath, earlier, earlier);
+      return { success: true, data: { exported: true, verified: true, outputPath, format: "FCP XML" } };
+    });
+    const result = await getExportTools(bridgeOptions).export_as_fcp_xml.handler({ output_path: outputPath });
+    expect(result).toMatchObject({ success: true, data: { translationReportPath: reportPath, issueCount: 1 } });
   });
 
   it("bounds issue details and reports the total number of issue lines", () => {

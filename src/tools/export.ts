@@ -121,13 +121,18 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
   return { lines, issues, totalIssueLines, issueCount: totalIssueLines, parsedIssueCount, issuesTruncated: totalIssueLines > issues.length };
 }
 
+// Windows file times come from a coarse clock (about 15.6 ms ticks) and FAT/exFAT
+// volumes store 2 s steps, so a report written just after startedAt can carry an
+// earlier mtime. Allow that much slack when deciding a report is from this export.
+const REPORT_MTIME_SLACK_MS = 2000;
+
 function freshFcpTranslationReport(outputPath: string, startedAt: number): { path: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null {
   const directory = resolve(outputPath, "..");
   try {
     const reportName = readdirSync(directory)
       .filter((name) => /^FCP Translation Results .*\.txt$/i.test(name))
       .map((name) => ({ path: resolve(directory, name), snapshot: fileSnapshot(resolve(directory, name)) }))
-      .filter((entry) => entry.snapshot.exists && entry.snapshot.mtimeMs >= startedAt)
+      .filter((entry) => entry.snapshot.exists && entry.snapshot.mtimeMs >= startedAt - REPORT_MTIME_SLACK_MS)
       .sort((left, right) => right.snapshot.mtimeMs - left.snapshot.mtimeMs)[0];
     if (!reportName) return null;
     return { path: reportName.path, parsed: parseFcpTranslationReport(readFileSync(reportName.path, "utf8")) };
@@ -186,7 +191,7 @@ async function waitForFcpTranslationDialog(
       let names: string[] = [];
       try { names = readdirSync(directory); } catch { /* output might be on a transient volume */ }
       const reportName = names.find((name) => /^FCP Translation Results .*\.txt$/i.test(name)
-        && fileSnapshot(resolve(directory, name)).mtimeMs >= startedAt);
+        && fileSnapshot(resolve(directory, name)).mtimeMs >= startedAt - REPORT_MTIME_SLACK_MS);
       if (reportName) {
         const reportPath = resolve(directory, reportName);
         const current = fileSnapshot(outputPath);
