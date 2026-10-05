@@ -28,7 +28,7 @@ export const AUDIO_KEYFRAME_READBACK = `
   }
   function audioKeys(prop) {
     var keys = prop.getKeys();
-    if (keys === 0) return [];
+    if (__isEmptyKeyList(prop, keys)) return [];
     if (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length) throw new Error("Unreadable key storage");
     var ticks = [];
     for (var k = 0; k < keys.length; k++) ticks.push(audioTick(keys[k].ticks));

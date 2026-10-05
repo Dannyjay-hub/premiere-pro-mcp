@@ -12,7 +12,7 @@ const gapTools = getCompetitorGapTools({ tempDir: "/tmp/keyframe-followups", tim
 const TICKS = 254016000000;
 const toTicks = (seconds: number) => String(Math.round(seconds * TICKS));
 
-function host(options: { speed?: number; reverse?: boolean; missingKeys?: boolean; nodeId?: string } = {}) {
+function host(options: { speed?: number; reverse?: boolean; missingKeys?: boolean; nodeId?: string; emptyKeysUndefined?: boolean; timeVarying?: boolean } = {}) {
   const values = new Map<number, number>();
   const prop = {
     displayName: "Level",
@@ -21,7 +21,11 @@ function host(options: { speed?: number; reverse?: boolean; missingKeys?: boolea
     setValueAtKey(time: { ticks: string }, value: number) { if (!options.missingKeys) values.set(Number(time.ticks), value); },
     setValueAtTime(time: { ticks: string }, value: number) { values.set(Number(time.ticks), value); },
     getValueAtTime(time: { ticks: string }) { return values.get(Number(time.ticks)) ?? NaN; },
-    getKeys() { return Array.from(values.keys()).sort((a, b) => a - b).map((ticks) => ({ ticks: String(ticks) })); },
+    getKeys() {
+      if (options.emptyKeysUndefined && values.size === 0) return undefined as never;
+      return Array.from(values.keys()).sort((a, b) => a - b).map((ticks) => ({ ticks: String(ticks) }));
+    },
+    isTimeVarying() { return options.timeVarying ?? values.size > 0; },
   };
   const components = Object.assign([{ displayName: "Volume", matchName: "audioVolume", properties: Object.assign([prop], { numItems: 1 }) }], { numItems: 1 });
   const clip = {
@@ -204,4 +208,23 @@ it("does not accept a partially numeric source In clock", async () => {
   const result = await audioTools.add_audio_keyframes.handler({ node_id: h.clip.nodeId, keyframes: [{ time_seconds: 2, level_db: 0 }] });
   expect(result.success).toBe(false);
   expect(mutate).not.toHaveBeenCalled();
+});
+
+it("adds the first audio keyframe when the host reports an empty key list as undefined (25.2.3)", async () => {
+  const h = host({ emptyKeysUndefined: true });
+  expect(await audioTools.add_audio_keyframes.handler({ node_id: h.clip.nodeId, keyframes: [{ time_seconds: 2, level_db: -6 }] })).toMatchObject({ success: true, data: { verified: true } });
+  expect(h.times()).toEqual([32]);
+});
+
+it("sets up ducking on a clip whose empty key list reads as undefined", async () => {
+  const h = host({ emptyKeysUndefined: true });
+  expect(await gapTools.setup_ducking.handler({ node_id: h.clip.nodeId, ducking_windows: [{ start_seconds: 2, end_seconds: 4, ducked_db: -6 }], fade_seconds: 0.2 })).toMatchObject({ success: true });
+  expect(h.times().length).toBeGreaterThan(0);
+});
+
+it("still refuses an undefined key list on a time-varying property", async () => {
+  const h = host({ emptyKeysUndefined: true, timeVarying: true });
+  const result = await audioTools.add_audio_keyframes.handler({ node_id: h.clip.nodeId, keyframes: [{ time_seconds: 2, level_db: -6 }] });
+  expect(result).toMatchObject({ success: false });
+  expect(h.times()).toEqual([]);
 });

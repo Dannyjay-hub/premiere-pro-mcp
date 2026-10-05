@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `add_audio_keyframes` and `setup_ducking` can add the first keyframe to a clip again. On Premiere 25.2.3 a property with no keyframes returns `undefined` from `getKeys()` (with `isTimeVarying()` false), which the audio and shared keyframe readers treated as unreadable storage, so both tools refused every clip without existing Volume keys. That state now reads as an empty key list; `null`, malformed lists, and `undefined` on a time-varying property still refuse.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
