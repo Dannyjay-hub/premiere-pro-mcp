@@ -20,8 +20,9 @@ const TICKS = 254016000000;
 async function scriptFor(args: Record<string, unknown>) {
   mockedSendCommand.mockClear();
   await getAdvancedTools(bridgeOptions).ripple_delete.handler(args as never);
-  expect(mockedSendCommand).toHaveBeenCalledTimes(2);
-  return String(mockedSendCommand.mock.calls[1][0]);
+  const dryRun = args.dry_run === true;
+  expect(mockedSendCommand).toHaveBeenCalledTimes(dryRun ? 1 : 2);
+  return String(mockedSendCommand.mock.calls[dryRun ? 0 : 1][0]);
 }
 
 function secondsOf(ticks: string | number) {
