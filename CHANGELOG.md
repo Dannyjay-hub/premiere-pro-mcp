@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `razor_all_tracks` and `split_clip` cut on the requested frame in drop-frame sequences. They built a non-drop `HH:MM:SS:FF` string, which Premiere reads as drop-frame timecode on 29.97/59.94 DF sequences, so cuts landed early by the dropped-frame count (2 frames after the first minute, 28 frames at 16 minutes, measured on 25.2.3) and `razor_all_tracks` still reported `verified: true`. Both now let Premiere format the timecode in the sequence's display format, snap the cut to a frame, and verify the new boundary within half a frame; `razor_all_tracks` reports a misplaced cut as `committed_unverified`.
-- Batched ripple-range previews now cap clip samples at 50 while retaining per-track counts and a confirmation fingerprint for the complete plan. Razor track spans are computed from one initial clip snapshot, fractional frame rates are refused, and frame-exact decimal ranges no longer appear as adjustments. Mutation receipts use the shared QE undo-stack reader.
+- Batched ripple-range previews now cap clip samples at 50 while retaining per-track counts and a confirmation fingerprint for the complete plan. Razor track spans are computed from one initial clip snapshot; cuts use Premiere's sequence-display timecode for fractional and drop-frame rates and refuse any resulting boundary more than half a frame from the snapped range edge. Frame-exact decimal ranges no longer appear as adjustments, and mutation receipts use the shared QE undo-stack reader.
 
 ## [1.19.1] - 2026-10-04
 

@@ -9,13 +9,38 @@ const bridge: BridgeOptions = { tempDir: "/tmp/ripple-range-tests", timeoutMs: 1
 const ranges: TimelineRange[] = Array.from({ length: 50 }, (_, i) => ({ start: i * 20, end: i * 20 + 2 }));
 const TICKS = 254016000000;
 
-function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean; frameRate?: number }) {
+function fakeTimecode(frame: number, timebase: number, displayFormat: number) {
+  const nominal = Math.round(TICKS / timebase);
+  let displayFrame = frame;
+  const dropFrames = displayFormat === 102 ? 2 : displayFormat === 104 ? 4 : 0;
+  if (dropFrames) {
+    const framesPerTenMinutes = nominal * 600 - dropFrames * 9;
+    const framesPerMinute = nominal * 60 - dropFrames;
+    const tenMinuteBlocks = Math.floor(frame / framesPerTenMinutes);
+    const remainder = frame % framesPerTenMinutes;
+    displayFrame += dropFrames * 9 * tenMinuteBlocks;
+    if (remainder >= dropFrames) displayFrame += dropFrames * Math.floor((remainder - dropFrames) / framesPerMinute);
+  }
+  const ff = displayFrame % nominal;
+  const totalSeconds = Math.floor(displayFrame / nominal);
+  const ss = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const mm = totalMinutes % 60;
+  const hh = Math.floor(totalMinutes / 60);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const separator = dropFrames ? ";" : ":";
+  return [hh, mm, ss, ff].map(pad).join(separator);
+}
+
+function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean; frameRate?: number; displayFormat?: number; razorOffsetFrames?: number }) {
   let nextId = 0;
   let undoIndex = 0;
   const moveCalls = new Map<string, number>();
+  const razorCalls: string[] = [];
   const original = new Map(options.clips.map((clip) => [clip.id, { ...clip }]));
   const toTicks = (seconds: number) => String(Math.round(seconds * TICKS));
   const fromTicks = (time: { ticks: string }) => Number(time.ticks) / TICKS;
+  const frameDuration = TICKS / (options.frameRate ?? 25);
   const makeClip = (id: string, start: number, end: number) => ({
     nodeId: id, name: id, start: { ticks: toTicks(start) }, end: { ticks: toTicks(end) },
     move(delta: { ticks: string }) {
@@ -44,8 +69,14 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
     isLocked: () => options.locked === true,
     isSyncLocked: () => true,
     razor(timecode: string) {
-      const [hh, mm, ss, ff] = timecode.split(":").map(Number);
-      const cut = (((hh * 60 + mm) * 60 + ss) * 25 + ff) * TICKS / 25;
+      razorCalls.push(timecode);
+      const [hh, mm, ss, ff] = timecode.split(/[:;]/).map(Number);
+      const nominal = Math.round(TICKS / frameDuration);
+      const displayFrames = (((hh * 60 + mm) * 60 + ss) * nominal + ff);
+      const dropFrames = options.displayFormat === 102 ? 2 : options.displayFormat === 104 ? 4 : 0;
+      const totalMinutes = hh * 60 + mm;
+      const dropped = dropFrames * (totalMinutes - Math.floor(totalMinutes / 10));
+      const cut = (displayFrames - dropped + (options.razorOffsetFrames ?? 0)) * frameDuration;
       for (let i = 0; i < list.length; i++) {
         const clip = list[i];
         const start = Number(clip.start.ticks), end = Number(clip.end.ticks);
@@ -62,14 +93,15 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
   };
   const sequence = {
     sequenceID: "fake-sequence",
-    timebase: String(TICKS / (options.frameRate ?? 25)),
+    timebase: String(frameDuration),
+    getSettings: () => ({ videoDisplayFormat: options.displayFormat ?? 100 }),
     videoTracks: Object.assign({ numTracks: 1 }, [track]),
     audioTracks: { numTracks: 0 },
   };
   const qeSequence = { getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack, getUndoStackIndex: () => undoIndex };
-  const context = { app: { project: { activeSequence: sequence }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; } };
+  const context = { app: { project: { activeSequence: sequence }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; getFormatted(frameRate: { ticks: string }, displayFormat: number) { return fakeTimecode(Math.floor(Number(this.ticks) / Number(frameRate.ticks) + 0.000001), Number(frameRate.ticks), displayFormat); } } };
   const run = (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))) as { success: boolean; data?: Record<string, any>; error?: string };
-  return { run, moveCalls, list, original, fromTicks, get clipReads() { return clipReads; } };
+  return { run, moveCalls, list, original, fromTicks, razorCalls, get clipReads() { return clipReads; } };
 }
 
 describe("ripple_remove_timeline_ranges", () => {
@@ -130,12 +162,35 @@ describe("ripple_remove_timeline_ranges", () => {
     expect(host.clipReads - beforeApplyReads).toBeLessThanOrEqual(5000);
   });
 
-  it.each([23.976, 29.97])( "refuses non-integer frame rates before mutation (%s fps)", (frameRate) => {
-    const host = fakeTimeline({ clips: [{ id: "clip", start: 0, end: 4 }], frameRate });
-    const result = host.run(rippleRemoveRangesScript({ ranges: [{ start: 1, end: 2 }], scope: "sync_locked", range_content: "delete" }, false));
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("integer frame rates only for now");
-    expect(host.list).toHaveLength(1);
+  it.each([
+    { frameRate: 23.976, displayFormat: 110 },
+    { frameRate: 29.97, displayFormat: 102 },
+  ])("cuts and verifies fractional frame-rate ranges with Premiere timecode (%s)", ({ frameRate, displayFormat }) => {
+    const host = fakeTimeline({ clips: [{ id: "clip", start: 0, end: 100 }], frameRate, displayFormat });
+    const rangeStart = frameRate === 29.97 ? 60.06 : 1;
+    const rangeEnd = frameRate === 29.97 ? 61.061061061 : 2;
+    const args = { ranges: [{ start: rangeStart, end: rangeEnd }], scope: "sync_locked" as const, range_content: "delete" as const };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    expect(preview.success).toBe(true);
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(true);
+    expect(applied.data?.verified).toBe(true);
+    expect(host.list).toHaveLength(2);
+    const survivingSeconds = host.list.reduce((sum, clip) => sum + host.fromTicks(clip.end) - host.fromTicks(clip.start), 0);
+    expect(survivingSeconds).toBeCloseTo(100 - (frameRate === 29.97 ? 30 / frameRate : 1), 2);
+    expect(host.razorCalls[0]).toBe(frameRate === 29.97 ? "00;01;00;02" : "00:00:01:00");
+  });
+
+  it("refuses a razor boundary more than half a frame from the snapped cut before removing or moving", () => {
+    const host = fakeTimeline({ clips: [{ id: "clip", start: 0, end: 4 }], frameRate: 29.97, displayFormat: 102, razorOffsetFrames: 1 });
+    const args = { ranges: [{ start: 1, end: 2 }], scope: "sync_locked" as const, range_content: "delete" as const };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(false);
+    expect(applied.error).toContain("still straddles a snapped range edge");
+    expect(applied.data?.mutationOutcome).toBe("unknown");
+    expect(host.list.length).toBeGreaterThan(1);
+    expect(host.moveCalls.size).toBe(0);
   });
 
   it("does not report frame-exact decimal ranges as adjustments", () => {

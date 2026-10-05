@@ -75,8 +75,6 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     if (!qeSeq) return __error("Cannot read QE sequence or sync-lock state; nothing changed");
     var ft = parseFloat(seq.timebase);
     if (!ft || !isFinite(ft)) return __error("Sequence frame timebase is unreadable; nothing changed");
-    var fpsExact = 254016000000 / ft, fps = Math.round(fpsExact);
-    if (Math.abs(fpsExact - fps) > 0.000001) return __error("Ripple range removal supports integer frame rates only for now; nothing changed");
     var tol = ft / 2;
     var ranges = [${ranges}], adjustments = [];
     for (var nri = 0; nri < ranges.length; nri++) {
@@ -188,10 +186,8 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     // Preflight and all mutations are in this one host command. Razor cuts then
     // recapture IDs: Premiere replaces TrackItems at each split.
     var undoBefore = __readUndoIndex();
-    function pad(n) { return n < 10 ? "0" + n : "" + n; }
     for (qi = 0; qi < uniqueCuts.length; qi++) {
-      var cut = uniqueCuts[qi], frame = Math.round(cut / ft);
-      var tc = pad(Math.floor(frame/(fps*3600)))+":"+pad(Math.floor((frame%(fps*3600))/(fps*60)))+":"+pad(Math.floor((frame%(fps*60))/fps))+":"+pad(frame%fps);
+      var cut = uniqueCuts[qi], tc = __qeTimecodeForTicks(seq, cut).timecode;
       for (tr = 0; tr < tracks.length; tr++) {
         t = tracks[tr];
         if (!participating[t.type+":"+t.index]) continue;
