@@ -75,6 +75,8 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     if (!qeSeq) return __error("Cannot read QE sequence or sync-lock state; nothing changed");
     var ft = parseFloat(seq.timebase);
     if (!ft || !isFinite(ft)) return __error("Sequence frame timebase is unreadable; nothing changed");
+    var fpsExact = 254016000000 / ft, fps = Math.round(fpsExact);
+    if (Math.abs(fpsExact - fps) > 0.000001) return __error("Ripple range removal supports integer frame rates only for now; nothing changed");
     var tol = ft / 2;
     var ranges = [${ranges}], adjustments = [];
     for (var nri = 0; nri < ranges.length; nri++) {
@@ -82,7 +84,7 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
       ranges[nri].start = Math.round(oldStart / ft) * ft; ranges[nri].end = Math.round(oldEnd / ft) * ft;
       if (ranges[nri].end <= ranges[nri].start) return __error("A frame-snapped range is empty or reversed; nothing changed");
       if (nri && ranges[nri].start < ranges[nri-1].end) return __error("Frame-snapped ranges overlap; nothing changed");
-      if (Math.abs(oldStart-ranges[nri].start) > 0.01 || Math.abs(oldEnd-ranges[nri].end) > 0.01) adjustments.push({ rangeIndex:nri, requestedStartSeconds:__ticksToSeconds(oldStart), requestedEndSeconds:__ticksToSeconds(oldEnd), startSeconds:__ticksToSeconds(ranges[nri].start), endSeconds:__ticksToSeconds(ranges[nri].end) });
+      if (Math.abs(oldStart-ranges[nri].start) > ft / 1000 || Math.abs(oldEnd-ranges[nri].end) > ft / 1000) adjustments.push({ rangeIndex:nri, requestedStartSeconds:__ticksToSeconds(oldStart), requestedEndSeconds:__ticksToSeconds(oldEnd), startSeconds:__ticksToSeconds(ranges[nri].start), endSeconds:__ticksToSeconds(ranges[nri].end) });
     }
     var tracks = [];
     function addTracks(type, collection) {
@@ -105,10 +107,6 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     }
     var fingerprintText = String(seq.sequenceID || "")+"|";
     for (var fi = 0; fi < clips.length; fi++) fingerprintText += clips[fi].id+":"+clips[fi].type+":"+clips[fi].track+":"+clips[fi].start+":"+clips[fi].end+";";
-    var fingerprint = 2166136261;
-    for (fi = 0; fi < fingerprintText.length; fi++) fingerprint = (fingerprint ^ fingerprintText.charCodeAt(fi)) * 16777619;
-    fingerprint = String(fingerprint >>> 0);
-    if (${mutate} && fingerprint !== "${escapeForExtendScript(expectedFingerprint ?? "")}") return __error("Timeline changed since preview; no edit was applied. Preview the ranges again.", { mutationOutcome:"not_applied", timelineChanged:false });
     var cuts = [], plan = [], errors = [];
     for (var ri = 0; ri < ranges.length; ri++) {
       cuts.push(ranges[ri].start, ranges[ri].end);
@@ -131,6 +129,13 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
         plan.push({ id: clip.id, segmentIndex:bi, type: clip.type, track: clip.track, start: segStart, end: segEnd, removed: removed, shift: delta, name: clip.name });
       }
     }
+    // Bind confirmation to the complete plan without returning it to the caller.
+    fingerprintText += "|plan:";
+    for (ci2 = 0; ci2 < plan.length; ci2++) fingerprintText += plan[ci2].id+":"+plan[ci2].segmentIndex+":"+plan[ci2].type+":"+plan[ci2].track+":"+plan[ci2].start+":"+plan[ci2].end+":"+plan[ci2].removed+":"+plan[ci2].shift+";";
+    var fingerprint = 2166136261;
+    for (fi = 0; fi < fingerprintText.length; fi++) fingerprint = (fingerprint ^ fingerprintText.charCodeAt(fi)) * 16777619;
+    fingerprint = String(fingerprint >>> 0);
+    if (${mutate} && fingerprint !== "${escapeForExtendScript(expectedFingerprint ?? "")}") return __error("Timeline changed since preview; no edit was applied. Preview the ranges again.", { mutationOutcome:"not_applied", timelineChanged:false });
     var participating = {};
     for (ci2 = 0; ci2 < plan.length; ci2++) if (plan[ci2].removed || plan[ci2].shift > 0) participating[plan[ci2].type+":"+plan[ci2].track] = true;
     for (ci2 = 0; ci2 < clips.length; ci2++) for (ri2 = 0; ri2 < ranges.length; ri2++) if (clips[ci2].start < ranges[ri2].end-tol && clips[ci2].end > ranges[ri2].start+tol) participating[clips[ci2].type+":"+clips[ci2].track] = true;
@@ -141,15 +146,37 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
       try { syncState = typeof tracks[tr].qe.isSyncLocked === "function" ? !!tracks[tr].qe.isSyncLocked() : null; } catch (se) {}
       if (lockState !== false || syncState !== true) return __error("Ripple range removal refused; nothing changed. Participating "+tracks[tr].type+" track "+tracks[tr].index+" must be readable, unlocked, and sync-locked.");
     }
-    // Deduplicate cut points and only razor tracks where a clip spans a cut.
+    // Deduplicate cut points and precompute spanning tracks from the initial snapshot.
     var uniqueCuts = [];
     for (var qi = 0; qi < cuts.length; qi++) { var foundCut = false; for (var qj = 0; qj < uniqueCuts.length; qj++) if (Math.abs(cuts[qi]-uniqueCuts[qj]) < tol) foundCut = true; if (!foundCut) uniqueCuts.push(cuts[qi]); }
-    var summary = { ranges: [], plannedClips: [], clipsRemoved: 0, clipsShifted: 0, estimatedSeconds: 0, undoSteps: null, verified: false };
+    uniqueCuts.sort(function(a,b){return a-b;});
+    var spanStarts = [], spanEnds = [];
+    for (ci2 = 0; ci2 < clips.length; ci2++) {
+      var spanKey = clips[ci2].type+":"+clips[ci2].track;
+      spanStarts.push({ at: clips[ci2].start + tol, key: spanKey });
+      spanEnds.push({ at: clips[ci2].end - tol, key: spanKey });
+    }
+    spanStarts.sort(function(a,b){return a.at-b.at;}); spanEnds.sort(function(a,b){return a.at-b.at;});
+    var spanningByCut = [], spanCounts = {}, startCursor = 0, endCursor = 0;
+    for (qi = 0; qi < uniqueCuts.length; qi++) {
+      var sweepCut = uniqueCuts[qi];
+      while (startCursor < spanStarts.length && spanStarts[startCursor].at < sweepCut) { var startKey = spanStarts[startCursor++].key; spanCounts[startKey] = (spanCounts[startKey] || 0) + 1; }
+      while (endCursor < spanEnds.length && spanEnds[endCursor].at <= sweepCut) { var endKey = spanEnds[endCursor++].key; spanCounts[endKey] = (spanCounts[endKey] || 0) - 1; }
+      spanningByCut[qi] = {};
+      for (tr = 0; tr < tracks.length; tr++) { spanKey = tracks[tr].type+":"+tracks[tr].index; if (spanCounts[spanKey] > 0) spanningByCut[qi][spanKey] = true; }
+    }
+    var summary = { ranges: [], plannedClips: [], plannedClipsTruncated: false, plannedClipsTotal: plan.length, trackCounts: {}, clipsRemoved: 0, clipsShifted: 0, estimatedSeconds: 0, verified: false };
     for (ri = 0; ri < ranges.length; ri++) summary.ranges.push({ startSeconds: __ticksToSeconds(ranges[ri].start), endSeconds: __ticksToSeconds(ranges[ri].end), removedSeconds: __ticksToSeconds(ranges[ri].end-ranges[ri].start) });
     for (ci2 = 0; ci2 < plan.length; ci2++) {
       if (plan[ci2].removed) summary.clipsRemoved++; else if (plan[ci2].shift > 0) summary.clipsShifted++;
-      summary.plannedClips.push({ nodeId:plan[ci2].id, segmentIndex:plan[ci2].segmentIndex, trackType:plan[ci2].type, trackIndex:plan[ci2].track, startSeconds:__ticksToSeconds(plan[ci2].start), endSeconds:__ticksToSeconds(plan[ci2].end), remove:plan[ci2].removed, shiftSeconds:__ticksToSeconds(plan[ci2].shift) });
+      var countKey = plan[ci2].type+":"+plan[ci2].track;
+      if (!summary.trackCounts[countKey]) summary.trackCounts[countKey] = { removed: 0, shifted: 0, unchanged: 0 };
+      if (plan[ci2].removed) summary.trackCounts[countKey].removed++;
+      else if (plan[ci2].shift > 0) summary.trackCounts[countKey].shifted++;
+      else summary.trackCounts[countKey].unchanged++;
+      if (summary.plannedClips.length < 50) summary.plannedClips.push({ nodeId:plan[ci2].id, segmentIndex:plan[ci2].segmentIndex, trackType:plan[ci2].type, trackIndex:plan[ci2].track, startSeconds:__ticksToSeconds(plan[ci2].start), endSeconds:__ticksToSeconds(plan[ci2].end), remove:plan[ci2].removed, shiftSeconds:__ticksToSeconds(plan[ci2].shift) });
     }
+    summary.plannedClipsTruncated = summary.plannedClipsTotal > summary.plannedClips.length;
     var totalRemovedTicks = 0; for (ri = 0; ri < ranges.length; ri++) totalRemovedTicks += ranges[ri].end-ranges[ri].start;
     summary.totalRemovedSeconds = __ticksToSeconds(totalRemovedTicks);
     summary.estimatedSeconds = Math.ceil(summary.clipsShifted * 0.15 + (summary.clipsRemoved + 1) * 0.5);
@@ -160,16 +187,15 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     if (!${mutate}) return __result(summary);
     // Preflight and all mutations are in this one host command. Razor cuts then
     // recapture IDs: Premiere replaces TrackItems at each split.
-    var undoBefore = null; try { undoBefore = qeSeq.getUndoStackIndex(); } catch (eu) {}
+    var undoBefore = __readUndoIndex();
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
     for (qi = 0; qi < uniqueCuts.length; qi++) {
-      var cut = uniqueCuts[qi], frame = Math.round(cut / ft), fps = Math.round(254016000000 / ft);
-      function pad(n) { return n < 10 ? "0" + n : "" + n; }
+      var cut = uniqueCuts[qi], frame = Math.round(cut / ft);
       var tc = pad(Math.floor(frame/(fps*3600)))+":"+pad(Math.floor((frame%(fps*3600))/(fps*60)))+":"+pad(Math.floor((frame%(fps*60))/fps))+":"+pad(frame%fps);
       for (tr = 0; tr < tracks.length; tr++) {
-        t = tracks[tr]; var spans = false;
+        t = tracks[tr];
         if (!participating[t.type+":"+t.index]) continue;
-        for (ci = 0; ci < t.dom.clips.numItems; ci++) { c=t.dom.clips[ci]; if (parseFloat(c.start.ticks)<cut-tol && parseFloat(c.end.ticks)>cut+tol) { spans=true; break; } }
-        if (!spans) continue;
+        if (!spanningByCut[qi][t.type+":"+t.index]) continue;
         try { t.qe.razor(tc); } catch (razorErr) { return __error("Razor failed after mutation began; timeline state is unknown. Inspect before retrying: "+razorErr.toString(), { mutationOutcome:"unknown", timelineChanged:null, mutationAttempted:true, verified:false }); }
       }
     }
@@ -194,7 +220,8 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     for(ci2=0;ci2<remove.length;ci2++)if(byId[remove[ci2].id])verify.push(remove[ci2].id+" was not removed");
     if(verify.length)return __error("Ripple ranges were applied, but readback could not verify every clip: "+verify.join(", "),{outcome:"committed_unverified",mutationOutcome:"unknown",timelineChanged:true,mutationAttempted:true,verified:false});
     summary.dryRun=false; summary.verified=true; summary.clipsRemoved=remove.length; summary.clipsShifted=move.length;
-    try { var undoAfter=qeSeq.getUndoStackIndex(); if(undoBefore!==null && typeof undoAfter==="number") summary.undoSteps=undoAfter-undoBefore; } catch(eUndo) {}
+    var undoAfter = __readUndoIndex();
+    if (undoBefore !== null && undoAfter !== null && undoAfter > undoBefore) { summary.undoSteps = undoAfter - undoBefore; summary.undoStackIndex = undoAfter; }
     return __result(summary);
   `);
 }
@@ -203,13 +230,13 @@ export function getRippleRemoveRangesTools(bridgeOptions: BridgeOptions, depende
   const capabilities = dependencies.capabilities ?? resolveCapabilities();
   return {
     ripple_remove_timeline_ranges: {
-      description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Ranges snap to sequence frames and report adjustments; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
+      description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
       parameters: { type: "object" as const, properties: {
         sequence_id: { type: "string", description: "Sequence name or ID; defaults to active sequence." },
         ranges: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", properties: { start: { type: "number", minimum: 0, description: "Range start in timeline seconds." }, end: { type: "number", exclusiveMinimum: 0, description: "Range end in timeline seconds." } }, required: ["start", "end"], additionalProperties: false }, description: "Sorted, non-overlapping timeline intervals to remove." },
         scope: { type: "string", enum: ["sync_locked"], description: "All participating tracks must be sync-locked and unlocked." },
         range_content: { type: "string", enum: ["delete"], description: "Delete clips fully inside each removed range." },
-        dry_run: { type: "boolean", description: "Return complete read-only plan; default true." },
+        dry_run: { type: "boolean", description: "Return bounded read-only counts and up to 50 plan samples; default true." },
         allow_large_ripple: { type: "boolean", description: "Required when more than 400 clips will move." },
         confirmation_token: { type: "string", description: "Single-use token from a successful dry run; required to apply." },
       }, required: ["ranges", "scope", "range_content"] },

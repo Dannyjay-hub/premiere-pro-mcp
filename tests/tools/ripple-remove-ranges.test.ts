@@ -9,7 +9,7 @@ const bridge: BridgeOptions = { tempDir: "/tmp/ripple-range-tests", timeoutMs: 1
 const ranges: TimelineRange[] = Array.from({ length: 50 }, (_, i) => ({ start: i * 20, end: i * 20 + 2 }));
 const TICKS = 254016000000;
 
-function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean }) {
+function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean; frameRate?: number }) {
   let nextId = 0;
   let undoIndex = 0;
   const moveCalls = new Map<string, number>();
@@ -34,7 +34,12 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
   const list: ReturnType<typeof makeClip>[] = [];
   for (const clip of options.clips) list.push(makeClip(clip.id, clip.start, clip.end));
   Object.defineProperty(list, "numItems", { get: () => list.length });
-  const track = { clips: list, isLocked: () => options.locked === true };
+  let clipReads = 0;
+  const clipsDom = new Proxy(list, { get(target, property, receiver) {
+    if (typeof property === "string" && /^\d+$/.test(property)) clipReads++;
+    return Reflect.get(target, property, receiver);
+  } });
+  const track = { clips: clipsDom, isLocked: () => options.locked === true };
   const qeTrack = {
     isLocked: () => options.locked === true,
     isSyncLocked: () => true,
@@ -57,14 +62,14 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
   };
   const sequence = {
     sequenceID: "fake-sequence",
-    timebase: String(TICKS / 25),
+    timebase: String(TICKS / (options.frameRate ?? 25)),
     videoTracks: Object.assign({ numTracks: 1 }, [track]),
     audioTracks: { numTracks: 0 },
   };
   const qeSequence = { getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack, getUndoStackIndex: () => undoIndex };
-  const context = { app: { project: { activeSequence: sequence }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence } }, Time: class { ticks = "0"; } };
+  const context = { app: { project: { activeSequence: sequence }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; } };
   const run = (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))) as { success: boolean; data?: Record<string, any>; error?: string };
-  return { run, moveCalls, list, original, fromTicks };
+  return { run, moveCalls, list, original, fromTicks, get clipReads() { return clipReads; } };
 }
 
 describe("ripple_remove_timeline_ranges", () => {
@@ -111,6 +116,47 @@ describe("ripple_remove_timeline_ranges", () => {
       }
     }
     expect(applied.data?.estimatedSeconds).toBe(Math.ceil((applied.data!.clipsShifted * 0.15) + (applied.data!.clipsRemoved + 1) * 0.5));
+  });
+
+  it("precomputes razor spans with bounded DOM clip reads for 1,500 clips and 50 ranges", () => {
+    const host = fakeTimeline({ clips: Array.from({ length: 1500 }, (_, i) => ({ id: `clip-${i}`, start: i, end: i + 1 })) });
+    const testRanges = Array.from({ length: 50 }, (_, i) => ({ start: i * 20 + 0.5, end: i * 20 + 2.5 }));
+    const args = { ranges: testRanges, scope: "sync_locked" as const, range_content: "delete" as const, allow_large_ripple: true };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    expect(preview.success).toBe(true);
+    const beforeApplyReads = host.clipReads;
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(true);
+    expect(host.clipReads - beforeApplyReads).toBeLessThanOrEqual(5000);
+  });
+
+  it.each([23.976, 29.97])( "refuses non-integer frame rates before mutation (%s fps)", (frameRate) => {
+    const host = fakeTimeline({ clips: [{ id: "clip", start: 0, end: 4 }], frameRate });
+    const result = host.run(rippleRemoveRangesScript({ ranges: [{ start: 1, end: 2 }], scope: "sync_locked", range_content: "delete" }, false));
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("integer frame rates only for now");
+    expect(host.list).toHaveLength(1);
+  });
+
+  it("does not report frame-exact decimal ranges as adjustments", () => {
+    const host = fakeTimeline({ clips: [{ id: "clip", start: 0, end: 3 }] });
+    const result = host.run(rippleRemoveRangesScript({ ranges: [{ start: 1.08, end: 2.16 }], scope: "sync_locked", range_content: "delete" }, false));
+    expect(result.success).toBe(true);
+    expect(result.data?.adjustments).toEqual([]);
+  });
+
+  it("bounds preview samples, reports per-track counts, and returns undo steps from shared undo tracking", () => {
+    const host = fakeTimeline({ clips: Array.from({ length: 100 }, (_, i) => ({ id: `clip-${i}`, start: i, end: i + 1 })) });
+    const args = { ranges: [{ start: 10, end: 11 }], scope: "sync_locked" as const, range_content: "delete" as const };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    expect(preview.data?.plannedClips).toHaveLength(50);
+    expect(preview.data?.plannedClipsTruncated).toBe(true);
+    expect(preview.data?.plannedClipsTotal).toBeGreaterThan(50);
+    expect(preview.data?.trackCounts).toHaveProperty("video:0");
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(true);
+    expect(applied.data?.undoSteps).toBeGreaterThan(0);
+    expect(applied.data?.undoStackIndex).toBe(applied.data?.undoSteps);
   });
 
   it("handles sequence start, adjacent intervals, and a clip fully inside a range", () => {
