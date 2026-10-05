@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- FCP XML export receipts parse Premiere's BOM-prefixed Translation Report issue lines, bound effect details while reporting truncation, and wait for the XML size and modification time to stabilize before reporting its size.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed

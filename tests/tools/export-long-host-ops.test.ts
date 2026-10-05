@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
@@ -40,8 +40,8 @@ describe("long host export receipts", () => {
       xmlSizeBytes: 28,
       translationReportPath: reportPath,
       untranslatedEffects: [
-        { sequence: "Podcast", track: "Video Track: 2", effect: "Ultra Key", clip: "Interview" },
-        { sequence: "Podcast", track: "Audio Track: 1", effect: "{audio-guid}", clip: null },
+        { sequence: "Podcast", track: "Video Track: 2", effect: "Ultra Key", effectIsGuid: false, clip: "Interview" },
+        { sequence: "Podcast", track: "Audio Track: 1", effect: "{audio-guid}", effectIsGuid: false, clip: null },
       ],
       hostBlockedByModal: true,
     } });
@@ -53,6 +53,39 @@ describe("long host export receipts", () => {
     const report = parseFcpTranslationReport("Sequence: S\nTrack: V1\nEffect: One\nEffect: Two\nEffect: Three", 4);
     expect(report.lines).toHaveLength(4);
     expect(report.issues.map((issue) => issue.effect)).toEqual(["One", "Two"]);
+  });
+
+  it("parses Premiere Translation Report issue lines including a UTF-8 BOM and GUID effects", () => {
+    const report = parseFcpTranslationReport("\uFEFFTranslation issue:\n\tSequence <Nested Sequence 01> at , video track 3: Effect <Transform> on Clip <mark-1l4raqpva> not translated.\nTranslation issue:\n\tSequence <Podcast Base Copy> at 00:12:34:05, audio track 1: Effect <4f327230-f04c-4c34-9ea5-a998b4459221> on Clip <riverside_mark_raw-audio.wav> not translated.\n");
+    expect(report.issues).toEqual([
+      { sequence: "Nested Sequence 01", timecode: "", trackType: "video", trackNumber: 3, track: "video track 3", effect: "Transform", effectIsGuid: false, clip: "mark-1l4raqpva" },
+      { sequence: "Podcast Base Copy", timecode: "00:12:34:05", trackType: "audio", trackNumber: 1, track: "audio track 1", effect: "4f327230-f04c-4c34-9ea5-a998b4459221", effectIsGuid: true, clip: "riverside_mark_raw-audio.wav" },
+    ]);
+    expect(report.totalIssueLines).toBe(2);
+    expect(report.issuesTruncated).toBe(false);
+    expect(report.lines[0]).toBe("Translation issue:");
+  });
+
+  it("bounds issue details and reports the total number of issue lines", () => {
+    const contents = Array.from({ length: 105 }, (_, index) => `Effect: Plugin ${index}`).join("\n");
+    const report = parseFcpTranslationReport(contents);
+    expect(report.issues).toHaveLength(100);
+    expect(report.totalIssueLines).toBe(105);
+    expect(report.issuesTruncated).toBe(true);
+  });
+
+  it("waits for a growing XML output to stabilize before returning its size", async () => {
+    const outputPath = join(root, "growing-output.xml");
+    const reportPath = join(root, "FCP Translation Results growing.txt");
+    mockedSendCommand.mockImplementationOnce(async () => {
+      writeFileSync(outputPath, "one");
+      writeFileSync(reportPath, "Effect: Example\n");
+      setTimeout(() => writeFileSync(outputPath, "growing"), 350);
+      setTimeout(() => writeFileSync(outputPath, "final-size"), 650);
+      return await new Promise<never>(() => {});
+    });
+    const result = await getExportTools(bridgeOptions).export_as_fcp_xml.handler({ output_path: outputPath });
+    expect(result).toMatchObject({ success: true, data: { outcome: "committed_unverified", xmlSizeBytes: 10, translationReportIssueLines: 1 } });
   });
 
   it("reports a newly written XML as committed_unverified when the bridge later times out", async () => {

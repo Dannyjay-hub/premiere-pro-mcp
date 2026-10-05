@@ -15,17 +15,56 @@ const MAX_FAILURE_DIAGNOSTIC_LENGTH = 4_096;
 export const MAX_CAPTURE_FRAME_BYTES = 8 * 1024 * 1024;
 
 const FCP_TRANSLATION_REPORT_LINE_LIMIT = 40;
+const FCP_TRANSLATION_REPORT_ISSUE_LIMIT = 100;
+const FCP_TRANSLATION_OUTPUT_STABLE_MS = 500;
 
-export function parseFcpTranslationReport(contents: string, lineLimit = FCP_TRANSLATION_REPORT_LINE_LIMIT): {
+export function parseFcpTranslationReport(contents: string, lineLimit = Number.MAX_SAFE_INTEGER): {
   lines: string[];
-  issues: Array<{ sequence: string | null; track: string | null; effect: string | null; clip: string | null }>;
+  issues: Array<{
+    sequence: string | null;
+    timecode?: string;
+    trackType?: "video" | "audio";
+    trackNumber?: number;
+    track: string | null;
+    effect: string | null;
+    effectIsGuid?: boolean;
+    clip: string | null;
+  }>;
+  totalIssueLines: number;
+  issuesTruncated: boolean;
 } {
-  const lines = contents.split(/\r?\n/).slice(0, Math.max(0, lineLimit));
+  const allLines = contents.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const boundedLineLimit = Math.max(0, lineLimit);
+  const lines = allLines.slice(0, Math.min(FCP_TRANSLATION_REPORT_LINE_LIMIT, boundedLineLimit));
   let sequence: string | null = null;
   let track: string | null = null;
   let clip: string | null = null;
-  const issues: Array<{ sequence: string | null; track: string | null; effect: string | null; clip: string | null }> = [];
-  for (const line of lines) {
+  const issues: Array<{
+    sequence: string | null;
+    timecode?: string;
+    trackType?: "video" | "audio";
+    trackNumber?: number;
+    track: string | null;
+    effect: string | null;
+    effectIsGuid?: boolean;
+    clip: string | null;
+  }> = [];
+  let totalIssueLines = 0;
+  const guidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+  for (const line of allLines.slice(0, boundedLineLimit)) {
+    const premiere = line.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
+    if (premiere) {
+      totalIssueLines += 1;
+      if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) {
+        const effect = premiere[5];
+        issues.push({
+          sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
+          trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
+          effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6],
+        });
+      }
+      continue;
+    }
     const field = (pattern: RegExp) => line.match(pattern)?.[1]?.trim().replace(/^['"“]|['"”]$/g, "") ?? null;
     const nextSequence = field(/^\s*sequence(?:\s+name)?\s*[:=]\s*(.+)$/i);
     if (nextSequence) { sequence = nextSequence; track = null; clip = null; }
@@ -34,9 +73,12 @@ export function parseFcpTranslationReport(contents: string, lineLimit = FCP_TRAN
     clip = field(/^\s*clip(?:\s+name)?\s*[:=]\s*(.+)$/i) ?? clip;
     const effect = field(/^\s*(?:untranslated\s+)?effect\s*[:=]\s*(.+)$/i)
       ?? field(/^\s*(.+?)\s+(?:could not be translated|is not supported|was not translated)\.?\s*$/i);
-    if (effect) issues.push({ sequence, track, effect, clip });
+    if (effect) {
+      totalIssueLines += 1;
+      if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) issues.push({ sequence, track, effect, effectIsGuid: guidPattern.test(effect), clip });
+    }
   }
-  return { lines, issues };
+  return { lines, issues, totalIssueLines, issuesTruncated: totalIssueLines > issues.length };
 }
 
 function fileSnapshot(filePath: string): { exists: boolean; size: number; mtimeMs: number } {
@@ -62,6 +104,9 @@ async function waitForFcpTranslationDialog(
   isCommandPending: () => boolean,
 ): Promise<{ output: ReturnType<typeof fileSnapshot>; reportPath: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null> {
   const directory = resolve(outputPath, "..");
+  let stableSince: number | null = null;
+  let lastStableSnapshot: ReturnType<typeof fileSnapshot> | null = null;
+  let lastReportPath: string | null = null;
   while (isCommandPending()) {
     const output = changedOutput(outputPath, before);
     if (output) {
@@ -71,9 +116,22 @@ async function waitForFcpTranslationDialog(
         && fileSnapshot(resolve(directory, name)).mtimeMs >= startedAt);
       if (reportName) {
         const reportPath = resolve(directory, reportName);
-        let contents = "";
-        try { contents = readFileSync(reportPath, "utf8"); } catch { /* retain modal detection with empty bounded details */ }
-        return { output, reportPath, parsed: parseFcpTranslationReport(contents) };
+        const current = fileSnapshot(outputPath);
+        const now = Date.now();
+        if (!current.exists) {
+          stableSince = null;
+          lastStableSnapshot = null;
+        } else if (lastStableSnapshot && current.size === lastStableSnapshot.size && current.mtimeMs === lastStableSnapshot.mtimeMs && reportPath === lastReportPath) {
+          if (stableSince !== null && now - stableSince >= FCP_TRANSLATION_OUTPUT_STABLE_MS) {
+            let contents = "";
+            try { contents = readFileSync(reportPath, "utf8"); } catch { /* retain modal detection with empty bounded details */ }
+            return { output: current, reportPath, parsed: parseFcpTranslationReport(contents) };
+          }
+        } else {
+          stableSince = now;
+          lastStableSnapshot = current;
+          lastReportPath = reportPath;
+        }
       }
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
@@ -1297,6 +1355,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             translationReportPath: first.details.reportPath,
             translationReportLines: first.details.parsed.lines,
             untranslatedEffects: first.details.parsed.issues,
+            translationReportIssueLines: first.details.parsed.totalIssueLines,
+            untranslatedEffectsTruncated: first.details.parsed.issuesTruncated,
             hostBlockedByModal: true,
             message: "Premiere wrote the XML and opened a Translation Report dialog. Dismiss the dialog in Premiere before any other command can run; the export receipt is committed_unverified because Premiere has not returned its final result.",
           } };
