@@ -1088,9 +1088,9 @@ export function getTimelineTools(
           if (!domTrack) return __error("DOM track not found");
           var frameTicks = domSequence.timebase ? parseFloat(domSequence.timebase) : NaN;
           if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var boundaryTolerance = frameTicks;
+          var boundaryTolerance = frameTicks / 2;
           var clipCountBefore = domTrack.clips.numItems;
-          var cutTicks = __secondsToTicks(${args.time_seconds});
+          var cutTicks = Math.round(__secondsToTicks(${args.time_seconds}) / frameTicks) * frameTicks;
 
           function __eligibleClips(track, cut) {
             var clips = [];
@@ -1121,18 +1121,11 @@ export function getTimelineTools(
             return __error("No clip on the requested ${trackType} track strictly spans ${args.time_seconds}s; no razor was attempted.");
           }
 
-          // QE razor() parses its argument as a timecode string. Handing it a
-          // tick count makes the call succeed and do nothing, which is the
-          // silent no-op reported in #21, #127, #263 and #264. frameTicks is
-          // ticks-per-frame for this sequence, so frames = ticks / frameTicks.
-          var __razorFps = Math.round(TICKS_PER_SECOND / frameTicks);
-          if (!__razorFps || !isFinite(__razorFps) || __razorFps < 1) __razorFps = 30;
-          var __razorFrames = Math.round(cutTicks / frameTicks);
-          function __pad2(n) { return n < 10 ? "0" + n : "" + n; }
-          var __razorTc = __pad2(Math.floor(__razorFrames / (__razorFps * 3600))) + ":" +
-                          __pad2(Math.floor((__razorFrames % (__razorFps * 3600)) / (__razorFps * 60))) + ":" +
-                          __pad2(Math.floor((__razorFrames % (__razorFps * 60)) / __razorFps)) + ":" +
-                          __pad2(__razorFrames % __razorFps);
+          // QE razor() parses its argument as a timecode string (a tick count is a
+          // silent no-op, #21/#127/#263/#264). Let Premiere format it in the
+          // sequence's display format so drop-frame sequences cut on the
+          // requested frame instead of drifting early.
+          var __razorTc = __qeTimecodeForTicks(domSequence, cutTicks).timecode;
 
           try {
             track.razor(__razorTc);
