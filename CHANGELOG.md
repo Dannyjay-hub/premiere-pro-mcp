@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `detect_beats` no longer snaps tempo to a coarse grid or lets the beat grid drift. It decoded audio at 200 Hz and built a 20 Hz onset envelope, so periods could only take 50 ms steps (73 BPM reported as 75, 146 as 150) and the returned beat times drifted by about 0.4 s after 30 beats. It now decodes at 4 kHz, uses a 100 Hz envelope, and refines the period to a fraction of a sample across the whole file. On 3-minute click tracks from 60 to 174 BPM, tempo is exact and every beat time is within 20 ms.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
