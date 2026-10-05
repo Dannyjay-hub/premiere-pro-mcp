@@ -71,8 +71,18 @@ describe("map_source_ranges_to_timeline", () => {
     expect(second.data.ranges[0]).toMatchObject({ inputIndex: 2, unplaced: [{ startSeconds: 32, endSeconds: 33 }] });
   });
 
-  it.each([2, 100])("refuses matching clip speed %s", async speed => {
-    fixture([{ id: "retimed", start: 20, end: 22, input: 0, output: 4, speed }]);
+  it("accepts 100 as normal speed on older hosts", async () => {
+    fixture([{ id: "normal-100", start: 20, end: 22, input: 0, output: 2, speed: 100 }]);
+    const result = await tools.map_source_ranges_to_timeline.handler({ track_type: "video", track_index: 0, source_project_item_id: "source", ranges: [{ start_seconds: 0, end_seconds: 1 }] });
+    expect(result).toMatchObject({ success: true, data: { ranges: [{ fragments: [{ clipNodeId: "normal-100" }] }] } });
+  });
+
+  it.each([
+    { speed: 2, reverse: false },
+    { speed: 0.5, reverse: false },
+    { speed: 1, reverse: true },
+  ])("refuses retimed or reversed playback $speed/$reverse", async ({ speed, reverse }) => {
+    fixture([{ id: "retimed", start: 20, end: 22, input: 0, output: 4, speed, reverse }]);
     const result = await tools.map_source_ranges_to_timeline.handler({ track_type: "video", track_index: 0, source_project_item_id: "source", ranges: [{ start_seconds: 0, end_seconds: 1 }] });
     expect(result).toMatchObject({ success: false, error: expect.stringContaining("non-1x or reversed") });
   });

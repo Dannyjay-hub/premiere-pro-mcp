@@ -100,7 +100,8 @@ export function getSourceToTimelineTools(bridgeOptions: BridgeOptions) {
               speed = clip.getSpeed();
               reversed = clip.isSpeedReversed();
             } catch (eSpeed) { return __error("Cannot verify speed/reverse state for matching clip " + c + "; mapping refused"); }
-            if (typeof speed !== "number" || !isFinite(speed) || Math.abs(speed - 1) >= 0.0001 || !(reversed === false || reversed === true || reversed === 0 || reversed === 1) || reversed === true || reversed === 1) {
+            var normalSpeed = typeof speed === "number" && isFinite(speed) && (Math.abs(speed - 1) < 0.0001 || speed === 100);
+            if (!normalSpeed || !(reversed === false || reversed === true || reversed === 0 || reversed === 1) || reversed === true || reversed === 1) {
               return __error("Matching clip " + c + " has non-1x or reversed playback; source-to-timeline mapping refused");
             }
             var startTicks = parseFloat(clip.start && clip.start.ticks), endTicks = parseFloat(clip.end && clip.end.ticks);

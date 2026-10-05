@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `map_source_ranges_to_timeline` now treats `getSpeed() === 100` as normal speed on older Premiere hosts while continuing to refuse retimed or reversed clips.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
