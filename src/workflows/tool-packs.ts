@@ -155,6 +155,7 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
     tools: [
       "inspect_film_editorial_workflow",
       "verify_premiere_connection", "get_clip_transcript_uxp", "search_clip_transcript_uxp",
+      "review_dialogue_candidates", "review_quote_paper_edit", "review_text_changes", "review_sync_evidence", "review_broll_placements",
       "detect_silence", "analyze_dialogue_edit_candidates", "preview_derived_dialogue_sequence_uxp",
       "apply_derived_dialogue_sequence_uxp", "create_caption_track", "auto_reframe_sequence",
       "get_sequence_structure", "inspect_sequence_review_report",

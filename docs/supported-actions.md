@@ -10,11 +10,11 @@ source catalog may include unreleased actions.
 
 | Surface | Count | Availability |
 | --- | ---: | --- |
-| Registered core actions | 386 | CEP/local server catalog; host and authority checks still apply |
-| Default-profile core actions | 384 | Advertised with `inspect,edit,export,filesystem` |
+| Registered core actions | 391 | CEP/local server catalog; host and authority checks still apply |
+| Default-profile core actions | 389 | Advertised with `inspect,edit,export,filesystem` |
 | Restricted core actions | 2 | Require explicit `unsafe-script` authority |
 | Authenticated UXP additions | 96 | Advertised only while a compatible authenticated UXP panel is connected |
-| Default profile with UXP | 480 | 384 core plus 96 UXP tools |
+| Default profile with UXP | 485 | 389 core plus 96 UXP tools |
 
 ## How to read support
 
@@ -324,6 +324,11 @@ operation” when the tool has no enum-based mode.
 | `replace_clip` | Default profile | Single operation | Replace one timeline clip with a different project item on the same track, keeping the exact timeline start and end. The replacement plays from its own In mark for the original clip's duration; neighbouring clips do not ripple, and a linked partner clip on another track is left in place. Refuses without changing anything when the track is locked. Reads the track back: verified when the new clip covers the same span, committed_unverified when the span holds but the source In point cannot be confirmed, otherwise failure with Undo guidance. |
 | `replace_clip_media` | Default profile | Single operation | Unavailable by design: the legacy ExtendScript overwrite route cannot prove that replacing media preserves the original clip's trim, position, linked audio, or adjacent clips, so this tool performs no mutation. |
 | `reverse_clip` | Default profile | Single operation | Unavailable: Premiere does not expose a supported scripting API for reversing a timeline clip's playback direction. |
+| `review_broll_placements` | Default profile | Single operation | Review caller-proposed owned-footage B-roll picks with matched quote, reason, alternatives, source/sequence revisions and explicit decisions. Reject overlapping approved placements. Does not infer visual content, search stock, inspect track occupancy or insert clips. |
+| `review_dialogue_candidates` | Default profile | Single operation | Review revision-bound dialogue candidates with surrounding words, silence padding, explicit keep/reject decisions and unioned source-time removal duration. Recomputed review revisions reject stale selections. Local-only; no timeline mapping, transcription or mutation. |
+| `review_quote_paper_edit` | Default profile | Single operation | Review a transcript quote library, explicitly order approved quotes, and return running timings and a formula-neutralized CSV paper edit inline. Local-only; no files, provider calls or multi-source timeline assembly. |
+| `review_sync_evidence` | Default profile | Single operation | Review caller-supplied camera/recorder offset estimates for independent-method agreement, confidence and conflicting alternatives. All matches require selection; conflicting matches cannot be approved. Does not analyze audio, calibrate confidence or synchronize Premiere. |
+| `review_text_changes` | Default profile | Single operation | Preview literal replacements or supplied copy changes for inspected MOGRT text and supplied caption artifacts. Preserve original text and evidence revisions with explicit approve/reject decisions. Does not translate, access native graphics/caption text or apply changes. |
 | `ripple_delete` | Default profile | `scope`: `sync_locked`, `own_track`; `range_content`: `refuse`, `delete` | Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. With the default scope the clip's linked audio/video partners are removed with it and their tracks close up too, even when not sync-locked; with scope 'own_track' the partners stay in place (reported as linkedPartnersKept). Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed. |
 | `roll_edit` | Default profile | Single operation | Perform a verified roll edit at the outgoing cut of a clip using the public timeline DOM, moving both visible edges and their source in/out points and verifying all four. Linked audio/video partners get the same edit by default (include_linked); every clip is checked before any is changed. Requires readable finite media and ffprobe duration evidence for every edited source; refuses unknown duration, stills, and nonunit/reversed speed before mutation. |
 | `save_project` | Default profile | Single operation | Save the current Premiere Pro project to its existing path. Fails when the project has never been saved (use save_project_as) or when Premiere writes no non-empty file. Fresh disk metadata verifies a save; unchanged or unreadable metadata reports committed_unverified. |

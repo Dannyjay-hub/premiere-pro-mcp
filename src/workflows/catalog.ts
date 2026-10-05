@@ -116,6 +116,36 @@ export const WORKFLOW_CATALOG = [
     summary: "Select a built-in or workspace-local declarative recipe, review its allowlisted tool manifest, then execute each step through the normal guarded tools.",
     recommendedTools: ["search_workflow_recipes", "preview_workflow_recipe", "get_premiere_state"],
   },
+  {
+    id: "dialogue-candidate-review",
+    title: "Review dialogue cuts with padding",
+    summary: "Inspect captured dialogue candidates with words in context, explicitly keep or reject cuts, and review unioned source-time removal before a separate guarded derivative preview.",
+    recommendedTools: ["review_dialogue_candidates", "preview_derived_dialogue_sequence_uxp"],
+  },
+  {
+    id: "quote-paper-edit",
+    title: "Review a quote paper edit",
+    summary: "Order explicitly approved source quotes and return running timings plus an inline spreadsheet-safe CSV before any multi-source host assembly.",
+    recommendedTools: ["review_quote_paper_edit"],
+  },
+  {
+    id: "batch-copy-review",
+    title: "Review batch text changes",
+    summary: "Compare inspected MOGRT text or supplied caption-artifact copy with literal or proposed changes, preserve original text, and approve exact fields before fresh host readback.",
+    recommendedTools: ["review_text_changes", "get_mogrt_component"],
+  },
+  {
+    id: "sync-evidence-review",
+    title: "Review camera and recorder matches",
+    summary: "Compare supplied independent offset estimates, resolve conflicts, and explicitly approve camera-recorder matches before a separate host sequence preview.",
+    recommendedTools: ["review_sync_evidence", "preview_derived_dialogue_sequence_uxp"],
+  },
+  {
+    id: "broll-placement-review",
+    title: "Review owned-footage B-roll picks",
+    summary: "Review caller-proposed footage against dialogue, reasons and alternatives, approve non-overlapping video-only placements, then inspect occupancy in a fresh edit-plan preview.",
+    recommendedTools: ["review_broll_placements", "preview_edit_plan"],
+  },
 ] as const;
 
 export const WORKFLOW_RESOURCE = JSON.stringify(

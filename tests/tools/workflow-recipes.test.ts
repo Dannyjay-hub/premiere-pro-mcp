@@ -45,3 +45,19 @@ describe("workflow recipes", () => {
     expect(((await tools.preview_workflow_recipe.handler({ recipe_id: "talking-head-cleanup", provided_inputs })) as any).data.ready).toBe(true);
   });
 });
+
+ describe("editorial review recipes", () => {
+  it("includes explicit dialogue review before host preview and exposes review-only recipes", async () => {
+    const tools = getWorkflowRecipeTools();
+    const dialogue = await tools.preview_workflow_recipe.handler({ recipe_id: "talking-head-cleanup" }) as any;
+    const steps = dialogue.data.execution_manifest.map((s: any) => s.step);
+    expect(steps.indexOf("review_dialogue")).toBeLessThan(steps.indexOf("preview_dialogue_derivative"));
+    for (const recipe_id of ["quote-paper-edit", "batch-copy-review", "sync-match-review", "broll-pick-review"]) {
+      const preview = await tools.preview_workflow_recipe.handler({ recipe_id }) as any;
+      expect(preview.success).toBe(true);
+      expect(preview.data.applied).toBe(false);
+      expect(preview.data.execution_manifest).toHaveLength(1);
+      expect(preview.data.execution_manifest[0].routes[0]).toMatch(/^review_/);
+    }
+  });
+});
