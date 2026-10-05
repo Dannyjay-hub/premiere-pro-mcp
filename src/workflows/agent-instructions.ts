@@ -46,6 +46,9 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["get_metadata", "set_metadata"],
     "Call get_metadata with parse_fields for named properties, then set_metadata with field_name and value (optional expected_value) or complete metadata_xml plus updated_fields.");
 
+  route(["review_dialogue_candidates", "review_quote_paper_edit", "review_text_changes", "review_sync_evidence", "review_broll_placements"],
+    "Start with supplied evidence and no decisions. Review cards, then submit explicit selected/rejected IDs (quote_order for paper edits) with the unchanged review_revision as expected_review_revision. Missing decisions remain pending. These local reviews never create a host apply token, verify current revisions, infer offsets/visual matches, transcribe, translate or mutate. Re-inspect targets and use existing guarded host previews before applying; CSV is inline and formula-neutralized.");
+
   return `Control Adobe Premiere Pro through the tools registered in this MCP session.
 
 START AND DISCOVER:

@@ -48,6 +48,7 @@ import { getFilmEditorialTools } from "./tools/film-editorial.js";
 import { ProjectContextRepository } from "./context/project-context-store.js";
 import { getProjectIntakeTools } from "./tools/project-intake.js";
 import { getCompetitorGapTools } from "./tools/competitor-gaps.js";
+import { getEditorialReviewTools } from "./tools/editorial-review.js";
 import { getDialogueAnalysisTools } from "./tools/dialogue-analysis.js";
 import { MediaWatchRegistry, getMediaWatchTools } from "./tools/media-watch.js";
 import { getWorkflowRecipeTools } from "./tools/workflow-recipes.js";
@@ -307,6 +308,7 @@ function collectStaticTools(
     ...getRecoveryTools(bridgeOptions),
     ...getProjectIntakeTools(bridgeOptions),
     ...getDialogueAnalysisTools(),
+    ...getEditorialReviewTools(),
     ...getWorkflowRecipeTools(),
     ...getTimelineQaTools(),
     ...getCrossAppWorkflowTools(),

@@ -17,6 +17,8 @@ const mockedSendRawCommand = vi.mocked(sendRawCommand);
 
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/test-bridge", timeoutMs: 5000 };
 
+import { getEditorialReviewTools } from "../../src/tools/editorial-review.js";
+
 // Import all tool modules
 import { getDiscoveryTools } from "../../src/tools/discovery.js";
 import { getProjectTools } from "../../src/tools/project.js";
@@ -86,6 +88,7 @@ const ALL_MODULES: Array<{
   getter: (opts: BridgeOptions) => ToolModule;
   minTools: number;
 }> = [
+  { name: "editorial-review", getter: getEditorialReviewTools, minTools: 5 },
   { name: "discovery", getter: getDiscoveryTools, minTools: 8 },
   { name: "project", getter: getProjectTools, minTools: 20 },
   { name: "media", getter: getMediaTools, minTools: 12 },
@@ -222,16 +225,16 @@ describe("Tool Module Structure", () => {
 });
 
 describe("Total Tool Count", () => {
-  it("all modules together have 375 tools", () => {
+  it("all modules together have 380 tools", () => {
     let total = 0;
     for (const mod of ALL_MODULES) {
       total += Object.keys(mod.getter(bridgeOptions)).length;
     }
-    expect(total).toBe(375);
+    expect(total).toBe(380);
   });
 
-  it("there are 51 directly enumerated modules", () => {
-    expect(ALL_MODULES.length).toBe(52);
+  it("there are 53 directly enumerated modules", () => {
+    expect(ALL_MODULES.length).toBe(53);
   });
 });
 
