@@ -11,6 +11,11 @@ const STEP_ROUTES = {
   inspect_sequence: ["get_active_sequence", "get_sequence_structure"],
   export_transcript: ["get_clip_transcript_uxp"],
   analyze_dialogue: ["analyze_dialogue_edit_candidates"],
+  review_dialogue: ["review_dialogue_candidates"],
+  review_quotes: ["review_quote_paper_edit"],
+  review_copy: ["review_text_changes"],
+  review_sync: ["review_sync_evidence"],
+  review_broll: ["review_broll_placements"],
   preview_dialogue_derivative: ["preview_derived_dialogue_sequence_uxp"],
   apply_dialogue_derivative: ["apply_derived_dialogue_sequence_uxp"],
   detect_silence: ["detect_silence"],
@@ -36,8 +41,12 @@ export type WorkflowRecipe = {
 };
 
 const BUILT_INS: readonly WorkflowRecipe[] = [
-  { schema_version: 1, id: "talking-head-cleanup", title: "Talking-head cleanup", description: "Review transcript and silence evidence, then create and verify a dialogue-cleaned derivative sequence.", tags: ["dialogue", "rough-cut"], required_inputs: ["source_project_item_id", "transcript_revision", "approved_segments", "sequence_name"], steps: ["verify_connection", "export_transcript", "detect_silence", "analyze_dialogue", "preview_dialogue_derivative", "apply_dialogue_derivative", "verify_sequence"] },
-  { schema_version: 1, id: "podcast-first-cut", title: "Podcast first cut", description: "Review speaker and camera assignments, then create a standard derivative sequence with continuous approved master audio.", tags: ["podcast", "multicamera", "rough-cut"], required_inputs: ["camera_source_ids", "master_audio_project_item_id", "approved_segments", "sequence_name"], steps: ["verify_connection", "inspect_sequence", "export_transcript", "analyze_dialogue", "preview_dialogue_derivative", "apply_dialogue_derivative", "verify_sequence"] },
+  { schema_version: 1, id: "quote-paper-edit", title: "Quote paper edit", description: "Review a quote library, approve story order, and return an inline CSV script. No timeline assembly.", tags: ["quotes", "paper-edit"], required_inputs: ["segments", "quote_order"], steps: ["review_quotes"] },
+  { schema_version: 1, id: "batch-copy-review", title: "Batch copy review", description: "Preview literal or supplied text changes and explicitly approve exact inspected fields. No host writes.", tags: ["copy", "mogrt", "captions"], required_inputs: ["entries", "selected_ids"], steps: ["review_copy"] },
+  { schema_version: 1, id: "sync-match-review", title: "Sync match review", description: "Review supplied independent offset estimates and resolve uncertain matches before any host assembly.", tags: ["sync", "audio"], required_inputs: ["matches", "selected_ids"], steps: ["review_sync"] },
+  { schema_version: 1, id: "broll-pick-review", title: "B-roll pick review", description: "Review supplied owned-footage picks, reasons and alternatives before a separate guarded edit plan.", tags: ["broll", "footage"], required_inputs: ["placements", "selected_ids"], steps: ["review_broll"] },
+  { schema_version: 1, id: "talking-head-cleanup", title: "Talking-head cleanup", description: "Review transcript and silence evidence, then create and verify a dialogue-cleaned derivative sequence.", tags: ["dialogue", "rough-cut"], required_inputs: ["source_project_item_id", "transcript_revision", "approved_segments", "sequence_name"], steps: ["verify_connection", "export_transcript", "detect_silence", "analyze_dialogue", "review_dialogue", "preview_dialogue_derivative", "apply_dialogue_derivative", "verify_sequence"] },
+  { schema_version: 1, id: "podcast-first-cut", title: "Podcast first cut", description: "Review speaker and camera assignments, then create a standard derivative sequence with continuous approved master audio.", tags: ["podcast", "multicamera", "rough-cut"], required_inputs: ["camera_source_ids", "master_audio_project_item_id", "approved_segments", "sequence_name"], steps: ["verify_connection", "inspect_sequence", "export_transcript", "analyze_dialogue", "review_dialogue", "preview_dialogue_derivative", "apply_dialogue_derivative", "verify_sequence"] },
   { schema_version: 1, id: "shorts-cutdown", title: "Shorts cutdown", description: "Create a reviewed dialogue derivative, clone it, reframe it, add a supplied caption artifact, and verify delivery evidence.", tags: ["social", "vertical", "captions"], required_inputs: ["approved_segments", "target_dimensions", "caption_artifact", "export_preset"], steps: ["verify_connection", "preview_dialogue_derivative", "apply_dialogue_derivative", "clone_sequence", "auto_reframe", "caption_artifact", "review_frames", "export_delivery"] },
   { schema_version: 1, id: "watched-media-intake", title: "Watched-media intake", description: "Review new or changed files in an approved local folder before importing selected media into Premiere.", tags: ["intake", "media", "organization"], required_inputs: ["approved_workspace_path", "watch_path", "allowed_extensions"], steps: ["verify_connection", "inspect_watched_media", "import_approved_media", "verify_sequence"] },
 ];
