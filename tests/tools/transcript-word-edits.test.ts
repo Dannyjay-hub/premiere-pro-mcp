@@ -42,6 +42,10 @@ describe("transcript word edit tools", () => {
     expect(tools.plan_filler_word_removal.parameters.required).toEqual(["word_timeline"]);
   });
 
+  it("warns that hesitation-sound detection depends on transcript settings", () => {
+    expect(tools.plan_filler_word_removal.description).toContain("Whisper's default output omits them");
+  });
+
   it.each(names)("%s returns success:false without throwing on invalid args", async (name) => {
     const tool = tools[name];
     for (const args of [{}, { word_timeline: null }, { word_timeline: { source_project_item_id: "x", transcript_revision: "bad", words: [] } }, { word_timeline: timeline("hi"), frame_rate: 999, words: ["hi"] }]) {

@@ -19,6 +19,8 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "Sequence reads return bounded pages, default 50 clips or gaps. Keep track counts and pagination; follow nextOffset with the same filters until truncated is false before treating a snapshot as complete for QA or edit planning. Re-read after edits; offsets are not stable across timeline mutations. Inspect markers and transitions separately when their capped collections are truncated. Clip node IDs resolve in the active sequence; re-check sequence identity after switching sequences.");
   route(["get_clip_transcript_uxp", "search_clip_transcript_uxp"],
     "Retrieve native transcript evidence when this UXP backend is connected. Preserve source timing and speaker evidence; do not infer speech from filenames.");
+  route(["plan_filler_word_removal"],
+    "Hesitation-sound removal needs a transcript that preserves disfluencies, such as Premiere transcription or verbatim ASR; Whisper's default output omits 'um' and 'uh'. Check transcript provenance before treating an empty match as evidence that no hesitation sounds occurred.");
   route(["set_clip_duration"],
     "Set a placed clip's timeline length or extend a still image by moving only its end; it refuses overlaps with the next clip and restores the original end if Premiere clamps. Clip speed has no documented scripting setter, so speed_change and set_clip_speed_qe always fail before mutation; use set_clip_duration for timing, or the Speed/Duration UI to retime.");
   route(["capture_frame"],
@@ -34,7 +36,7 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder"],
     "For reaction Shorts, plan stacked speaker-colored captions without guessing unknown colors, place a subscribe overlay about two-thirds through, and export into a series-named folder created if missing. Caption-track import cannot encode speaker colors; apply reviewed graphics or a MOGRT, and keep Cafe styling off Watch Club kits.");
   route(["list_stock_titles", "add_title"],
-    "For a title, lower third, or credit from plain text, prefer add_title with a stock template that ships with Premiere; call list_stock_titles to see how many lines each template takes. Check textVerification and duration in the result.");
+    "For a title, lower third, or credit from plain text, prefer add_title with a stock template that ships with Premiere; call list_stock_titles to see how many lines each template takes. Check textVerification, duration, and templateFile in the result. Premiere-built template copies are saved in the application support premiere-pro-mcp/titles folder; never delete them automatically, and remove an unused copy only after confirming no project references it.");
   route(["import_mogrt", "get_mogrt_component"],
     "When building MOGRT title cards, pass text_values so every text control (for example Headline) is written explicitly and read back; never rely on template defaults or a prior build. Audit a series with get_mogrt_component expected_values. The Essential Graphics panel can display stale text; trust the stored-property readback and a captured frame, not the panel.");
   route(["inspect_project_panel_metadata_uxp"],

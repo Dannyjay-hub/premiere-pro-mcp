@@ -3,6 +3,19 @@ import { buildPremiereInstructions } from "../../src/workflows/agent-instruction
 import { WORKFLOW_CATALOG, WORKFLOW_PROMPTS } from "../../src/workflows/catalog.js";
 
 describe("premiere agent instructions", () => {
+  it("preserves baked title copies until no project references them", () => {
+    const text = buildPremiereInstructions(new Set(["list_stock_titles", "add_title"]));
+    expect(text).toContain("templateFile");
+    expect(text).toContain("never delete them automatically");
+    expect(text).toContain("confirming no project references it");
+  });
+
+  it("warns that default Whisper transcripts omit hesitation sounds", () => {
+    const text = buildPremiereInstructions(new Set(["plan_filler_word_removal"]));
+    expect(text).toContain("Whisper's default output omits 'um' and 'uh'");
+    expect(text).toContain("Check transcript provenance");
+  });
+
   it("teaches metadata layers even when no workflow tools are registered", () => {
     const text = buildPremiereInstructions(new Set());
     expect(text).toContain("METADATA:");
