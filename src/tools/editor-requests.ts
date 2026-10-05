@@ -570,14 +570,13 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           if (Math.abs(observed - target) > frameTicks) {
             return __error("Premiere reports the playhead at " + __ticksToSeconds(observed) + "s instead of " + __ticksToSeconds(target) + "s after " + action + ".");
           }
-          var fps = TICKS_PER_SECOND / frameTicks;
           return __result({
             action: action,
             verified: true,
             fromSeconds: __ticksToSeconds(currentTicks),
             toSeconds: __ticksToSeconds(observed),
             deltaFrames: Math.round((observed - currentTicks) / frameTicks),
-            timecode: __ticksToTimecode(observed, Math.round(fps)),
+            timecode: __qeTimecodeForTicks(seq, observed).timecode,
             clamped: target === 0 || target === endTicks
           });
         `);

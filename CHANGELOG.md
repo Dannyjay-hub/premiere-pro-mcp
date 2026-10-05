@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `navigate_playhead` now reports timecode using Premiere's sequence display format, including drop-frame punctuation.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
