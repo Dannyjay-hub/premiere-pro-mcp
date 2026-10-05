@@ -1368,7 +1368,7 @@ user/device authorization are implemented.
 | `PREMIERE_MCP_CAPABILITIES` | Comma-separated authority profile; add `unsafe-script` only when raw scripting is required | `inspect,edit,export,filesystem` |
 | `PREMIERE_MCP_DEBUG` | Set to `1` (or `true`) to emit verbose server diagnostics to stderr | unset |
 | `PREMIERE_CONTEXT_BACKEND` | Local project-context store: `auto`, `sqlite`, `json`, or `memory` | `auto` |
-| `PREMIERE_CONTEXT_DIR` | Override the local project-context storage directory | OS application-data directory |
+| `PREMIERE_CONTEXT_DIR` | Override local context storage; unsafe existing ownership/permissions/links are rejected, safe POSIX directories/files tightened to 0700/0600 | OS application-data directory |
 | `PORT` | HTTP port (HTTP/SSE transport only) | `3000` |
 | `MCP_AUTH_TOKEN` | Operator bearer token for controlled HTTP deployments; mutually exclusive with OAuth mode | unset |
 | `MCP_OAUTH_ISSUER` | Exact trusted OAuth/OIDC token issuer URL | unset |
@@ -1487,6 +1487,8 @@ CEP remains the production backend because it provides broad ExtendScript access
 All generated scripts use **ES3 syntax** (`var`, manual `for` loops, no arrow functions, no `let`/`const`) since ExtendScript is based on ECMAScript 3. The bridge writes a versioned helper library to the shared temp directory and loads it once per ExtendScript engine via `$.evalFile`; each command then sends only its tool-specific script.
 
 ### Security
+
+Metadata privacy: CEP `get_metadata` and `get_xmp_metadata` now default to bounded parsed fields with GPS, serial, author and contact values omitted. Raw packets require explicit packet flags and `include_sensitive: true`; source media paths require `include_media_path: true`. Existing callers expecting raw XML must opt in. Disk context can retain names, transcripts and notes; select `PREMIERE_CONTEXT_BACKEND=memory` to avoid persistence.
 
 Understand the trust model before deploying this: **any client that can reach the MCP
 server can control Premiere Pro.** `execute_extendscript` and `evaluate_expression` are

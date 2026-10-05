@@ -39,7 +39,10 @@ const CEP_XMP_FIELD_HELPERS = `
             var compact = (String(ns || "") + String(name || "")).toLowerCase().replace(/[^a-z0-9]/g, "");
             return compact.indexOf("gps") !== -1 || compact.indexOf("serialnumber") !== -1
               || compact.indexOf("lensserial") !== -1 || compact.indexOf("bodyserial") !== -1
-              || compact.indexOf("cameraserial") !== -1;
+              || compact.indexOf("cameraserial") !== -1 || compact.indexOf("creator") !== -1
+              || compact.indexOf("author") !== -1 || compact.indexOf("owner") !== -1
+              || compact.indexOf("contact") !== -1 || compact.indexOf("email") !== -1
+              || compact.indexOf("address") !== -1;
           }
           function __collectXmpFields(packet, packetName, includeSensitive, fields) {
             if (!packet) return 0;
@@ -77,7 +80,7 @@ const CEP_XMP_FIELD_HELPERS = `
 export function getMetadataTools(bridgeOptions: BridgeOptions) {
   return {
     get_metadata: {
-      description: "Get metadata for a project item. Use parse_fields to return named XMP/project fields instead of raw XML. Project metadata XML and file/clip XMP are separate packets; disable either when identity/path is enough. Prefer inspect_project_panel_metadata_uxp item_columns or manage_metadata_uxp inspect_fields for visible columns. This is not the premiere://project/metadata resource. GPS and serials are omitted from parse_fields unless include_sensitive is true.",
+      description: "Get metadata for a project item. Returns bounded parsed fields by default; GPS, serials, and personal contact/author fields are omitted. Raw packets require explicit include_project_metadata/include_xmp_metadata and include_sensitive true. Media paths require include_media_path true. Project metadata XML and file/clip XMP are separate packets; disable either when identity/path is enough. Prefer inspect_project_panel_metadata_uxp item_columns or manage_metadata_uxp inspect_fields for visible columns. This is not the premiere://project/metadata resource. GPS and serials are omitted from parse_fields unless include_sensitive is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -87,19 +90,23 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
           },
           parse_fields: {
             type: "boolean",
-            description: "Parse project metadata and XMP into named fields (default false). When true, raw XML is omitted unless include_project_metadata or include_xmp_metadata is explicitly true.",
+            description: "Parse project metadata and XMP into named fields (default true). Set false for identity-only or explicitly requested raw packets.",
           },
           include_sensitive: {
             type: "boolean",
-            description: "When parse_fields is true, include GPS, serials, and similar EXIF. Default false.",
+            description: "Opt in to sensitive GPS, serial, author, and contact fields. Required for any raw packet; default false.",
+          },
+          include_media_path: {
+            type: "boolean",
+            description: "Opt in to the full source media path, which can identify the local user and folders; default false.",
           },
           include_project_metadata: {
             type: "boolean",
-            description: "Include the potentially large Project Metadata XML payload (default: true unless parse_fields is true).",
+            description: "Opt in to raw Project Metadata XML (maximum 256 Ki characters). Requires include_sensitive true; default false. Set false to skip reading this packet entirely.",
           },
           include_xmp_metadata: {
             type: "boolean",
-            description: "Include the potentially large XMP XML payload (default: true unless parse_fields is true).",
+            description: "Opt in to raw XMP XML (maximum 256 Ki characters). Requires include_sensitive true; default false. Set false to skip reading this packet entirely.",
           },
         },
         required: ["item_id"],
@@ -108,53 +115,50 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
         item_id: string;
         parse_fields?: boolean;
         include_sensitive?: boolean;
+        include_media_path?: boolean;
         include_project_metadata?: boolean;
         include_xmp_metadata?: boolean;
       }) => {
-        const parseFields = args.parse_fields === true;
-        const includeProjectMetadata = parseFields
-          ? args.include_project_metadata === true
-          : args.include_project_metadata !== false;
-        const includeXmpMetadata = parseFields
-          ? args.include_xmp_metadata === true
-          : args.include_xmp_metadata !== false;
+        const parseFields = args.parse_fields !== false;
+        const includeProjectMetadata = args.include_project_metadata === true;
+        const includeXmpMetadata = args.include_xmp_metadata === true;
         const includeSensitive = args.include_sensitive === true;
+        if ((includeProjectMetadata || includeXmpMetadata) && !includeSensitive) {
+          return { success: false, error: "Raw metadata packets require include_sensitive: true because they may disclose personal data" };
+        }
+        const readProject = includeProjectMetadata || (parseFields && args.include_project_metadata !== false);
+        const readXmp = includeXmpMetadata || (parseFields && args.include_xmp_metadata !== false);
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
 
           var metadata = {};
+          var projectPacket = "";
+          var xmpPacket = "";
+          ${readProject ? 'try { projectPacket = String(item.getProjectMetadata() || ""); } catch (eProject) {}' : ""}
+          ${readXmp ? 'try { xmpPacket = String(item.getXMPMetadata() || ""); } catch (eXmp) {}' : ""}
+          if (projectPacket.length > 262144 || xmpPacket.length > 262144) {
+            return __error("Metadata packet exceeds the 256 Ki character limit; use bounded Project-panel columns instead");
+          }
           ${parseFields ? `${CEP_XMP_FIELD_HELPERS}
           var loadError = __loadAdobeXmp();
           if (loadError) return __error(loadError);
           var fields = [];
           var omittedSensitiveCount = 0;
-          var projectPacket = "";
-          var xmpPacket = "";
-          try { projectPacket = String(item.getProjectMetadata() || ""); } catch (eProject) {}
-          try { xmpPacket = String(item.getXMPMetadata() || ""); } catch (eXmp) {}
           omittedSensitiveCount += __collectXmpFields(projectPacket, "project", ${includeSensitive ? "true" : "false"}, fields);
           omittedSensitiveCount += __collectXmpFields(xmpPacket, "xmp", ${includeSensitive ? "true" : "false"}, fields);
           metadata.parse_fields = true;
           metadata.fields = fields;
-          metadata.omittedSensitiveCount = omittedSensitiveCount;
+          metadata.omittedSensitiveCount = omittedSensitiveCount;` : ""}
           ${includeProjectMetadata ? "metadata.projectMetadata = projectPacket;" : ""}
-          ${includeXmpMetadata ? "metadata.xmpMetadata = xmpPacket;" : ""}` : `
-          ${includeProjectMetadata ? `try {
-            var xmpBlob = item.getProjectMetadata();
-            metadata.projectMetadata = xmpBlob;
-          } catch(e) {}` : ""}
-          ${includeXmpMetadata ? `try {
-            var xmpBlob2 = item.getXMPMetadata();
-            metadata.xmpMetadata = xmpBlob2;
-          } catch(e) {}` : ""}`}
+          ${includeXmpMetadata ? "metadata.xmpMetadata = xmpPacket;" : ""}
 
           metadata.name = item.name;
           metadata.nodeId = item.nodeId;
 
-          try {
+          ${args.include_media_path === true ? `try {
             metadata.mediaPath = item.getMediaPath();
-          } catch(e) {}
+          } catch(e) {}` : ""}
 
           return __result(metadata);
         `);
@@ -493,26 +497,24 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
       },
     },
     get_xmp_metadata: {
-      description: "Get the raw file/clip XMP packet for a project item (Dublin Core, EXIF, IPTC, xmpDM, and other namespaces). Distinct from Premiere-private project metadata. Omit GPS and camera serials from user-facing reports unless requested.",
+      description: "Inspect bounded file/clip XMP fields with GPS, serials, author and contact data omitted by default. Raw XMP requires include_raw and include_sensitive true; it can disclose personal data to the connected client. Distinct from Premiere-private project metadata.",
       parameters: {
         type: "object" as const,
         properties: {
-          item_id: {
-            type: "string",
-            description: "Node ID or name of the project item",
-          },
+          item_id: { type: "string", description: "Node ID or name of the project item" },
+          include_raw: { type: "boolean", description: "Opt in to raw XMP instead of parsed fields (maximum 256 Ki characters). Requires include_sensitive true; default false." },
+          include_sensitive: { type: "boolean", description: "Opt in to GPS, serial, author and contact fields; required for raw XMP; default false." },
         },
         required: ["item_id"],
       },
-      handler: async (args: { item_id: string }) => {
-        const script = buildToolScript(`
-          var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
-          
-          var xmp = item.getXMPMetadata();
-          return __result({ item: item.name, xmpMetadata: xmp });
-        `);
-        return sendCommand(script, bridgeOptions);
+      handler: async (args: { item_id: string; include_raw?: boolean; include_sensitive?: boolean }) => {
+        return getMetadataTools(bridgeOptions).get_metadata.handler({
+          item_id: args.item_id,
+          parse_fields: args.include_raw !== true,
+          include_project_metadata: false,
+          include_xmp_metadata: args.include_raw === true ? true : undefined,
+          include_sensitive: args.include_sensitive,
+        });
       },
     },
 
