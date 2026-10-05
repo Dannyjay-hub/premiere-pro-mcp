@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `detect_repeated_takes` no longer groups a short sentence with a much longer, different one because they share a few words. Similarity used bag-of-words containment, so on a real interview transcript "We have new city projects" (5 words) scored 0.8 against a 20-word sentence mentioning "different new city projects", and the default `keep: "last"` proposed removing 7.9 s of real content. When one sentence is under 60% of the other's length, containment now only counts a false start that matches the start of the longer sentence in order; similar-length retakes behave as before.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
