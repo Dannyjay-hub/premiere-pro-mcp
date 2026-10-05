@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -13,6 +13,8 @@ const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 
 import { getExportTools, parseSceneChangeOutput } from "../../src/tools/export.js";
+
+afterAll(cleanupTempDirs);
 
 describe("parseSceneChangeOutput", () => {
   it("pairs times with scores and keeps the strongest nearby event", () => {
@@ -43,7 +45,7 @@ describe("detect_source_scene_changes boundary", () => {
   });
 
   it("returns bounded source-relative scene candidates from one local FFmpeg pass", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-scene-detect-"));
+    const directory = makeTempDir("premiere-scene-detect-");
     const mediaPath = join(directory, "source.mp4");
     writeFileSync(mediaPath, "video-fixture");
     mockedExecFileAsync.mockResolvedValueOnce({
@@ -65,7 +67,7 @@ describe("detect_source_scene_changes boundary", () => {
   });
 
   it("keeps an FFmpeg scene-detection failure explicit", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-scene-error-"));
+    const directory = makeTempDir("premiere-scene-error-");
     const mediaPath = join(directory, "source.mp4");
     writeFileSync(mediaPath, "video-fixture");
     mockedExecFileAsync.mockRejectedValueOnce(Object.assign(new Error("decode failed"), { stderr: "bad video stream" }));

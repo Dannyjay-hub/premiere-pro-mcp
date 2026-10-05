@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -19,6 +19,8 @@ vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getAudioTools, parseEbur128Summary } from "../../src/tools/audio.js";
 
+afterAll(cleanupTempDirs);
+
 const mockedSendCommand = vi.mocked(sendCommand);
 const tools = getAudioTools({ tempDir: "/tmp/test", timeoutMs: 1000 });
 
@@ -33,7 +35,7 @@ function enqueueFfmpegFailure(error: Error) {
 }
 
 function createMediaFixture() {
-  const directory = mkdtempSync(join(tmpdir(), "premiere-loudness-"));
+  const directory = makeTempDir("premiere-loudness-");
   const mediaPath = join(directory, "dialogue.wav");
   writeFileSync(mediaPath, "audio-fixture");
   return mediaPath;

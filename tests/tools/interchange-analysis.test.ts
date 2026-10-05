@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import {
   compareCmx3600Edls,
   getInterchangeAnalysisTools,
@@ -11,6 +12,8 @@ import {
   timecodeToFrames,
   validateCmx3600Edl,
 } from "../../src/tools/interchange-analysis.js";
+
+afterAll(cleanupTempDirs);
 
 const tools = getInterchangeAnalysisTools({ tempDir: "/tmp/interchange-analysis" });
 
@@ -22,7 +25,7 @@ const BASE_EDL = [
 ].join("\n");
 
 function writeFixture(name: string, contents: string): string {
-  const directory = mkdtempSync(join(tmpdir(), "premiere-interchange-"));
+  const directory = makeTempDir("premiere-interchange-");
   const path = join(directory, name);
   writeFileSync(path, contents);
   return path;
@@ -129,7 +132,7 @@ describe("FCPXML inspection and approved-root reference verification", () => {
   });
 
   it("verifies only file URLs inside caller-approved roots and hides denied paths", async () => {
-    const root = mkdtempSync(join(tmpdir(), "premiere-interchange-root-"));
+    const root = makeTempDir("premiere-interchange-root-");
     const allowedMedia = join(root, "media.mov");
     writeFileSync(allowedMedia, "media");
     const nested = join(root, "nested");

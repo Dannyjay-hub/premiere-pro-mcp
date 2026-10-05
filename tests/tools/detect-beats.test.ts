@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -14,6 +14,8 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({ sendCommand: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 
 import { analyzeBeatPcm, getAudioTools } from "../../src/tools/audio.js";
+
+afterAll(cleanupTempDirs);
 
 const tools = getAudioTools({ tempDir: "/tmp/beat-tests" });
 
@@ -35,7 +37,7 @@ function sampleBuffer(samples: Int16Array) {
 }
 
 function createMediaFixture() {
-  const directory = mkdtempSync(join(tmpdir(), "premiere-beats-"));
+  const directory = makeTempDir("premiere-beats-");
   const mediaPath = join(directory, "music.wav");
   writeFileSync(mediaPath, "audio-fixture");
   return mediaPath;

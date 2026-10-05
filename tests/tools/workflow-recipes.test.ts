@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import { getWorkflowRecipeTools, validateWorkflowRecipe } from "../../src/tools/workflow-recipes.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+
+afterAll(cleanupTempDirs);
 
 describe("workflow recipes", () => {
   it("expands only audited declarative routes", async () => {
@@ -14,7 +16,7 @@ describe("workflow recipes", () => {
   });
   it("rejects arbitrary steps", () => expect(() => validateWorkflowRecipe({ schema_version: 1, id: "x", title: "X", description: "X", tags: [], required_inputs: [], steps: ["execute_extendscript"] })).toThrow(/unsupported/));
   it("loads a contained custom recipe and rejects conflicts", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "recipes-")), file = path.join(root, "recipes.json");
+    const root = makeTempDir("recipes-"), file = path.join(root, "recipes.json");
     const recipe = { schema_version: 1, id: "custom", title: "Custom", description: "Custom", tags: ["one"], required_inputs: [], steps: ["verify_connection"] };
     writeFileSync(file, JSON.stringify([recipe]));
     const tools = getWorkflowRecipeTools();
@@ -24,7 +26,7 @@ describe("workflow recipes", () => {
   });
   it.each([null, [], { schema_version: 2 }, { schema_version: 1, id: "x", title: "X", description: "X", steps: [] }, { schema_version: 1, id: "x", title: "X", description: "X", tags: ["a", "a"], required_inputs: [], steps: ["verify_connection"] }])("rejects invalid recipe %#", (recipe) => expect(() => validateWorkflowRecipe(recipe)).toThrow());
   it("fails closed for malformed and escaped custom files", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "recipes-")), outside = mkdtempSync(path.join(tmpdir(), "recipes-out-"));
+    const root = makeTempDir("recipes-"), outside = makeTempDir("recipes-out-");
     const tools = getWorkflowRecipeTools();
     writeFileSync(path.join(outside, "r.json"), "[]");
     expect((await tools.search_workflow_recipes.handler({ approved_workspace_path: root, recipe_file: path.join(outside, "r.json") })).success).toBe(false);
@@ -36,7 +38,7 @@ describe("workflow recipes", () => {
     expect((await tools.preview_workflow_recipe.handler({ recipe_id: "talking-head-cleanup", provided_inputs: [1] })).success).toBe(false);
   });
   it("reports ready built-ins and custom recipe sources", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "recipes-")), file = path.join(root, "r.json");
+    const root = makeTempDir("recipes-"), file = path.join(root, "r.json");
     writeFileSync(file, JSON.stringify([{ schema_version: 1, id: "custom-ready", title: "Custom", description: "Custom", tags: [], required_inputs: [], steps: ["verify_connection"] }]));
     const tools = getWorkflowRecipeTools();
     const custom = await tools.search_workflow_recipes.handler({ approved_workspace_path: root, recipe_file: file }) as any;
