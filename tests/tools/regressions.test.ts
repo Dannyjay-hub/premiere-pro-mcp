@@ -18,7 +18,7 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getMarkerTools } from "../../src/tools/markers.js";
 import { getExportTools } from "../../src/tools/export.js";
-import { getUtilityTools } from "../../src/tools/utility.js";
+import { getUtilityTools, sequenceFrameTicks } from "../../src/tools/utility.js";
 import { getTrackTargetingTools } from "../../src/tools/track-targeting.js";
 import { getEffectsTools } from "../../src/tools/effects.js";
 import { getClipboardTools } from "../../src/tools/clipboard.js";
@@ -850,12 +850,23 @@ describe("issue #37 — sequence frame rate uses ticks per frame", () => {
   it("converts fps to a Time duration and verifies the applied ticks", async () => {
     const script = await scriptFor(utility.set_sequence_frame_rate, { frame_rate: 30 });
 
-    expect(script).toContain("TICKS_PER_SECOND / requestedFps");
+    expect(script).toContain("var requestedTicks = 8467200000;");
     expect(script).toContain("var frameDuration = new Time()");
     expect(script).toContain("frameDuration.ticks = requestedTicks.toString()");
     expect(script).toContain("settings.videoFrameRate = frameDuration");
     expect(script).toContain("Math.abs(appliedTicks - requestedTicks) > 1");
     expect(script).not.toContain("settings.videoFrameRate = 30");
+  });
+
+  it("uses Premiere's exact NTSC timebases for 23.976, 29.97 and 59.94", async () => {
+    expect(sequenceFrameTicks(23.976)).toMatchObject({ ticks: 10594584000, ntsc: true });
+    expect(sequenceFrameTicks(29.97)).toMatchObject({ ticks: 8475667200, ntsc: true });
+    expect(sequenceFrameTicks(59.94)).toMatchObject({ ticks: 4237833600, ntsc: true });
+    expect(sequenceFrameTicks(29.97).exactFrameRate).toBeCloseTo(30000 / 1001, 9);
+    expect(sequenceFrameTicks(25)).toMatchObject({ ticks: 10160640000, ntsc: false });
+    expect(sequenceFrameTicks(29.9)).toMatchObject({ ntsc: false });
+    const script = await scriptFor(utility.set_sequence_frame_rate, { frame_rate: 29.97 });
+    expect(script).toContain("var requestedTicks = 8475667200;");
   });
 
   it("rejects invalid frame rates before sending a Premiere command", async () => {

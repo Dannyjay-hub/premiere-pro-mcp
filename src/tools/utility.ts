@@ -164,6 +164,27 @@ function parseMediaReportPaging(args: MediaReportPagingArgs | undefined): MediaR
   return { offset, limit, contains };
 }
 
+const TICKS_PER_SECOND_EXACT = 254016000000;
+
+/**
+ * Ticks per frame for a requested rate. NTSC rates are exactly
+ * nominal × 1000/1001 (29.97 = 30000/1001), which is what Premiere's own
+ * presets use (8475667200 ticks for 29.97, 10594584000 for 23.976). Dividing
+ * by the rounded decimal gave 8475675676 and 10594594595: near-NTSC
+ * timebases that drift against camera media.
+ */
+export function sequenceFrameTicks(frameRate: number): { ticks: number; ntsc: boolean; exactFrameRate: number } {
+  for (const nominal of [24, 30, 48, 60, 120]) {
+    const ntscRate = (nominal * 1000) / 1001;
+    if (Math.abs(frameRate - ntscRate) < 0.005) {
+      const ticks = (TICKS_PER_SECOND_EXACT / (nominal * 1000)) * 1001;
+      return { ticks, ntsc: true, exactFrameRate: TICKS_PER_SECOND_EXACT / ticks };
+    }
+  }
+  const ticks = Math.round(TICKS_PER_SECOND_EXACT / frameRate);
+  return { ticks, ntsc: false, exactFrameRate: TICKS_PER_SECOND_EXACT / ticks };
+}
+
 export function getUtilityTools(bridgeOptions: BridgeOptions) {
   return {
     delete_project_item: {
@@ -552,6 +573,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             error: "frame_rate must be a finite value between 1 and 240 fps",
           };
         }
+        const frame = sequenceFrameTicks(args.frame_rate);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -560,7 +582,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           if (!settings) return __error("Could not get sequence settings");
 
           var requestedFps = ${args.frame_rate};
-          var requestedTicks = Math.round(TICKS_PER_SECOND / requestedFps);
+          var requestedTicks = ${frame.ticks};
           var frameDuration = new Time();
           frameDuration.ticks = requestedTicks.toString();
           settings.videoFrameRate = frameDuration;
@@ -580,6 +602,8 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
           return __result({
             frameRate: requestedFps,
+            exactFrameRate: ${frame.exactFrameRate},
+            ntsc: ${frame.ntsc},
             ticksPerFrame: requestedTicks.toString(),
             sequence: seq.name
           });

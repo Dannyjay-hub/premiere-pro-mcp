@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `set_sequence_frame_rate` sets exact NTSC timebases. It divided by the rounded decimal (`TICKS_PER_SECOND / 29.97`), giving 8475675676 ticks per frame for 29.97 and 10594594595 for 23.976, which are near-NTSC rates that drift against camera media and differ from Premiere's own presets (8475667200 and 10594584000). Requests within 0.005 fps of 23.976, 29.97, 47.952, 59.94 or 119.88 now use the exact `nominal × 1000/1001` timebase, and the receipt reports `ntsc` and `exactFrameRate`.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
