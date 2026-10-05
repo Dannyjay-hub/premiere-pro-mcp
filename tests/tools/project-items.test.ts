@@ -21,7 +21,7 @@ type Result = { success: boolean; error?: string; data?: Record<string, unknown>
 beforeEach(() => vi.clearAllMocks());
 
 /** Project with a root bin holding a used clip (on a timeline) and an unused Bars item. */
-function project(options: { startTimeWritable?: boolean; existingBin?: string; deleteBinNoop?: boolean } = {}) {
+function project(options: { startTimeWritable?: boolean; existingBin?: string; deleteBinNoop?: boolean; frameTicks?: number } = {}) {
   let startTicks = 0;
   type Node = { nodeId: string; name: string; type: number; children?: { numItems: number; [i: number]: Node }; parent?: Node };
   const makeBin = (nodeId: string, name: string): Node => ({ nodeId, name, type: 2, children: { numItems: 0 } });
@@ -47,7 +47,7 @@ function project(options: { startTimeWritable?: boolean; existingBin?: string; d
   };
   if (options.existingBin) add(root, makeBin("user-bin", options.existingBin));
   const timelineClip = { projectItem: used, name: used.name };
-  const seq = { name: "Edit", videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: timelineClip } } }, audioTracks: { numTracks: 0 }, projectItem: { nodeId: "seqitem" } };
+  const seq = { name: "Edit", timebase: String(options.frameTicks ?? 254016000000 / 25), videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: timelineClip } } }, audioTracks: { numTracks: 0 }, projectItem: { nodeId: "seqitem" } };
   mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
     app: { project: { rootItem: root, sequences: { numSequences: 1, 0: seq }, activeSequence: seq } },
     // A fixed clock, so the temporary bin name ("mcp-delete-1000") is predictable.
@@ -76,6 +76,16 @@ describe("start time", () => {
   it("reports failure when Premiere ignores the write", async () => {
     project({ startTimeWritable: false });
     await expect(getMediaTools(bridgeOptions).set_start_time.handler({ item_id: "used", start_seconds: 3600 })).resolves.toMatchObject({ success: false });
+  });
+
+  it.each([23.976, 29.97, 25])("snaps project-item start time to the %s fps active sequence grid", async (fps) => {
+    const frameTicks = 254016000000 * (fps === 23.976 ? 1001 / 24000 : fps === 29.97 ? 1001 / 30000 : 1 / 25);
+    project({ frameTicks });
+    const result = await getTrackTargetingTools(bridgeOptions).set_clip_start_time.handler({ item_id: "used", start_seconds: 0.5 }) as Result;
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveProperty("requestedSeconds", 0.5);
+    const applied = Number(result.data?.appliedSeconds);
+    expect(applied * 254016000000 / frameTicks).toBeCloseTo(Math.round(applied * 254016000000 / frameTicks), 6);
   });
 });
 

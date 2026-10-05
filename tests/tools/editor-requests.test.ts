@@ -102,6 +102,16 @@ describe("editor-request tools", () => {
       expect(await tools.add_markers_batch.handler({ markers: [{ time_seconds: 1 }, { time_seconds: 1 }] })).toEqual({ success: false, error: "No active sequence" });
     });
 
+    it("snaps batch marker times and end edges to the sequence grid with requested/applied receipts", async () => {
+      await tools.add_markers_batch.handler({ markers: [{ time_seconds: 0.5, duration_seconds: 0.5 }] });
+      const script = mockedSendCommand.mock.calls[0][0];
+      expect(script).toContain("__snapSequenceTicks(seq, requestedStartTicks)");
+      expect(script).toContain("snapSpec.requestedEnd = snapSpec.requestedT + snapSpec.d");
+      expect(script).toContain("createdMarker.requestedSeconds = spec.requestedT");
+      expect(script).toContain("createdMarker.requestedEndSeconds = spec.requestedEnd");
+      expect(script).toContain("frameSeconds / 1000");
+    });
+
     it("targets a clip when node_id is given", async () => {
       await tools.add_markers_batch.handler({ markers: [{ time_seconds: 1 }], node_id: "clip-9" });
       const script = mockedSendCommand.mock.calls[0][0];

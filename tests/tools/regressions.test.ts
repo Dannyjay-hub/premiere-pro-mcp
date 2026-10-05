@@ -161,10 +161,10 @@ describe("real-host social sequence regressions", () => {
 
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
-    expect(setScript).toContain("seq.setInPoint(0)");
-    expect(setScript).toContain("seq.setOutPoint(60)");
-    expect(setScript).not.toContain("__secondsToTicks(60)");
-    expect(setScript).toContain("Math.abs(observedOut - 60)");
+    expect(setScript).toContain("seq.setInPoint(appliedInSeconds)");
+    expect(setScript).toContain("seq.setOutPoint(appliedOutSeconds)");
+    expect(setScript).toContain("requestedOutTicks = __secondsToTicks(60)");
+    expect(setScript).toContain("Math.abs(observedOut - appliedOutSeconds)");
 
     const getScript = await scriptFor(playhead.get_sequence_in_out_points, {});
     expect(getScript).toContain("__sequencePointSeconds(seq.getOutPoint())");
@@ -182,7 +182,7 @@ describe("real-host social sequence regressions", () => {
 
     const setArea = await codeFor(playhead.set_work_area, { in_seconds: 4, out_seconds: 12 });
     expect(setArea).toContain("seq.setWorkAreaInPoint(requestedIn)");
-    expect(setArea).not.toContain("__secondsToTicks(4)");
+    expect(setArea).toContain("requestedInRaw = __secondsToTicks(4)");
     expect(setArea).toContain("Premiere did not apply the work area");
     expect(setArea).toContain("verified: true");
 
@@ -206,7 +206,7 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
   it("add_marker passes seconds straight to createMarker", async () => {
     const script = await scriptFor(markers.add_marker, { time_seconds: 2.0 });
 
-    expect(script).toContain("createMarker(2)");
+    expect(script).toContain("markers.createMarker(appliedMarkerSeconds)");
     // The old bug: __secondsToTicks(2) -> 508032000000 handed to createMarker(),
     // placing the marker ~508 billion seconds down the timeline.
     expect(script).not.toContain("__secondsToTicks(2).toString()");
@@ -216,7 +216,7 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
   it("add_marker sets marker.end in seconds when given a duration", async () => {
     const script = await scriptFor(markers.add_marker, { time_seconds: 2.0, duration_seconds: 3.0 });
 
-    expect(script).toContain("marker.end = 5");
+    expect(script).toContain("marker.end = __ticksToSeconds(appliedMarkerEndTicks)");
     expect(script).not.toMatch(/marker\.end = __secondsToTicks/);
   });
 

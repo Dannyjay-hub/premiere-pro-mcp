@@ -224,8 +224,20 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           ${target}
           var requested = [${emitted}];
           var frameTicks = parseFloat(seq.timebase);
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 30;
+          if (!frameTicks || isNaN(frameTicks) || frameTicks <= 0) return __error("The active sequence frame grid could not be read; no markers were created.");
           var frameSeconds = frameTicks / TICKS_PER_SECOND;
+          for (var snapIndex = 0; snapIndex < requested.length; snapIndex++) {
+            var snapSpec = requested[snapIndex];
+            snapSpec.requestedT = snapSpec.t;
+            var requestedStartTicks = __secondsToTicks(snapSpec.t);
+            var appliedStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
+            snapSpec.t = __ticksToSeconds(appliedStartTicks);
+            if (snapSpec.d > 0) {
+              snapSpec.requestedEnd = snapSpec.requestedT + snapSpec.d;
+              var appliedEndTicks = __snapSequenceTicks(seq, __secondsToTicks(snapSpec.requestedEnd));
+              snapSpec.d = __ticksToSeconds(appliedEndTicks - appliedStartTicks);
+            }
+          }
           var allowBeyondEnd = ${args.allow_beyond_end ? "true" : "false"};
           var existing = [];
           var probe = markers.getFirstMarker();
@@ -279,7 +291,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
               return __batchFailure("Premiere created marker " + i + " but rejected its properties: " + assignError.toString(), true);
             }
             var actualStart = __ticksToSeconds(marker.start.ticks);
-            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds) {
+            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds / 1000 || Math.abs(actualStart / frameSeconds - Math.round(actualStart / frameSeconds)) > 0.001) {
               return __batchFailure("Marker " + i + " landed at " + actualStart + "s instead of " + spec.t + "s; the batch is not reported as verified.", true);
             }
             var actualEnd = __ticksToSeconds(marker.end.ticks);
@@ -288,11 +300,14 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             var fieldProblems = [];
             if (spec.n !== null && String(marker.name) !== spec.n) fieldProblems.push("name reads back as " + marker.name);
             if (spec.c !== null && String(marker.comments) !== spec.c) fieldProblems.push("comments read back as " + marker.comments);
-            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds)) fieldProblems.push("end reads back as " + actualEnd + "s");
+            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds / 1000 || Math.abs(actualEnd / frameSeconds - Math.round(actualEnd / frameSeconds)) > 0.001)) fieldProblems.push("end reads back as " + actualEnd + "s");
             if (spec.k !== null && (typeof actualColor !== "number" || !isFinite(actualColor))) unverifiedFields.push({ markerIndex: i, field: "color" });
             else if (spec.k !== null && actualColor !== spec.k) fieldProblems.push("color index reads back as " + actualColor);
             if (fieldProblems.length) return __batchFailure("Marker " + i + " at " + spec.t + "s was created, but " + fieldProblems.join("; ") + ".", true);
-            created.push({ timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: actualEnd, color: typeof actualColor === "number" && isFinite(actualColor) ? actualColor : null });
+            var createdMarker = { timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: actualEnd, color: typeof actualColor === "number" && isFinite(actualColor) ? actualColor : null };
+            if (Math.abs(actualStart - spec.requestedT) > frameSeconds / 1000) { createdMarker.requestedSeconds = spec.requestedT; createdMarker.appliedSeconds = actualStart; }
+            if (spec.requestedEnd !== undefined && Math.abs(actualEnd - spec.requestedEnd) > frameSeconds / 1000) { createdMarker.requestedEndSeconds = spec.requestedEnd; createdMarker.appliedEndSeconds = actualEnd; }
+            created.push(createdMarker);
           }
           var afterCount = 0;
           probe = markers.getFirstMarker();

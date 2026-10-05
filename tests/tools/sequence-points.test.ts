@@ -27,7 +27,7 @@ beforeEach(() => vi.clearAllMocks());
  * Mirrors Premiere Pro 25.2: in/out and work-area getters return seconds as
  * strings, -400000 means unset, and scripted work-area writes are ignored.
  */
-function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWritable?: boolean; ignorePlayer?: boolean } = {}) {
+function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWritable?: boolean; ignorePlayer?: boolean; frameTicks?: number } = {}) {
   let inPoint = options.inSeconds ?? -400000;
   let outPoint = options.outSeconds ?? -400000;
   let workIn = 0;
@@ -35,7 +35,7 @@ function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWr
   let player = 0;
   return {
     sequenceID: "seq-points",
-    timebase: String(TICKS / 25),
+    timebase: String(options.frameTicks ?? TICKS / 25),
     end: String(121.6 * TICKS),
     videoTracks: { numTracks: 0 },
     audioTracks: { numTracks: 0 },
@@ -119,6 +119,30 @@ describe("work area", () => {
       data: { workAreaIn: 10, workAreaOut: 30, verified: true },
     });
   });
+
+  it.each([
+    [23.976, TICKS * 1001 / 24000],
+    [29.97, TICKS * 1001 / 30000],
+    [25, TICKS / 25],
+  ])("snaps work-area and sequence marks to the %.3f fps frame grid", async (_fps, frameTicks) => {
+    const seq = sequence({ frameTicks, workAreaWritable: true });
+    host(seq);
+    const work = await playhead.set_work_area.handler({ in_seconds: 0.5, out_seconds: 10.5 }) as Result;
+    expect(work.success).toBe(true);
+    const inSeconds = Number(seq.getWorkAreaInPoint());
+    const outSeconds = Number(seq.getWorkAreaOutPoint());
+    expect(inSeconds * TICKS / frameTicks).toBeCloseTo(Math.round(inSeconds * TICKS / frameTicks), 5);
+    expect(outSeconds * TICKS / frameTicks).toBeCloseTo(Math.round(outSeconds * TICKS / frameTicks), 5);
+    expect(work.data).toHaveProperty("requestedInSeconds", 0.5);
+    expect(work.data).toHaveProperty("appliedInSeconds");
+
+    const marks = await playhead.set_sequence_in_out_points.handler({ in_seconds: 0.5, out_seconds: 10.5 }) as Result;
+    expect(marks.success).toBe(true);
+    expect(Number(seq.getInPoint()) * TICKS / frameTicks).toBeCloseTo(Math.round(Number(seq.getInPoint()) * TICKS / frameTicks), 5);
+    expect(Number(seq.getOutPoint()) * TICKS / frameTicks).toBeCloseTo(Math.round(Number(seq.getOutPoint()) * TICKS / frameTicks), 5);
+    expect(marks.data).toHaveProperty("requestedInSeconds", 0.5);
+    expect(marks.data).toHaveProperty("appliedInSeconds");
+  });
 });
 
 describe("navigate_playhead to sequence points", () => {
@@ -167,6 +191,30 @@ describe("set_playhead_position reads the position back", () => {
   it("reports where the playhead is when Premiere ignores the move", async () => {
     host(sequence({ ignorePlayer: true }));
     await expect(playhead.set_playhead_position.handler({ time_seconds: 12 })).resolves.toMatchObject({ success: true, data: { positionSeconds: 0, verified: false, outcome: "committed_unverified" } });
+  });
+
+  it.each([
+    [23.976, TICKS * 1001 / 24000],
+    [29.97, TICKS * 1001 / 30000],
+    [25, TICKS / 25],
+  ])("snaps %.3f fps playhead writes to integer frames and reports changed requests", async (_fps, frameTicks) => {
+    const seq = sequence({ frameTicks });
+    host(seq);
+    const result = await playhead.set_playhead_position.handler({ time_seconds: 0.5 }) as Result;
+    const actualTicks = Number(seq.getPlayerPosition().ticks);
+    expect(actualTicks / frameTicks).toBeCloseTo(Math.round(actualTicks / frameTicks), 6);
+    expect(result.data).toMatchObject({ verified: true, requestedSeconds: 0.5 });
+    expect(result.data?.appliedSeconds as number).toBeCloseTo(actualTicks / TICKS, 7);
+  });
+
+  it("keeps integer-frame requests exact without adding snap receipt fields", async () => {
+    const frameTicks = TICKS * 1001 / 24000;
+    const seq = sequence({ frameTicks });
+    host(seq);
+    const requested = frameTicks * 24 / TICKS;
+    const result = await playhead.set_playhead_position.handler({ time_seconds: requested }) as Result;
+    expect(Number(seq.getPlayerPosition().ticks) / frameTicks).toBeCloseTo(24, 6);
+    expect(result.data).not.toHaveProperty("appliedSeconds");
   });
 });
 

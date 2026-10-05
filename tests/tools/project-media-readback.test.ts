@@ -153,6 +153,11 @@ describe("project item writes read back", () => {
     await expect(run(media.move_item_to_bin, { item_id: "i1", target_bin: "Footage" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("did not move a.mp4") });
   });
 
+  it.each(["/", "root"]) ("move_item_to_bin accepts %s as the project root", async (rootAlias) => {
+    host();
+    await expect(run(media.move_item_to_bin, { item_id: "i1", target_bin: rootAlias })).resolves.toMatchObject({ success: true, data: { verified: true, toBin: "Proj.prproj" } });
+  });
+
   it("rename_bin and set_graphics_white_luminance read back", async () => {
     host();
     await expect(run(project.rename_bin, { bin_id: "Footage", new_name: 'B-roll "2"' })).resolves.toMatchObject({ success: true, data: { newName: 'B-roll "2"', verified: true } });

@@ -57,6 +57,31 @@ function __secondsToTicks(seconds) {
   return Math.round(parseFloat(seconds) * TICKS_PER_SECOND);
 }
 
+// Sequence timeline writes use the sequence's frame grid. Premiere stores
+// sequence.timebase as ticks per frame; keep this separate from source media
+// clocks because edit offsets are expressed in timeline frames.
+function __sequenceFrameTicks(sequence) {
+  var ticks = NaN;
+  try { ticks = parseFloat(sequence.timebase); } catch (frameError) {}
+  return isFinite(ticks) && ticks > 0 ? ticks : NaN;
+}
+
+function __snapSequenceTicks(sequence, ticks) {
+  var frameTicks = __sequenceFrameTicks(sequence);
+  if (!isFinite(frameTicks)) throw new Error("the active sequence frame grid could not be read");
+  var frameCount = parseFloat(ticks) / frameTicks;
+  var roundedFrames = frameCount < 0 ? -Math.round(-frameCount) : Math.round(frameCount);
+  return Math.round(roundedFrames * frameTicks);
+}
+
+function __frameSnapReceipt(requestedTicks, appliedTicks, frameTicks, requestedName, appliedName) {
+  var receipt = {};
+  if (!isFinite(frameTicks) || frameTicks <= 0 || Math.abs(appliedTicks - requestedTicks) <= frameTicks / 1000) return receipt;
+  receipt[requestedName] = __ticksToSeconds(requestedTicks);
+  receipt[appliedName] = __ticksToSeconds(appliedTicks);
+  return receipt;
+}
+
 // TrackItem.start and TrackItem.end are independent writes on Premiere Pro
 // 26.x: writing start never carries end along, and a start write that would
 // pass the clip's current end is rejected silently. Write the two edges in the
