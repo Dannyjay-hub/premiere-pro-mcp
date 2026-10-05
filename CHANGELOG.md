@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `copy_effects_between_clips` now copies and reads back effect parameter values and keyframes, updates an existing target effect instead of stacking a default instance, and refuses when the requested source effect is missing.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed

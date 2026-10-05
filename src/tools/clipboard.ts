@@ -505,6 +505,9 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
         `), bridgeOptions);
         if (!listing.success) return listing;
         const found = listing.data as { names: string[]; source: string; target: string };
+        if (!found || !Array.isArray(found.names)) {
+          return { success: false, error: "Premiere returned an invalid source effect list; no effects were copied." };
+        }
         if (!found.names.length) {
           return { success: false, error: args.effect_name ? `The source clip has no ${args.effect_name} effect; nothing was changed.` : "The source clip has no non-intrinsic effects to copy; nothing was changed." };
         }
