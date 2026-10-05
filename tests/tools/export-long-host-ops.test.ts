@@ -40,9 +40,11 @@ describe("long host export receipts", () => {
       xmlSizeBytes: 28,
       translationReportPath: reportPath,
       untranslatedEffects: [
-        { sequence: "Podcast", track: "Video Track: 2", effect: "Ultra Key", effectIsGuid: false, clip: "Interview" },
-        { sequence: "Podcast", track: "Audio Track: 1", effect: "{audio-guid}", effectIsGuid: false, clip: null },
+        { kind: "effect", sequence: "Podcast", track: "Video Track: 2", effect: "Ultra Key", effectIsGuid: false, clip: "Interview" },
+        { kind: "effect", sequence: "Podcast", track: "Audio Track: 1", effect: "{audio-guid}", effectIsGuid: false, clip: null },
       ],
+      issueCount: 2,
+      parsedIssueCount: 2,
       hostBlockedByModal: true,
     } });
     expect((result as any).data.message).toContain("Dismiss the dialog in Premiere");
@@ -58,12 +60,50 @@ describe("long host export receipts", () => {
   it("parses Premiere Translation Report issue lines including a UTF-8 BOM and GUID effects", () => {
     const report = parseFcpTranslationReport("\uFEFFTranslation issue:\n\tSequence <Nested Sequence 01> at , video track 3: Effect <Transform> on Clip <mark-1l4raqpva> not translated.\nTranslation issue:\n\tSequence <Podcast Base Copy> at 00:12:34:05, audio track 1: Effect <4f327230-f04c-4c34-9ea5-a998b4459221> on Clip <riverside_mark_raw-audio.wav> not translated.\n");
     expect(report.issues).toEqual([
-      { sequence: "Nested Sequence 01", timecode: "", trackType: "video", trackNumber: 3, track: "video track 3", effect: "Transform", effectIsGuid: false, clip: "mark-1l4raqpva" },
-      { sequence: "Podcast Base Copy", timecode: "00:12:34:05", trackType: "audio", trackNumber: 1, track: "audio track 1", effect: "4f327230-f04c-4c34-9ea5-a998b4459221", effectIsGuid: true, clip: "riverside_mark_raw-audio.wav" },
+      { kind: "effect", sequence: "Nested Sequence 01", timecode: "", trackType: "video", trackNumber: 3, track: "video track 3", effect: "Transform", effectIsGuid: false, clip: "mark-1l4raqpva" },
+      { kind: "effect", sequence: "Podcast Base Copy", timecode: "00:12:34:05", trackType: "audio", trackNumber: 1, track: "audio track 1", effect: "4f327230-f04c-4c34-9ea5-a998b4459221", effectIsGuid: true, clip: "riverside_mark_raw-audio.wav" },
     ]);
     expect(report.totalIssueLines).toBe(2);
+    expect(report.issueCount).toBe(2);
+    expect(report.parsedIssueCount).toBe(2);
     expect(report.issuesTruncated).toBe(false);
     expect(report.lines[0]).toBe("Translation issue:");
+  });
+
+  it("retains synthetic items and every unknown Translation issue entry", () => {
+    const report = parseFcpTranslationReport([
+      "Translation issue:",
+      "\tSynthetic Item (Black Video) not translated, Slug used as a placeholder.",
+      "Translation issue:",
+      "\tAn unfamiliar Premiere issue shape.",
+      "Translation issue:",
+      "\tSequence <S> at , audio track 2: Effect <Limiter> on Clip <voice.wav> not translated.",
+    ].join("\n"));
+    expect(report.issues).toEqual([
+      { kind: "synthetic_item", item: "Black Video", detail: "Slug used as a placeholder" },
+      { kind: "unparsed", line: "An unfamiliar Premiere issue shape." },
+      { kind: "effect", sequence: "S", timecode: "", trackType: "audio", trackNumber: 2, track: "audio track 2", effect: "Limiter", effectIsGuid: false, clip: "voice.wav" },
+    ]);
+    expect(report.issueCount).toBe(3);
+    expect(report.parsedIssueCount).toBe(2);
+    expect(report.issuesTruncated).toBe(false);
+  });
+
+  it("attaches a fresh Translation Report to a normal successful export", async () => {
+    const outputPath = join(root, "normal-return.xml");
+    const reportPath = join(root, "FCP Translation Results normal.txt");
+    mockedSendCommand.mockImplementationOnce(async () => {
+      writeFileSync(outputPath, "<xmeml />");
+      writeFileSync(reportPath, "Translation issue:\n\tSynthetic Item (Black Video) not translated, Slug used as a placeholder.\n");
+      return { success: true, data: { exported: true, verified: true, outputPath, format: "FCP XML" } };
+    });
+    const result = await getExportTools(bridgeOptions).export_as_fcp_xml.handler({ output_path: outputPath });
+    expect(result).toMatchObject({ success: true, data: {
+      exported: true, verified: true, translationReportPath: reportPath,
+      issueCount: 1, parsedIssueCount: 1, hostBlockedByModal: false,
+      untranslatedEffects: [{ kind: "synthetic_item", item: "Black Video", detail: "Slug used as a placeholder" }],
+      warning: expect.stringContaining("1 item(s)"),
+    } });
   });
 
   it("bounds issue details and reports the total number of issue lines", () => {

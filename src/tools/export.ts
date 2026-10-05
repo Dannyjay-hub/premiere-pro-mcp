@@ -21,16 +21,22 @@ const FCP_TRANSLATION_OUTPUT_STABLE_MS = 500;
 export function parseFcpTranslationReport(contents: string, lineLimit = Number.MAX_SAFE_INTEGER): {
   lines: string[];
   issues: Array<{
-    sequence: string | null;
+    kind?: "effect" | "synthetic_item" | "unparsed";
+    sequence?: string | null;
     timecode?: string;
     trackType?: "video" | "audio";
     trackNumber?: number;
-    track: string | null;
-    effect: string | null;
+    track?: string | null;
+    effect?: string | null;
     effectIsGuid?: boolean;
-    clip: string | null;
+    clip?: string | null;
+    item?: string;
+    detail?: string;
+    line?: string;
   }>;
   totalIssueLines: number;
+  issueCount: number;
+  parsedIssueCount: number;
   issuesTruncated: boolean;
 } {
   const allLines = contents.replace(/^\uFEFF/, "").split(/\r?\n/);
@@ -40,29 +46,55 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
   let track: string | null = null;
   let clip: string | null = null;
   const issues: Array<{
-    sequence: string | null;
+    kind?: "effect" | "synthetic_item" | "unparsed";
+    sequence?: string | null;
     timecode?: string;
     trackType?: "video" | "audio";
     trackNumber?: number;
-    track: string | null;
-    effect: string | null;
+    track?: string | null;
+    effect?: string | null;
     effectIsGuid?: boolean;
-    clip: string | null;
+    clip?: string | null;
+    item?: string;
+    detail?: string;
+    line?: string;
   }> = [];
   let totalIssueLines = 0;
+  let parsedIssueCount = 0;
   const guidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
-  for (const line of allLines.slice(0, boundedLineLimit)) {
+  const reportLines = allLines.slice(0, boundedLineLimit);
+  const pushIssue = (issue: (typeof issues)[number], parsed: boolean) => {
+    totalIssueLines += 1;
+    if (parsed) parsedIssueCount += 1;
+    if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) issues.push(issue);
+  };
+  for (let index = 0; index < reportLines.length; index += 1) {
+    const line = reportLines[index];
+    if (/^\s*Translation issue:\s*$/i.test(line)) {
+      let detailIndex = index + 1;
+      while (detailIndex < reportLines.length && !reportLines[detailIndex].trim()) detailIndex += 1;
+      const detail = reportLines[detailIndex];
+      if (detail !== undefined) index = detailIndex;
+      const synthetic = detail?.match(/^\s*Synthetic Item \((.*?)\) not translated,\s*(.*?)\.?\s*$/i);
+      const premiere = detail?.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
+      if (synthetic) {
+        pushIssue({ kind: "synthetic_item", item: synthetic[1], detail: synthetic[2] }, true);
+      } else if (premiere) {
+        const effect = premiere[5];
+        pushIssue({ kind: "effect", sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
+          trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
+          effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6] }, true);
+      } else {
+        pushIssue({ kind: "unparsed", line: detail?.trim() || line.trim() }, false);
+      }
+      continue;
+    }
     const premiere = line.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
     if (premiere) {
-      totalIssueLines += 1;
-      if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) {
-        const effect = premiere[5];
-        issues.push({
-          sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
-          trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
-          effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6],
-        });
-      }
+      const effect = premiere[5];
+      pushIssue({ kind: "effect", sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
+        trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
+        effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6] }, true);
       continue;
     }
     const field = (pattern: RegExp) => line.match(pattern)?.[1]?.trim().replace(/^['"“]|['"”]$/g, "") ?? null;
@@ -74,11 +106,43 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
     const effect = field(/^\s*(?:untranslated\s+)?effect\s*[:=]\s*(.+)$/i)
       ?? field(/^\s*(.+?)\s+(?:could not be translated|is not supported|was not translated)\.?\s*$/i);
     if (effect) {
-      totalIssueLines += 1;
-      if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) issues.push({ sequence, track, effect, effectIsGuid: guidPattern.test(effect), clip });
+      pushIssue({ kind: "effect", sequence, track, effect, effectIsGuid: guidPattern.test(effect), clip }, true);
     }
   }
-  return { lines, issues, totalIssueLines, issuesTruncated: totalIssueLines > issues.length };
+  return { lines, issues, totalIssueLines, issueCount: totalIssueLines, parsedIssueCount, issuesTruncated: totalIssueLines > issues.length };
+}
+
+function freshFcpTranslationReport(outputPath: string, startedAt: number): { path: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null {
+  const directory = resolve(outputPath, "..");
+  try {
+    const reportName = readdirSync(directory)
+      .filter((name) => /^FCP Translation Results .*\.txt$/i.test(name))
+      .map((name) => ({ path: resolve(directory, name), snapshot: fileSnapshot(resolve(directory, name)) }))
+      .filter((entry) => entry.snapshot.exists && entry.snapshot.mtimeMs >= startedAt)
+      .sort((left, right) => right.snapshot.mtimeMs - left.snapshot.mtimeMs)[0];
+    if (!reportName) return null;
+    return { path: reportName.path, parsed: parseFcpTranslationReport(readFileSync(reportName.path, "utf8")) };
+  } catch { return null; }
+}
+
+function attachTranslationReport(result: any, outputPath: string, startedAt: number): any {
+  if (!result?.success || !result.data || typeof result.data !== "object") return result;
+  const report = freshFcpTranslationReport(outputPath, startedAt);
+  if (!report) return result;
+  const { parsed } = report;
+  const data = {
+    ...result.data,
+    translationReportPath: report.path,
+    translationReportLines: parsed.lines,
+    untranslatedEffects: parsed.issues,
+    translationReportIssueLines: parsed.issueCount,
+    issueCount: parsed.issueCount,
+    parsedIssueCount: parsed.parsedIssueCount,
+    untranslatedEffectsTruncated: parsed.issuesTruncated,
+    hostBlockedByModal: false,
+    ...(parsed.issueCount > 0 ? { warning: `${parsed.issueCount} item(s) in the FCP Translation Report were not translated.` } : {}),
+  };
+  return { ...result, data };
 }
 
 function fileSnapshot(filePath: string): { exists: boolean; size: number; mtimeMs: number } {
@@ -1355,8 +1419,11 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             translationReportPath: first.details.reportPath,
             translationReportLines: first.details.parsed.lines,
             untranslatedEffects: first.details.parsed.issues,
-            translationReportIssueLines: first.details.parsed.totalIssueLines,
+            translationReportIssueLines: first.details.parsed.issueCount,
+            issueCount: first.details.parsed.issueCount,
+            parsedIssueCount: first.details.parsed.parsedIssueCount,
             untranslatedEffectsTruncated: first.details.parsed.issuesTruncated,
+            ...(first.details.parsed.issueCount > 0 ? { warning: `${first.details.parsed.issueCount} item(s) in the FCP Translation Report were not translated.` } : {}),
             hostBlockedByModal: true,
             message: "Premiere wrote the XML and opened a Translation Report dialog. Dismiss the dialog in Premiere before any other command can run; the export receipt is committed_unverified because Premiere has not returned its final result.",
           } };
@@ -1369,7 +1436,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             message: "Premiere wrote the XML, but the host did not return a verified export receipt before timeout. Inspect the file before relying on it.",
           } };
         }
-        return first.result;
+        return attachTranslationReport(first.result, args.output_path, startedAt);
       },
     },
 
