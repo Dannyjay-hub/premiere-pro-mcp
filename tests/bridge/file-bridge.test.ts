@@ -695,10 +695,58 @@ describe("sendCommand", () => {
 
     expect(result).toMatchObject({
       success: false,
-      error: expect.stringContaining("busy with an earlier command"),
+      error: "Premiere is busy or blocked by an earlier command (for example an export or a dialog). This command was not run; retry when Premiere is responsive.",
       data: { mutationOutcome: "not_applied", timelineChanged: false },
     });
-    expect(result.error).toContain("safe to retry once the host is idle");
+  });
+
+  it("cancels an unclaimed command behind a stale busy marker still within the hard cap", async () => {
+    vi.setSystemTime(new Date(10_000));
+    mockedExistsSync.mockImplementation((path) => {
+      const value = String(path);
+      if (value.includes("res_") || value.includes("bridge-heartbeat")) return false;
+      if (value.includes("busy_previous.json")) return true;
+      if (value.includes("busy_")) return false;
+      return true;
+    });
+    mockedReaddirSync.mockReturnValue(["busy_previous.json"] as never);
+    mockedStatSync.mockImplementation(((path: unknown) => String(path).includes("busy_previous.json")
+      ? { uid: myUid, mode: 0o600, mtimeMs: Date.now() - 30_000 }
+      : { uid: myUid, mode: 0o700 }) as unknown as typeof statSync);
+
+    const promise = sendCommand("mutate", { tempDir: "/tmp/test-bridge", timeoutMs: 500, mutating: true });
+    await vi.advanceTimersByTimeAsync(600);
+    const result = await promise;
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "Premiere is busy or blocked by an earlier command (for example an export or a dialog). This command was not run; retry when Premiere is responsive.",
+      data: { mutationOutcome: "not_applied", timelineChanged: false },
+    });
+    expect(mockedRenameSync).toHaveBeenCalledWith(expect.stringMatching(/cmd_.*\.jsx$/), expect.stringMatching(/cmd_.*\.jsx\.cancelled$/));
+  });
+
+  it("cancels an unclaimed command when the connector heartbeat was recently alive", async () => {
+    vi.setSystemTime(new Date(10_000));
+    mockedExistsSync.mockImplementation((path) => {
+      const value = String(path);
+      if (value.includes("res_") || value.includes("busy_")) return false;
+      if (value.includes("bridge-heartbeat")) return true;
+      return true;
+    });
+    mockedReadFileSync.mockReturnValue('{"protocolVersion":1,"state":"running"}');
+    mockedReaddirSync.mockReturnValue([]);
+    mockedStatSync.mockReturnValue({ uid: myUid, mode: 0o700, mtimeMs: Date.now() } as unknown as ReturnType<typeof statSync>);
+
+    const promise = sendCommand("mutate", { tempDir: "/tmp/test-bridge", timeoutMs: 500, mutating: true });
+    await vi.advanceTimersByTimeAsync(600);
+    const result = await promise;
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "Premiere is busy or blocked by an earlier command (for example an export or a dialog). This command was not run; retry when Premiere is responsive.",
+      data: { mutationOutcome: "not_applied", timelineChanged: false },
+    });
   });
 
   it("reports unknown mutation state after Premiere accepted a command but its busy marker stopped", async () => {

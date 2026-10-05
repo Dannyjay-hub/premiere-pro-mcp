@@ -762,7 +762,8 @@ async function pollForResponse(
           return;
         }
         const cmdFile = join(dirname(resFile), basename(resFile).replace(/^res_/, "cmd_").replace(/\.json$/, ".jsx"));
-        const queuedState = cancelQueuedBehindFreshBusyCommand(cmdFile, busyFile);
+        const queuedState = cancelQueuedBehindLivePanel(cmdFile, busyFile, hardCapMs);
+        const panelHostName = hostLabel === "Premiere Pro" ? "Premiere" : hostLabel;
         finish({
           success: false,
           ...(mutationOnTimeout && sawBusy ? { data: { mutationOutcome: "unknown", timelineChanged: null } } : {}),
@@ -773,8 +774,8 @@ async function pollForResponse(
               `A modal dialog or a long analysis inside ${hostLabel} is likely blocking the scripting engine — ` +
               `check the ${hostLabel} window and dismiss any open dialog.` +
               (mutating ? ` The mutation outcome is unknown; inspect the timeline before retrying.` : ` The result, if any, will be discarded.`)
-            : queuedState === "cancelled"
-              ? `${hostLabel} is busy with an earlier command. This command was queued but not run; it is safe to retry once the host is idle.`
+              : queuedState === "cancelled"
+              ? `${panelHostName} is busy or blocked by an earlier command (for example an export or a dialog). This command was not run; retry when ${panelHostName} is responsive.`
               : queuedState === "claim_race"
                 ? `${hostLabel} is busy with an earlier command, and Premiere claimed this command while its timeout was expiring. Its outcome is unknown; inspect ${hostLabel} before retrying.`
                 : mutating
@@ -802,7 +803,11 @@ async function pollForResponse(
   });
 }
 
-function cancelQueuedBehindFreshBusyCommand(cmdFile: string, ownBusyFile: string): "cancelled" | "claim_race" | "none" {
+function cancelQueuedBehindLivePanel(
+  cmdFile: string,
+  ownBusyFile: string,
+  hardCapMs: number,
+): "cancelled" | "claim_race" | "none" {
   // The panel atomically renames a command to `.claimed` immediately before
   // execution. A mere existence check races that rename, so claim the opposite
   // rename ourselves: success proves the panel did not pick up this command.
@@ -810,14 +815,16 @@ function cancelQueuedBehindFreshBusyCommand(cmdFile: string, ownBusyFile: string
   try {
     const directory = dirname(ownBusyFile);
     const now = Date.now();
-    const anotherCommandIsFresh = readdirSync(directory).some((name) => {
+    const anotherCommandIsWithinHardCap = readdirSync(directory).some((name) => {
       if (!name.startsWith("busy_") || !name.endsWith(".json")) return false;
       const otherBusyFile = join(directory, name);
       if (otherBusyFile === ownBusyFile) return false;
-      try { return now - statSync(otherBusyFile).mtimeMs < STUCK_BUSY_MS; }
+      try { return now - statSync(otherBusyFile).mtimeMs < hardCapMs; }
       catch { return false; }
     });
-    if (!anotherCommandIsFresh) return "none";
+    const heartbeat = getBridgeLiveness({ tempDir: directory }, now);
+    const panelHeartbeatIsRecent = heartbeat.state === "running" || heartbeat.state === "waiting";
+    if (!anotherCommandIsWithinHardCap && !panelHeartbeatIsRecent) return "none";
     const cancelledFile = `${cmdFile}.cancelled`;
     try {
       renameSync(cmdFile, cancelledFile);

@@ -132,12 +132,13 @@ describe("file bridge fallback and cleanup branches", () => {
     });
   });
 
-  it("keeps waiting past the timeout while the busy file is still being refreshed", async () => {
+  it("keeps waiting for a claimed command while its own busy file is still being refreshed", async () => {
     let responded = false;
     fs.exists.mockImplementation((path) => {
       const value = String(path);
       if (value.includes("res_")) return responded;
       if (value.includes("busy_")) return !responded;
+      if (value.includes("cmd_")) return false; // CEP claimed the command before starting it
       return true;
     });
     fs.stat.mockImplementation((() => ({
@@ -149,7 +150,10 @@ describe("file bridge fallback and cleanup branches", () => {
     fs.read.mockReturnValue('{"success":true,"data":{"imported":5}}');
 
     const response = sendCommand("var longImport = true;", { tempDir: "/tmp/fresh-busy-bridge", timeoutMs: 100 });
+    let settled = false;
+    void response.then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(settled).toBe(false);
     responded = true;
     await vi.advanceTimersByTimeAsync(1_000);
 

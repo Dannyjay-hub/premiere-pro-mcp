@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - FCP XML export receipts parse Premiere's BOM-prefixed Translation Report issue lines, bound effect details while reporting truncation, and wait for the XML size and modification time to stabilize before reporting its size.
+- CEP command timeouts cancel still-unclaimed work when another recent busy marker or connector heartbeat shows Premiere is blocked; mutating commands report `not_applied`, while claimed work with a fresh busy marker continues waiting.
 
 ## [1.19.1] - 2026-10-04
 
