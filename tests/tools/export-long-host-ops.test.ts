@@ -57,6 +57,13 @@ describe("long host export receipts", () => {
     expect(report.issues.map((issue) => issue.effect)).toEqual(["One", "Two"]);
   });
 
+  it("parses transition substitutions from a real 25.2.3 report", () => {
+    const report = parseFcpTranslationReport("\uFEFFTranslation issue:\n\tSequence <3 part series Copy> at 00:00:01:22, audio track 5: Transition <Custom Fade> not translated, Cross Fade ( 0db) used instead.\nTranslation issue:\n\tSynthetic Item (Black Video) not translated, Slug used as a placeholder.\n");
+    expect(report.issueCount).toBe(2);
+    expect(report.parsedIssueCount).toBe(2);
+    expect(report.issues[0]).toMatchObject({ kind: "transition", sequence: "3 part series Copy", timecode: "00:00:01:22", trackType: "audio", trackNumber: 5, transition: "Custom Fade", substitute: "Cross Fade ( 0db)" });
+  });
+
   it("parses Premiere Translation Report issue lines including a UTF-8 BOM and GUID effects", () => {
     const report = parseFcpTranslationReport("\uFEFFTranslation issue:\n\tSequence <Nested Sequence 01> at , video track 3: Effect <Transform> on Clip <mark-1l4raqpva> not translated.\nTranslation issue:\n\tSequence <Podcast Base Copy> at 00:12:34:05, audio track 1: Effect <4f327230-f04c-4c34-9ea5-a998b4459221> on Clip <riverside_mark_raw-audio.wav> not translated.\n");
     expect(report.issues).toEqual([

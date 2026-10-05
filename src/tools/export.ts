@@ -21,7 +21,7 @@ const FCP_TRANSLATION_OUTPUT_STABLE_MS = 500;
 export function parseFcpTranslationReport(contents: string, lineLimit = Number.MAX_SAFE_INTEGER): {
   lines: string[];
   issues: Array<{
-    kind?: "effect" | "synthetic_item" | "unparsed";
+    kind?: "effect" | "transition" | "synthetic_item" | "unparsed";
     sequence?: string | null;
     timecode?: string;
     trackType?: "video" | "audio";
@@ -32,6 +32,8 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
     clip?: string | null;
     item?: string;
     detail?: string;
+    transition?: string;
+    substitute?: string;
     line?: string;
   }>;
   totalIssueLines: number;
@@ -46,7 +48,7 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
   let track: string | null = null;
   let clip: string | null = null;
   const issues: Array<{
-    kind?: "effect" | "synthetic_item" | "unparsed";
+    kind?: "effect" | "transition" | "synthetic_item" | "unparsed";
     sequence?: string | null;
     timecode?: string;
     trackType?: "video" | "audio";
@@ -57,6 +59,8 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
     clip?: string | null;
     item?: string;
     detail?: string;
+    transition?: string;
+    substitute?: string;
     line?: string;
   }> = [];
   let totalIssueLines = 0;
@@ -77,8 +81,13 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
       if (detail !== undefined) index = detailIndex;
       const synthetic = detail?.match(/^\s*Synthetic Item \((.*?)\) not translated,\s*(.*?)\.?\s*$/i);
       const premiere = detail?.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
+      const transition = detail?.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Transition <(.*?)> not translated,\s*(.*?) used instead\.?\s*$/i);
       if (synthetic) {
         pushIssue({ kind: "synthetic_item", item: synthetic[1], detail: synthetic[2] }, true);
+      } else if (transition) {
+        pushIssue({ kind: "transition", sequence: transition[1], timecode: transition[2], trackType: transition[3].toLowerCase() as "video" | "audio",
+          trackNumber: Number(transition[4]), track: `${transition[3].toLowerCase()} track ${transition[4]}`,
+          transition: transition[5], substitute: transition[6].trim() }, true);
       } else if (premiere) {
         const effect = premiere[5];
         pushIssue({ kind: "effect", sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
