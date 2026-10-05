@@ -259,6 +259,24 @@ function __isUniformScale(component) {
   }
   return false;
 }
+// Colour parameters (Lumetri White Balance, Fill Color, ...) read through
+// getValue() as one 64-bit packed number above 2^53, so the low bits are lost
+// and writing it back stores a different colour (measured on 25.2: a grey
+// came back as transparent blue). getColorValue() returns the exact
+// [alpha, red, green, blue] and throws on any non-colour parameter.
+function __readColorValue(prop) {
+  if (!prop || typeof prop.getColorValue !== "function") return null;
+  var color;
+  try { color = prop.getColorValue(); } catch (eColor) { return null; }
+  if (!color || color.length !== 4) return null;
+  var out = [];
+  for (var i = 0; i < 4; i++) {
+    var channel = Number(color[i]);
+    if (!isFinite(channel)) return null;
+    out.push(channel);
+  }
+  return out;
+}
 // Built-in Motion/Opacity components have stable match names, but their
 // property display names are localized. These es-ES labels were measured on
 // Premiere 26.5.2 (#722); unknown labels fail closed rather than guessing an
