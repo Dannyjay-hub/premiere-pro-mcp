@@ -7,6 +7,7 @@
 
   function createCommandRegistry(deps) {
     const ppro = deps.ppro, Protocol = deps.Protocol, workspace = deps.workspace;
+    const FrameTime = deps.FrameTime || (typeof require === "function" ? require("./frame-time.cjs") : globalThis.PremiereMcpFrameTime);
     const completedOperations = new Map();
     const inFlightOperations = new Map();
     const sequenceRangeUpdateTails = new Map();
@@ -370,40 +371,42 @@
     }
     async function updateSequenceRange(args) {
       const input = validateSequenceRangeUpdateArgs(args);
-      // TickTime construction can cross the host boundary. Do it before the
-      // per-sequence exclusion scope so the guarded snapshot is the final
-      // asynchronous preflight step before action creation.
-      const ticks = {
-        inPoint: input.updates.inSeconds == null ? null : await tickTime(input.updates.inSeconds, "updates.inSeconds"),
-        outPoint: input.updates.outSeconds == null ? null : await tickTime(input.updates.outSeconds, "updates.outSeconds"),
-        zeroPoint: input.updates.zeroPointSeconds == null ? null : await tickTime(input.updates.zeroPointSeconds, "updates.zeroPointSeconds")
-      };
       return withSequenceRangeUpdateLock(input.expectedSequenceGuid, async () => {
         const context = await activeContext(true);
+        const ticks = {
+          inPoint: input.updates.inSeconds == null ? null : await sequenceTickTime(context.sequence, input.updates.inSeconds, "updates.inSeconds"),
+          outPoint: input.updates.outSeconds == null ? null : await sequenceTickTime(context.sequence, input.updates.outSeconds, "updates.outSeconds"),
+          zeroPoint: input.updates.zeroPointSeconds == null ? null : await sequenceTickTime(context.sequence, input.updates.zeroPointSeconds, "updates.zeroPointSeconds")
+        };
         const before = await sequenceRangeSnapshot(context.sequence);
         if (before.sequenceGuid !== input.expectedSequenceGuid) {
           throw commandError("UXP_STALE_SEQUENCE", "The active sequence changed before the range update; inspect the current range and retry");
         }
         assertExpectedSequenceRange(before.range, input.expectedRange);
-        const desired = { ...before.range, ...input.updates };
+        const appliedUpdates = {
+          ...(ticks.inPoint ? { inSeconds: ticks.inPoint.appliedSeconds } : {}),
+          ...(ticks.outPoint ? { outSeconds: ticks.outPoint.appliedSeconds } : {}),
+          ...(ticks.zeroPoint ? { zeroPointSeconds: ticks.zeroPoint.appliedSeconds } : {}),
+        };
+        const desired = { ...before.range, ...appliedUpdates };
         assertValidSequenceRange(desired, "requested sequence range");
         let committed = false;
         context.project.lockedAccess(() => {
           committed = context.project.executeTransaction((compoundAction) => {
             if (ticks.inPoint) {
-              const action = context.sequence.createSetInPointAction(ticks.inPoint);
+              const action = context.sequence.createSetInPointAction(ticks.inPoint.tickTime);
               if (!action || compoundAction.addAction(action) === false) {
                 throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the sequence in point action");
               }
             }
             if (ticks.outPoint) {
-              const action = context.sequence.createSetOutPointAction(ticks.outPoint);
+              const action = context.sequence.createSetOutPointAction(ticks.outPoint.tickTime);
               if (!action || compoundAction.addAction(action) === false) {
                 throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the sequence out point action");
               }
             }
             if (ticks.zeroPoint) {
-              const action = context.sequence.createSetZeroPointAction(ticks.zeroPoint);
+              const action = context.sequence.createSetZeroPointAction(ticks.zeroPoint.tickTime);
               if (!action || compoundAction.addAction(action) === false) {
                 throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the sequence zero point action");
               }
@@ -420,6 +423,8 @@
           outcome: "verified",
           sequenceGuid: after.sequenceGuid,
           range: after.range,
+          requestedUpdates: input.updates,
+          appliedUpdates,
           verified: "sequence_range_readback",
           operation: operationSemantics({
             mutatesProject: true,
@@ -482,10 +487,11 @@
     }
     async function setWorkArea(args) {
       const input = validateWorkAreaSetArgs(args);
-      const inTick = await tickTime(input.desired.inSeconds, "inSeconds");
-      const outTick = await tickTime(input.desired.outSeconds, "outSeconds");
       return withSequenceRangeUpdateLock("workArea:" + input.expectedSequenceGuid, async () => {
         const context = await activeContext(false);
+        const inTick = await sequenceTickTime(context.sequence, input.desired.inSeconds, "inSeconds");
+        const outTick = await sequenceTickTime(context.sequence, input.desired.outSeconds, "outSeconds");
+        const applied = { inSeconds: inTick.appliedSeconds, outSeconds: outTick.appliedSeconds };
         const before = await workAreaSnapshot(context.sequence);
         if (before.sequenceGuid !== input.expectedSequenceGuid) {
           throw commandError("UXP_STALE_SEQUENCE", "The active sequence changed before the work-area update; inspect and retry");
@@ -495,15 +501,15 @@
           throw commandError("UXP_STALE_RANGE", "The work area changed before the update; inspect the current work area and retry");
         }
         const endSeconds = tickSecondsRequired(await context.sequence.getEndTime(), "sequence end point");
-        if (input.desired.outSeconds > endSeconds + 0.000001) {
+        if (applied.outSeconds > endSeconds + 0.000001) {
           throw commandError("UXP_INVALID_ARGUMENT", "outSeconds must not exceed the sequence end");
         }
-        const accepted = await ppro.WorkAreaUtils.setWorkAreaInOutPoints(context.sequence, inTick, outTick);
+        const accepted = await ppro.WorkAreaUtils.setWorkAreaInOutPoints(context.sequence, inTick.tickTime, outTick.tickTime);
         if (accepted !== true) throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the work-area update");
         const after = await workAreaSnapshot(context.sequence);
         if (after.sequenceGuid !== before.sequenceGuid ||
-          !sameSeconds(after.workArea.inSeconds, input.desired.inSeconds) ||
-          !sameSeconds(after.workArea.outSeconds, input.desired.outSeconds)) {
+          !FrameTime.withinHalfFrame(after.workArea.inSeconds, applied.inSeconds, inTick.ticksPerFrame) ||
+          !FrameTime.withinHalfFrame(after.workArea.outSeconds, applied.outSeconds, outTick.ticksPerFrame)) {
           throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not retain the requested work area");
         }
         return {
@@ -511,6 +517,8 @@
           outcome: "verified",
           sequenceGuid: after.sequenceGuid,
           workArea: after.workArea,
+          requestedWorkArea: input.desired,
+          appliedWorkArea: applied,
           verified: "work_area_readback",
           operation: operationSemantics({
             mutatesProject: true,
@@ -650,12 +658,9 @@
     }
     async function setSequencePlayhead(args) {
       const input = validateSequencePlayheadSetArgs(args);
-      // TickTime construction can cross the host boundary. Construct it before
-      // the per-sequence exclusion scope so the guarded snapshot is the final
-      // asynchronous preflight step before the host setter is invoked.
-      const position = await tickTime(input.positionSeconds, "positionSeconds");
       return withSequencePlayheadSetLock(input.expectedSequenceGuid, async () => {
         const context = await activeContext(false);
+        const position = await sequenceTickTime(context.sequence, input.positionSeconds, "positionSeconds");
         const before = await sequencePlayheadSnapshot(context.sequence);
         if (before.sequenceGuid !== input.expectedSequenceGuid) {
           throw commandError("UXP_STALE_SEQUENCE", "The active sequence changed before the player position was set; inspect the current playhead and retry");
@@ -663,12 +668,12 @@
         if (!sameSeconds(before.positionSeconds, input.expectedPositionSeconds)) {
           throw commandError("UXP_STALE_PLAYHEAD", "The sequence player position changed before it was set; inspect the current playhead and retry");
         }
-        const accepted = await context.sequence.setPlayerPosition(position);
+        const accepted = await context.sequence.setPlayerPosition(position.tickTime);
         if (accepted !== true) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm the sequence player position");
         // Re-resolve the active sequence for postcondition readback: a user can
         // switch sequences while Premiere awaits the host setter.
         const after = await sequencePlayheadSnapshot((await activeContext(false)).sequence);
-        if (after.sequenceGuid !== before.sequenceGuid || !sameSeconds(after.positionSeconds, input.positionSeconds)) {
+        if (after.sequenceGuid !== before.sequenceGuid || !FrameTime.withinHalfFrame(after.positionSeconds, position.appliedSeconds, position.ticksPerFrame)) {
           throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not retain the requested sequence player position");
         }
         return {
@@ -676,6 +681,8 @@
           outcome: "verified",
           sequenceGuid: after.sequenceGuid,
           positionSeconds: after.positionSeconds,
+          requestedPositionSeconds: input.positionSeconds,
+          appliedPositionSeconds: position.appliedSeconds,
           verified: "sequence_playhead_readback",
           operation: operationSemantics({
             mutatesProject: false,
@@ -959,6 +966,20 @@
       if (ppro.TickTime && typeof ppro.TickTime.createWithSeconds === "function") return ppro.TickTime.createWithSeconds(value);
       throw commandError("UXP_COMMAND_UNAVAILABLE", "This Premiere build cannot create TickTime");
     }
+    async function sequenceTickTime(sequence, seconds, name) {
+      const requested = Number(seconds);
+      if (!Number.isFinite(requested)) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a finite number");
+      let timebase;
+      try { timebase = String(await sequence.getTimebase()); } catch (_) { timebase = ""; }
+      if (!/^\d{1,18}$/.test(timebase) || BigInt(timebase) <= 0n) {
+        throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a valid sequence ticksPerFrame timebase");
+      }
+      let snapped;
+      try { snapped = FrameTime.snapSeconds(requested, timebase); } catch (_) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + " could not be snapped to the sequence frame grid");
+      }
+      return { ...snapped, ticksPerFrame: timebase, tickTime: await tickTime(snapped.appliedSeconds, name) };
+    }
     async function sequenceRangeSnapshot(sequence) {
       const sequenceGuid = String(sequence && sequence.guid || "");
       if (!sequenceGuid) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not provide a stable active-sequence GUID");
@@ -1203,7 +1224,8 @@
       const outputDirectory = await allowedPath(args.outputDirectory, "outputDirectory", "directory");
       const filename = Protocol.safeFilename(args.filename);
       const exporterFilename = Protocol.exporterFrameName(filename);
-      const position = args.seconds == null ? await context.sequence.getPlayerPosition() : await tickTime(args.seconds, "seconds");
+      const snapped = args.seconds == null ? null : await sequenceTickTime(context.sequence, args.seconds, "seconds");
+      const position = snapped ? snapped.tickTime : await context.sequence.getPlayerPosition();
       const size = await context.sequence.getFrameSize();
       const width = positiveInt(args.width, size.width, "width"), height = positiveInt(args.height, size.height, "height");
       const before = await frameOutputsBefore(outputDirectory, filename, exporterFilename);
@@ -1232,7 +1254,8 @@
       const preexisting = output.found === true && before.indexOf(output.path) !== -1;
       const verified = output.found === true && !preexisting;
       const result = {
-        path: output.found === true ? output.path : expectedPath, width, height, seconds: position.seconds, exporterResult: returned,
+        path: output.found === true ? output.path : expectedPath, width, height, seconds: position.seconds,
+        ...(snapped ? { requestedSeconds: snapped.requestedSeconds, appliedSeconds: snapped.appliedSeconds } : {}), exporterResult: returned,
         outcome: verified ? "verified" : "committed_unverified",
         verificationBoundary: verified ? "output_file_exists" : "exporter_return_value",
         operation: operationSemantics({

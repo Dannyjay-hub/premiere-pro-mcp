@@ -320,6 +320,16 @@ describe("UXP command registry", () => {
     expect(value.exportedFrames).toEqual(["frame"]);
   });
 
+  it("snaps an explicit frame-export time and reports the requested and applied time", async () => {
+    const value = host();
+    value.sequence.getTimebase.mockResolvedValueOnce("10160640000");
+    const result = await value.registry.dispatch("frame.export", {
+      outputDirectory: "C:/approved", filename: "frame.png", seconds: 3.101,
+    });
+    expect(result).toMatchObject({ requestedSeconds: 3.101, appliedSeconds: 3.12, seconds: 3.12 });
+    expect(value.exportSequenceFrame).toHaveBeenCalledWith(value.sequence, { seconds: 3.12 }, "frame", "C:/approved", 1920, 1080);
+  });
+
   it("retries with the extension when the host rejects a bare filename (Premiere 26.5.2)", async () => {
     const value = host();
     value.exportSequenceFrame.mockImplementation(async (_sequence: unknown, _position: unknown, filename: string) => {
@@ -518,6 +528,17 @@ describe("UXP command registry", () => {
     expect(value.project.lockedAccess).not.toHaveBeenCalled();
     await expect(value.registry.dispatch("sequence.playhead.set", args)).resolves.toMatchObject({ replayed: true });
     expect(value.sequence.setPlayerPosition).toHaveBeenCalledOnce();
+  });
+
+  it("snaps a fractional playhead request to the exact sequence timebase and reports both values", async () => {
+    const value = host();
+    value.sequence.getTimebase.mockResolvedValueOnce("10160640000");
+    const result = await value.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 3.101,
+      operationId: "playhead-grid-1",
+    });
+    expect(result).toMatchObject({ positioned: true, requestedPositionSeconds: 3.101, appliedPositionSeconds: 3.12, positionSeconds: 3.12 });
+    expect(value.sequence.setPlayerPosition).toHaveBeenCalledWith({ seconds: 3.12 });
   });
 
   it("inspects, guardedly sets, and replays bounded documented app preferences", async () => {

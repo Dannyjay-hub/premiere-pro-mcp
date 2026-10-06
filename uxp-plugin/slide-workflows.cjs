@@ -11,6 +11,7 @@
   // infer source handles outside the exact readback below.
   function createSlideWorkflowDefinitions(deps) {
     const ppro = deps.ppro;
+    const FrameTime = deps.FrameTime || (typeof require === "function" ? require("./frame-time.cjs") : globalThis.PremiereMcpFrameTime);
     const fallbackTails = new Map();
     const locks = deps.locks && typeof deps.locks.withTrackMutationLock === "function"
       ? deps.locks
@@ -50,9 +51,11 @@
       requireOperationId(args.operationId);
       const target = targetCoordinates(args);
       const expected = requiredSnapshot(args.expectedSnapshot);
-      const offset = signedOffset(args.slideBySeconds);
+      const requestedOffset = signedOffset(args.slideBySeconds);
       assertExpectedTarget(expected, target);
       const initial = await activeTriplet(target, true);
+      const requestedSlide = await sequenceFrameTime(initial.sequence, requestedOffset);
+      const offset = requestedSlide.appliedSeconds;
       if (initial.projectGuid !== expected.projectGuid || initial.sequenceId !== expected.sequenceId) {
         throw commandError("UXP_STALE_TRACK_ITEM", "The active project or sequence no longer matches the reviewed slide snapshot");
       }
@@ -66,7 +69,7 @@
           throw commandError("UXP_STALE_TRACK_ITEM", "The active project or sequence changed before the slide transaction");
         }
         const before = await slideSnapshot(context);
-        if (!sameSnapshot(before, expected)) {
+        if (!sameSnapshot(before, expected, requestedSlide.ticksPerFrame)) {
           throw commandError("UXP_STALE_TRACK_ITEM", "The target or either immediate neighbour changed since the reviewed slide snapshot");
         }
         assertSlideSupported(before);
@@ -126,7 +129,7 @@
           throw commandError("UXP_VERIFICATION_FAILED", "Premiere changed the active project or sequence during the committed slide");
         }
         const after = await slideSnapshot(afterContext);
-        if (!sameSlideResult(before, after, desired)) {
+        if (!sameSlideResult(before, after, desired, requestedSlide.ticksPerFrame)) {
           throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not retain the requested contiguous three-item slide");
         }
         return {
@@ -134,6 +137,8 @@
           before,
           after,
           slideBySeconds: offset,
+          requestedSlideBySeconds: requestedOffset,
+          appliedSlideBySeconds: offset,
           outcome: "verified",
           verificationBoundary: "three_track_item_source_and_timeline_readback",
           undoLabel: "Slide timeline item",
@@ -143,6 +148,7 @@
           return { slid: false, committed: true, verified: false, partial: true,
             outcome: "committed_unverified", before: before, after: null, timelineChanged: null, rollbackPerformed: false,
             undoSteps: sourceTransaction ? 2 : 1,
+            requestedSlideBySeconds: requestedOffset, appliedSlideBySeconds: offset,
             verificationBoundary: "committed_transaction_with_failed_readback",
             readbackError: error && error.message ? error.message : String(error),
             nextStep: "Inspect the affected track before any retry. The committed transaction was not rolled back; use Premiere Undo only after reviewing the change." };
@@ -256,10 +262,10 @@
       return { previous, target, following };
     }
 
-    function sameSlideResult(before, after, desired) {
+    function sameSlideResult(before, after, desired, ticksPerFrame) {
       return sameIdentity(before, after) &&
-        sameItem(after.previous, desired.previous) && sameItem(after.target, desired.target) && sameItem(after.following, desired.following) &&
-        numbersEqual(after.previous.endSeconds, after.target.startSeconds) && numbersEqual(after.target.endSeconds, after.following.startSeconds) &&
+        sameItem(after.previous, desired.previous, ticksPerFrame) && sameItem(after.target, desired.target, ticksPerFrame) && sameItem(after.following, desired.following, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(after.previous.endSeconds, after.target.startSeconds, ticksPerFrame) && FrameTime.withinHalfFrame(after.target.endSeconds, after.following.startSeconds, ticksPerFrame) &&
         numbersEqual(after.previous.endSeconds - after.previous.startSeconds, after.previous.durationSeconds) &&
         numbersEqual(after.target.endSeconds - after.target.startSeconds, after.target.durationSeconds) &&
         numbersEqual(after.following.endSeconds - after.following.startSeconds, after.following.durationSeconds) &&
@@ -268,8 +274,8 @@
         numbersEqual(after.following.outSeconds - after.following.inSeconds, after.following.durationSeconds);
     }
 
-    function sameSnapshot(left, right) {
-      return sameIdentity(left, right) && sameItem(left.previous, right.previous) && sameItem(left.target, right.target) && sameItem(left.following, right.following);
+    function sameSnapshot(left, right, ticksPerFrame) {
+      return sameIdentity(left, right) && sameItem(left.previous, right.previous, ticksPerFrame) && sameItem(left.target, right.target, ticksPerFrame) && sameItem(left.following, right.following, ticksPerFrame);
     }
 
     function sameIdentity(left, right) {
@@ -277,16 +283,22 @@
         left.trackIndex === right.trackIndex && left.clipIndex === right.clipIndex;
     }
 
-    function sameItem(left, right) {
-      return numbersEqual(left.startSeconds, right.startSeconds) && numbersEqual(left.endSeconds, right.endSeconds) &&
-        numbersEqual(left.inSeconds, right.inSeconds) && numbersEqual(left.outSeconds, right.outSeconds) &&
-        numbersEqual(left.durationSeconds, right.durationSeconds) && numbersEqual(left.speed, right.speed) && left.reversed === right.reversed;
+    function sameItem(left, right, ticksPerFrame) {
+      return FrameTime.withinHalfFrame(left.startSeconds, right.startSeconds, ticksPerFrame) && FrameTime.withinHalfFrame(left.endSeconds, right.endSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.inSeconds, right.inSeconds, ticksPerFrame) && FrameTime.withinHalfFrame(left.outSeconds, right.outSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.durationSeconds, right.durationSeconds, ticksPerFrame) && numbersEqual(left.speed, right.speed) && left.reversed === right.reversed;
     }
 
     function createAction(item, method, seconds, label) {
       const action = requiredMethod(item, method)(ppro.TickTime.createWithSeconds(seconds));
       if (!action) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create the " + label + " action");
       return action;
+    }
+
+    async function sequenceFrameTime(sequence, seconds) {
+      const timebase = String(await sequence.getTimebase());
+      if (!/^\d{1,18}$/.test(timebase) || BigInt(timebase) <= 0n) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a valid sequence ticksPerFrame timebase");
+      return { ...FrameTime.snapSeconds(seconds, timebase), ticksPerFrame: timebase };
     }
 
     function targetCoordinates(args) {

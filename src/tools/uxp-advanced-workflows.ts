@@ -1,5 +1,6 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
 import { planDerivedSilenceRemoval } from "./silence-removal.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 const WAIT_RESPONSE_BUFFER_MS = 5_000;
 
@@ -165,6 +166,26 @@ const timelinePositionProperties = {
 };
 
 export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
+  const markerRemovalSnapshotSchema = {
+    items: { properties: {
+      marker_guid: { type: "string", sourceKey: "guid" },
+      expected_name: { type: "string", sourceKey: "name" },
+      expected_start_seconds: { type: "number", sourceKey: "startSeconds" },
+      expected_duration_seconds: { type: "number", sourceKey: "durationSeconds" },
+    } },
+  };
+  const displayFormatSnapshotSchema = { properties: {
+    audio_display_format: { type: "integer", sourceKey: "audioDisplayFormat" },
+    video_display_format: { type: "integer", sourceKey: "videoDisplayFormat" },
+  } };
+  const parameterSnapshotSchema = (leaf: "point" | "color") => ({ properties: {
+    project_id: { type: "string" }, sequence_id: { type: "string" }, media_type: { type: "string" },
+    track_index: { type: "integer" }, clip_index: { type: "integer" }, component_index: { type: "integer" },
+    component_id: { type: "string" }, param_index: { type: "integer" }, param_name: { type: "string" },
+    time_varying: { type: "boolean" }, [leaf]: { properties: Object.fromEntries(
+      (leaf === "point" ? ["x", "y"] : ["red", "green", "blue", "alpha"]).map((key) => [key, { type: "number" }]),
+    ) },
+  } });
   return {
     inspect_project_selection_uxp: {
       description: "List Premiere Project-panel views or inspect up to 256 selected project items without traversing the complete project tree.",
@@ -227,7 +248,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
             type: "array",
             minItems: 1,
             maxItems: 128,
-            description: "Required for remove_many. Explicit read snapshots from inspect: every target GUID, name, start, and duration must still match before action creation.",
+            description: "Required for remove_many; the marker_snapshots array returned by inspect, passed unchanged. Every target GUID, name, start, and duration must still match before action creation.",
             items: {
               type: "object",
               additionalProperties: false,
@@ -258,7 +279,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
             expectedName: args.expected_name,
           }),
         };
-        if (args.action === "inspect") return invoke(bridge, "markers.inspect", common);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "markers.inspect", common), markerRemovalSnapshotSchema, "marker_snapshots", "markers");
         if (args.action === "add") return invoke(bridge, "markers.add", { ...common, ...compact({
           name: args.name, markerType: args.marker_type, startSeconds: args.start_seconds,
           durationSeconds: args.duration_seconds, comments: args.comments, colorIndex: args.color_index,
@@ -453,7 +474,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
               video_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
             },
             required: ["audio_display_format", "video_display_format"],
-            description: "Required for update; copy both display-format codes returned by inspect without changes.",
+            description: "Required for update; the expected_display_formats object returned by inspect, passed unchanged.",
           },
           updates: {
             type: "object", additionalProperties: false,
@@ -468,7 +489,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: AdvancedArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "sequence.displayFormat.inspect", compact({ sequenceId: args.sequence_id }));
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "sequence.displayFormat.inspect", compact({ sequenceId: args.sequence_id })), displayFormatSnapshotSchema, "expected_display_formats", "displayFormats");
         if (args.action !== "update") return invalidAction(args.action);
         if (typeof args.expected_sequence_guid !== "string" || !args.expected_sequence_guid.trim() || args.expected_sequence_guid.length > 128) {
           return { success: false, error: "update requires expected_sequence_guid from inspect" };
@@ -615,7 +636,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           keyframe_direction: { type: "string", enum: ["at", "next", "previous", "nearest"], description: "Required for inspect_keyframe. nearest requires end_seconds greater than or equal to time_seconds and passes both documented native lookup bounds to Premiere." },
           expected_sequence_id: { type: "string", minLength: 1, maxLength: 128, description: "Required for set_time_varying; exact sequence ID from inspect_time_varying." },
           expected_time_varying: { type: "boolean", description: "Required for set_time_varying; exact animation-mode value from inspect_time_varying." },
-          expected_keyframe_times_seconds: { type: "array", maxItems: 256, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 86400 }, description: "Required complete, strictly increasing keyframe-time snapshot for set_time_varying." },
+          expected_keyframe_times_seconds: { type: "array", maxItems: 256, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 86400 }, description: "Required for set_time_varying; the expected_keyframe_times_seconds array returned by inspect, passed unchanged." },
           time_varying: { type: "boolean", description: "Requested parameter animation mode for set_time_varying." },
           confirm_disable_time_varying: { type: "boolean", description: "Required true when set_time_varying disables animation, because Premiere can discard its editable animation state." },
           operation_id: operationId,
@@ -644,11 +665,11 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           return invoke(bridge, commands[args.action], { ...common, ...compact({ direction: args.keyframe_direction, endSeconds: args.end_seconds }) });
         }
         if (args.action === "inspect_time_varying") {
-          return invoke(bridge, commands[args.action], compact({
+          return withApplySnapshot(invoke(bridge, commands[args.action], compact({
             mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
             componentIndex: args.component_index, paramIndex: args.param_index,
             expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
-          }));
+          })), { items: { type: "number" } }, "expected_keyframe_times_seconds", "keyframeTimesSeconds");
         }
         if (args.action === "set_time_varying") {
           return invoke(bridge, commands[args.action], {
@@ -663,11 +684,11 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           });
         }
         if (args.action === "inspect_point_value") {
-          return invoke(bridge, commands[args.action], compact({
+          return withApplySnapshot(invoke(bridge, commands[args.action], compact({
             mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
             componentIndex: args.component_index, paramIndex: args.param_index,
             expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
-          }));
+          })), parameterSnapshotSchema("point"), "expected_point_snapshot");
         }
         if (args.action === "inspect_point_displacement") {
           return invoke(bridge, commands[args.action], compact({
@@ -698,11 +719,11 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           });
         }
         if (args.action === "inspect_color_value") {
-          return invoke(bridge, commands[args.action], compact({
+          return withApplySnapshot(invoke(bridge, commands[args.action], compact({
             mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
             componentIndex: args.component_index, paramIndex: args.param_index,
             expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
-          }));
+          })), parameterSnapshotSchema("color"), "expected_color_snapshot");
         }
         if (args.action === "set_color_value") {
           const raw = args.expected_color_snapshot;

@@ -226,6 +226,7 @@ function advancedHost() {
   const selection = { getTrackItems: vi.fn(async () => [trackItem]) };
   const sequence = {
     guid: "sequence-1", name: "Assembly",
+    getTimebase: vi.fn(async () => "10160640000"),
     getSelection: vi.fn(async () => selection),
     getVideoTrackCount: vi.fn(async () => 1),
     getVideoTrack: vi.fn(async () => ({ getTrackItems: vi.fn(async () => [trackItem]) })),
@@ -391,9 +392,9 @@ describe("advanced stable Premiere UXP workflows", () => {
     })).resolves.toMatchObject({
       added: 3, outcome: "verified", verificationBoundary: "beat_marker_guid_and_time_readback",
       markers: [
-        { name: "Beat 1", startSeconds: 1.5 },
-        { name: "Beat 2", startSeconds: 2.5 },
-        { name: "Beat 3", startSeconds: 3.5 },
+        { name: "Beat 1", startSeconds: 1.52 },
+        { name: "Beat 2", startSeconds: 2.52 },
+        { name: "Beat 3", startSeconds: 3.52 },
       ],
     });
     expect(value.project.executeTransaction).toHaveBeenCalledTimes(2);
@@ -484,7 +485,7 @@ describe("advanced stable Premiere UXP workflows", () => {
       confirmDestructive: true,
       markerSnapshots: [
         { markerGuid: "marker-1", expectedName: "Beat", expectedStartSeconds: 1, expectedDurationSeconds: 0 },
-        { markerGuid: "marker-2", expectedName: "Remove", expectedStartSeconds: 4, expectedDurationSeconds: 1.5 },
+        { markerGuid: "marker-2", expectedName: "Remove", expectedStartSeconds: 4, expectedDurationSeconds: 1.52 },
       ],
       operationId: "marker-batch-remove",
     };

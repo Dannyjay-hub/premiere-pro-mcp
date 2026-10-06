@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type WorkflowArgs = {
   action?: string;
@@ -118,6 +119,12 @@ const operationId = {
 };
 
 export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
+  const selectionItemSnapshotSchema = { items: { properties: {
+    media_type: { type: "string" }, track_index: { type: "integer" }, clip_index: { type: "integer" },
+    expected_project_item_id: { type: "string", sourceKey: "projectItem.id" },
+    expected_start_seconds: { type: "number", sourceKey: "startSeconds" },
+    expected_end_seconds: { type: "number", sourceKey: "endSeconds" },
+  } } };
   return {
     manage_clip_effects_uxp: {
       description: "List native audio/video effects, inspect one clip's component chain, or add/remove one effect in a locked Premiere UXP transaction. Mutation verification covers the component chain only; inspect playback or exported output to confirm rendering.",
@@ -230,7 +237,7 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
           },
           selection_items: {
             type: "array", minItems: 1, maxItems: 64,
-            description: "Required for replace/add/remove. Every coordinate must include the project-item and timeline-time fingerprint returned by inspect.",
+            description: "Required for replace/add/remove; the selection_items array returned by inspect_targets, passed unchanged. Every coordinate includes the project-item and timeline-time fingerprint.",
             items: {
               type: "object", additionalProperties: false,
               properties: {
@@ -252,16 +259,16 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: WorkflowArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "selection.fingerprints.inspect");
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "selection.fingerprints.inspect"), selectionItemSnapshotSchema, "selection_items", "items");
         if (args.action === "inspect_targets") {
           if (!args.selection_targets?.length) {
             return { success: false, error: "inspect_targets requires one or more selection_targets" };
           }
-          return invoke(bridge, "selection.targets.inspect", {
+          return withApplySnapshot(invoke(bridge, "selection.targets.inspect", {
             items: args.selection_targets.map((item) => ({
               mediaType: item.media_type, trackIndex: item.track_index, clipIndex: item.clip_index,
             })),
-          });
+          }), selectionItemSnapshotSchema, "selection_items", "items");
         }
         if (["replace", "add", "remove", "clear"].includes(args.action ?? "")) {
           if (!args.expected_sequence_guid) {

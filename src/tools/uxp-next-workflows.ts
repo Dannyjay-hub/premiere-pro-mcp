@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 const WAIT_RESPONSE_BUFFER_MS = 5_000;
 
@@ -158,6 +159,12 @@ function eventQuery(args: EventArgs, includeTimeout: boolean) {
 }
 
 export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
+  const sourceTimingSnapshotSchema = { properties: {
+    start_seconds: { type: "number" }, duration_seconds: { type: "number" },
+  } };
+  const sourceOverridesSnapshotSchema = { properties: {
+    project_guid: { type: "string" }, frame_rate: { type: "number" }, pixel_aspect_ratio: { type: "number" },
+  } };
   return {
     inspect_premiere_events_uxp: {
       description: "List or briefly wait for bounded, redacted Premiere host-event receipts without polling the complete project state. Compatible hosts can also emit timeline.snap.* receipts plus operation.clip.extend.reached and coalesced operation.effect.drag.over receipts for documented root notifications; raw event payloads are never returned.",
@@ -453,7 +460,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
               duration_seconds: { type: "number", minimum: 0, maximum: 86400000 },
             },
             required: ["start_seconds", "duration_seconds"],
-            description: "Required for set_start. Copy the complete snapshot returned by inspect; a changed start or duration rejects the request before action creation.",
+            description: "Required for set_start; the expected_timing object returned by inspect, passed unchanged. A changed start or duration rejects the request before action creation.",
           },
           start_seconds: { type: "number", minimum: 0, maximum: 86400000 },
           confirm_set_start: { type: "boolean", description: "Required true for set_start because source timecode changes can affect editorial synchronization." },
@@ -465,7 +472,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         const common = {
           ...(args.project_item_id === undefined ? {} : { projectItemId: args.project_item_id }),
         };
-        if (args.action === "inspect") return invoke(bridge, "source.mediaTiming.inspect", common);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "source.mediaTiming.inspect", common), sourceTimingSnapshotSchema, "expected_timing");
         if (args.action === "set_start") return invoke(bridge, "source.mediaTiming.setStart", {
           ...common,
           ...(args.expected_timing === undefined ? {} : { expectedTiming: {
@@ -495,7 +502,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
               pixel_aspect_ratio: { type: "number", minimum: 0.01, maximum: 100 },
             },
             required: ["project_guid", "frame_rate", "pixel_aspect_ratio"],
-            description: "Required for update; copy the complete snapshot returned by inspect. Any changed effective value or active project rejects before the transaction.",
+            description: "Required for update; the expected_overrides object returned by inspect, passed unchanged. Any changed effective value or active project rejects before the transaction.",
           },
           frame_rate: { type: "number", minimum: 1, maximum: 240 },
           pixel_aspect_ratio: {
@@ -526,7 +533,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         const common = {
           ...(args.project_item_id === undefined ? {} : { projectItemId: args.project_item_id }),
         };
-        if (args.action === "inspect") return invoke(bridge, "source.mediaOverrides.inspect", common);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "source.mediaOverrides.inspect", common), sourceOverridesSnapshotSchema, "expected_overrides");
         if (args.action === "update") return invoke(bridge, "source.mediaOverrides.update", {
           ...common,
           ...(args.expected_overrides === undefined ? {} : { expectedOverrides: {

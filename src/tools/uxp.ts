@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 import { planTranscriptRoughCut, previewTranscriptEdit, transcriptRevision } from "./transcript-edits.js";
 import { getUxpAdvancedWorkflowTools } from "./uxp-advanced-workflows.js";
 import { getUxpDialogueWorkflowTools } from "./uxp-dialogue-workflows.js";
@@ -35,6 +36,13 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
     type: "string" as const,
     description: "Optional idempotency key (1-128 letters, numbers, dot, underscore, colon, or dash).",
   };
+  const sequenceRangeSnapshotSchema = { properties: {
+    in_seconds: { type: "number" }, out_seconds: { type: "number" },
+    zero_point_seconds: { type: "number" }, end_seconds: { type: "number" },
+  } };
+  const workAreaSnapshotSchema = { properties: {
+    in_seconds: { type: "number" }, out_seconds: { type: "number" },
+  } };
   const expectedTransitionTarget = {
     type: "object" as const,
     additionalProperties: false,
@@ -49,7 +57,7 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
       position: { type: "string", enum: ["start", "end"] },
       transition_present: { type: "boolean" },
     },
-    description: "Exact snapshot returned by inspect_video_transition_uxp. Mutations reject any changed sequence, clip identity, timing, edge, or transition presence.",
+    description: "The expected_target object returned by inspect, passed unchanged. Mutations reject any changed sequence, clip identity, timing, edge, or transition presence.",
   };
   return {
     ...getUxpDialogueWorkflowTools(bridge),
@@ -308,7 +316,7 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
               end_seconds: { type: "number", minimum: 0, maximum: 86400 },
             },
             required: ["in_seconds", "out_seconds", "zero_point_seconds", "end_seconds"],
-            description: "Required for update; complete range returned by inspect. A changed value rejects the request before Premiere actions are created.",
+            description: "Required for update; the expected_range object returned by inspect, passed unchanged. A changed value rejects the request before Premiere actions are created.",
           },
           updates: {
             type: "object",
@@ -339,7 +347,7 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
         updates?: { in_seconds?: number; out_seconds?: number; zero_point_seconds?: number };
         operation_id?: string;
       }) => {
-        if (args.action === "inspect") return invoke(bridge, "sequence.range.inspect");
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "sequence.range.inspect"), sequenceRangeSnapshotSchema, "expected_range", "range");
         return invoke(bridge, "sequence.range.update", {
           ...(args.expected_sequence_guid === undefined ? {} : { expectedSequenceGuid: args.expected_sequence_guid }),
           ...(args.expected_range === undefined ? {} : { expectedRange: {
@@ -369,11 +377,11 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
             type: "object",
             additionalProperties: false,
             properties: {
-              in_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Work-area in point returned by inspect." },
-              out_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Work-area out point returned by inspect." },
+              in_seconds: { type: "number", minimum: 0, maximum: 86400 },
+              out_seconds: { type: "number", minimum: 0, maximum: 86400 },
             },
             required: ["in_seconds", "out_seconds"],
-            description: "Required for set; complete work area returned by inspect. A changed value rejects the request before Premiere is called.",
+            description: "Required for set; the expected_work_area object returned by inspect, passed unchanged. A changed value rejects the request before Premiere is called.",
           },
           in_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Required for set; new work-area in point in seconds." },
           out_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Required for set; new work-area out point in seconds. Must exceed in_seconds and stay within the sequence end." },
@@ -397,7 +405,7 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
         out_seconds?: number;
         operation_id?: string;
       }) => {
-        if (args.action === "inspect") return invoke(bridge, "workArea.inspect");
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "workArea.inspect"), workAreaSnapshotSchema, "expected_work_area", "workArea");
         return invoke(bridge, "workArea.set", {
           ...(args.expected_sequence_guid === undefined ? {} : { expectedSequenceGuid: args.expected_sequence_guid }),
           ...(args.expected_work_area === undefined ? {} : { expectedWorkArea: {
@@ -1072,10 +1080,10 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
         required: ["video_track_index", "clip_index"],
       },
       handler: async (args: { video_track_index: number; clip_index: number; position?: "start" | "end" }) =>
-        invoke(bridge, "transition.video.inspect", {
+        withApplySnapshot(invoke(bridge, "transition.video.inspect", {
           videoTrackIndex: args.video_track_index, clipIndex: args.clip_index,
           ...(args.position === undefined ? {} : { position: args.position }),
-        }),
+        }), { properties: expectedTransitionTarget.properties }, "expected_target"),
     },
     add_video_transition_uxp: {
       description: "Add an installed native video transition to one unchanged video-clip edge through one undoable UXP transaction. Requires an exact inspect snapshot, serializes transition updates per sequence, and reads edge presence back; it does not prove handles, rendered appearance, or playback.",

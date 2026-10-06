@@ -54,6 +54,7 @@ function slideHost(options: SlideHostOptions = {}) {
   const videoTrack = { getTrackItems: vi.fn(async () => [previous, target, following]) };
   const sequence = {
     guid: "sequence-1",
+    getTimebase: vi.fn(async () => "10160640000"),
     getVideoTrackCount: vi.fn(async () => 1), getVideoTrack: vi.fn(async () => videoTrack),
     getAudioTrackCount: vi.fn(async () => 0), getAudioTrack: vi.fn(async () => null),
   };
