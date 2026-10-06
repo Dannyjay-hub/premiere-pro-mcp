@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type ItemSnapshot = {
   project_item_id: string;
@@ -65,10 +66,23 @@ function expectedRippleSnapshot(value: RippleDeleteArgs["expected_snapshot"]) {
 }
 
 /** A bounded documented-UXP ripple delete with contiguous-successor readback. */
+const expectedSnapshotSchema = {
+  type: "object", additionalProperties: false,
+  description: "The expected_snapshot object returned by inspect, passed unchanged.",
+  required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "track_item_count", "target", "following"],
+  properties: {
+    project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+    media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 },
+    clip_index: { type: "integer", minimum: 0, maximum: 510 }, track_item_count: { type: "integer", minimum: 2, maximum: 512 },
+    target: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+    following: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+  },
+};
+
 export function getUxpRippleDeleteWorkflowTools(bridge: UxpWebSocketBridge) {
   return {
     ripple_delete_track_item_uxp: {
-      description: "Inspect or perform one guarded ripple delete on an audio or video timeline item using documented UXP SequenceEditor actions. Apply requires complete target and contiguous-successor snapshots, explicit confirmation, and an operation ID; it serializes with guarded slips, slides, and append duplicates on that track, commits one transaction, and reads back the successor at the removed coordinate. It intentionally cannot ripple a final item, a gap, another track, or a linked A/V pair. It does not prove media handles, linked A/V synchronization, rendered frames, playback, persistence, or Undo behavior.",
+      description: "Inspect or perform one guarded ripple delete on an audio or video timeline item using documented UXP SequenceEditor actions. Apply requires complete target and contiguous-successor snapshots, explicit confirmation, and an operation ID; it serializes with guarded slips, slides, and append duplicates on that track, commits one transaction, and reads back the successor at the removed coordinate. It refuses before any change when it cannot ripple: a final item, a gap, or any item on another track over the deleted range (such as a linked audio partner or a spanning layer), because Premiere then deletes without closing the gap. It does not prove media handles, linked A/V synchronization, rendered frames, playback, persistence, or Undo behavior.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -77,17 +91,7 @@ export function getUxpRippleDeleteWorkflowTools(bridge: UxpWebSocketBridge) {
           media_type: { type: "string", enum: ["video", "audio"] },
           track_index: { type: "integer", minimum: 0, maximum: 511 },
           clip_index: { type: "integer", minimum: 0, maximum: 510, description: "One clip item with an immediately contiguous same-track successor." },
-          expected_snapshot: {
-            type: "object", additionalProperties: false,
-            required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "track_item_count", "target", "following"],
-            properties: {
-              project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
-              media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 },
-              clip_index: { type: "integer", minimum: 0, maximum: 510 }, track_item_count: { type: "integer", minimum: 2, maximum: 512 },
-              target: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-              following: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-            },
-          },
+          expected_snapshot: expectedSnapshotSchema,
           confirm_ripple_delete: { type: "boolean", description: "Must be true for action: apply." },
           operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$", description: "Required replay-safe operation identifier for action: apply." },
         },
@@ -100,7 +104,7 @@ export function getUxpRippleDeleteWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: RippleDeleteArgs) => {
         const target = { mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index };
-        if (args.action === "inspect") return invoke(bridge, "trackItem.rippleDelete.inspect", target);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "trackItem.rippleDelete.inspect", target), expectedSnapshotSchema);
         if (args.action === "apply") return invoke(bridge, "trackItem.rippleDelete", {
           ...target, expectedSnapshot: expectedRippleSnapshot(args.expected_snapshot),
           confirmRippleDelete: args.confirm_ripple_delete, operationId: args.operation_id,

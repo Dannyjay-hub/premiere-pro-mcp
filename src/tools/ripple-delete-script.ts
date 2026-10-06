@@ -170,7 +170,7 @@ export function rippleDeleteScriptBody(options: {
           var planSummary = [];
           var totalMovers = 0;
           for (pi = 0; pi < plan.length; pi++) {
-            planSummary.push({ track: plan[pi].type + " " + plan[pi].index, clipsToShift: plan[pi].movers.length });
+            planSummary.push({ track: plan[pi].type + " " + plan[pi].index, trackType: plan[pi].type, trackIndex: plan[pi].index, trackLabel: (plan[pi].type === "video" ? "V" : "A") + (plan[pi].index + 1), clipsToShift: plan[pi].movers.length });
             totalMovers += plan[pi].movers.length;
           }
           var estimatedSeconds = Math.ceil(totalMovers * 0.15 + (insiders.length + 1) * 0.5);

@@ -1,9 +1,11 @@
-import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { open } from "node:fs/promises";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "./helpers/temp-dir.js";
 import { createProjectBackup, getRecoveryTools } from "../src/tools/recovery.js";
+
+afterAll(cleanupTempDirs);
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -12,7 +14,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 describe("createProjectBackup", () => {
   it("streams a byte-identical recovery copy and leaves the source unchanged", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "edit.prproj");
     const contents = Buffer.from("premiere-project-fixture\nrevision=7\n", "utf8");
     writeFileSync(source, contents);
@@ -34,7 +36,7 @@ describe("createProjectBackup", () => {
   });
 
   it("fails closed for non-project files, missing files, and backup-name collisions", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const textFile = join(directory, "notes.txt");
     writeFileSync(textFile, "not a project");
     await expect(createProjectBackup(textFile)).rejects.toThrow(".prproj");
@@ -49,7 +51,7 @@ describe("createProjectBackup", () => {
   });
 
   it("refuses a project above the configured byte budget before creating a backup", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "oversized.prproj");
     const now = new Date("2026-08-23T17:00:00.000Z");
     writeFileSync(source, "12345");
@@ -60,7 +62,7 @@ describe("createProjectBackup", () => {
   });
 
   it("rejects concurrent backup work instead of queueing unbounded file copies", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const firstSource = join(directory, "first.prproj");
     const secondSource = join(directory, "second.prproj");
     writeFileSync(firstSource, Buffer.alloc(4 * 1024 * 1024, 1));
@@ -72,7 +74,7 @@ describe("createProjectBackup", () => {
   });
 
   it("honors cancellation before it reserves a collision-safe backup path", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "cancelled.prproj");
     const now = new Date("2026-08-23T17:00:00.000Z");
     const controller = new AbortController();
@@ -85,7 +87,7 @@ describe("createProjectBackup", () => {
   });
 
   it("removes a partial backup when streaming is cancelled", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "large.prproj");
     const now = new Date("2026-08-23T17:00:00.000Z");
     const backupPath = `${source}.backup-2026-08-23T17-00-00-000Z`;
@@ -109,7 +111,7 @@ describe("createProjectBackup", () => {
   });
 
   it("closes both files when cancellation happens while the destination opens", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "opening.prproj");
     const now = new Date("2026-08-23T17:00:00.000Z");
     const backupPath = `${source}.backup-2026-08-23T17-00-00-000Z`;
@@ -135,7 +137,7 @@ describe("createProjectBackup", () => {
   });
 
   it("validates the configured budget and regular-file boundary", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const fakeProjectDirectory = join(directory, "folder.prproj");
     mkdirSync(fakeProjectDirectory);
     await expect(createProjectBackup(fakeProjectDirectory)).rejects.toThrow(/regular file/);
@@ -153,7 +155,7 @@ describe("createProjectBackup", () => {
   });
 
   it("awaits the streaming receipt at the public tool boundary", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-project-backup-"));
+    const directory = makeTempDir("premiere-project-backup-");
     const source = join(directory, "handler.prproj");
     writeFileSync(source, "fixture");
     const tool = getRecoveryTools({ tempDir: directory }).create_project_backup;

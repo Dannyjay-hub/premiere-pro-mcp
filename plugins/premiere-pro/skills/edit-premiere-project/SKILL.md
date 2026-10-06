@@ -114,11 +114,16 @@ Premiere metadata is several surfaces. Do not dump packets or mix them up.
    with `ColumnName`, `ColumnValue`, `ColumnID`, and `ColumnPath` for the current
    view, not every XMP namespace. Otherwise use `manage_metadata_uxp`
    `inspect_fields` or CEP `get_metadata` with `parse_fields: true`.
-2. Call `get_metadata` without `parse_fields`, or `manage_metadata_uxp` `get`,
-   only when a named field is missing from that view, or the user asked for the
-   packet. Project metadata XML and file/clip XMP are separate. Set
-   `include_project_metadata` / `include_xmp_metadata` false when identity or
-   path is enough.
+2. CEP `get_metadata` and `get_xmp_metadata` default to bounded parsed fields
+   with GPS, serials, author and contact data omitted. Request raw packets only
+   when the user authorized their potential personal-data disclosure:
+   `get_metadata` needs `include_project_metadata` / `include_xmp_metadata`
+   true plus `include_sensitive: true`; `get_xmp_metadata` needs
+   `include_raw: true` plus `include_sensitive: true`. Raw packets are capped
+   at 256 Ki characters each. Full source paths need `include_media_path: true`.
+   Project metadata XML and file/clip XMP remain separate. UXP
+   `manage_metadata_uxp` `get` returns raw packets; request it only for an
+   explicitly authorized packet inspection.
 3. `premiere://project/metadata` is a path-redacted project/timeline summary, not
    XMP.
 4. Writes: CEP `set_metadata` accepts `field_name` plus `value` (optional
@@ -144,7 +149,7 @@ Use the Premiere MCP planners before styling captions in the host UI.
    missing. Keep Cafe typography and colors off Watch Club kits, and the reverse.
 4. Premiere cannot create speaker-colored stacked captions from raw text. Apply
    reviewed colors and stack positions in Essential Graphics or a MOGRT, then
-   inspect `export_sequence_review_frames` before export. Still captures verify output files, not temporal animation: QE exportFramePNG can show held opacity while actual video exports honor curves. Compare a short actual video export before claiming animation correctness.
+   inspect `export_sequence_review_frames` before export. Still captures verify output files, not motion over time. QE PNG stills keep transparency as straight alpha, so composite them over black before comparing them with a short actual video export.
 
 Sequence inspection tools return bounded pages (50 clips or gaps by default). Follow `pagination.nextOffset` with unchanged filters until `truncated` is false before using the snapshot as complete QA or edit-plan evidence. Re-read after timeline mutations. Marker and transition collections have separate caps; inspect them separately when truncated.
 

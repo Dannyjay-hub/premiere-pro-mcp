@@ -216,6 +216,15 @@ describe("track, timeline and project writes read back", () => {
     await expect(run(tools.move_items_to_bin, { item_ids: ["i2"], target_bin: "Footage" })).resolves.toMatchObject({ success: false, data: { notMoved: ["b.wav"] } });
   });
 
+  it.each(["/", "root"]) ("move_items_to_bin accepts %s as the project root", async (rootAlias) => {
+    const root = { nodeId: "root", name: "Proj.prproj", type: 3, treePath: "\\Proj.prproj", children: collection([]) };
+    const item = { nodeId: "i1", name: "a.wav", type: 1, treePath: "\\Proj.prproj\\a.wav", moveBin(target: { treePath: string }) { item.treePath = `${target.treePath}\\a.wav`; } };
+    const children = collection([item]);
+    root.children = children;
+    host([], { rootItem: root });
+    await expect(run(tools.move_items_to_bin, { item_ids: ["i1"], target_bin: rootAlias })).resolves.toMatchObject({ success: true, data: { moved: 1, targetBin: "Proj.prproj", verified: true } });
+  });
+
   it("clear_item_in_out does not certify Out without independent media duration", async () => {
     let inS = 1;
     let outS = 3;

@@ -256,16 +256,19 @@ export function getInterchangeAnalysisTools(_bridgeOptions: BridgeOptions) {
           const file = readInterchangeFile(args.path, [".fcpxml", ".xml"]), roots = parseAllowedRoots(args.allowed_roots), document = inspectFcpxml(file.contents);
           const references = document.assets.map(asset => {
             const localPath = fileUrlPath(asset.source);
-            if (!localPath) return { assetId: asset.id, name: asset.name, status: asset.source ? "non_file_url" : "missing_source" };
+            if (!asset.source) return { assetId: asset.id, name: asset.name, status: "generated_no_file" };
+            if (!localPath) return { assetId: asset.id, name: asset.name, status: "non_file_url" };
             const resolved = resolve(localPath);
             if (!roots.some(root => insideRoot(resolved, root))) return { assetId: asset.id, name: asset.name, status: "outside_allowed_roots" };
             return { assetId: asset.id, name: asset.name, status: existsSync(resolved) && statSync(resolved).isFile() ? "available" : "missing", path: resolved };
           });
-          const allAvailable = references.length > 0 && references.every((reference) => reference.status === "available");
+          const generatedNoFileCount = references.filter((reference) => reference.status === "generated_no_file").length;
+          const fileReferences = references.filter((reference) => reference.status !== "generated_no_file");
+          const allAvailable = fileReferences.length > 0 && fileReferences.every((reference) => reference.status === "available");
           return {
             success: true,
             data: {
-              path: file.path, format: document.format, allowedRoots: roots, checkedReferenceCount: references.length, allAvailable, references,
+              path: file.path, format: document.format, allowedRoots: roots, checkedReferenceCount: fileReferences.length, generatedNoFileCount, allAvailable, references,
               ...(references.length === 0 ? { warning: "No media references were found in this document, so nothing was verified." } : {}),
             },
           };

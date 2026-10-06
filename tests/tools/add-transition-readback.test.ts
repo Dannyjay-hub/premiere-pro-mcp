@@ -90,7 +90,10 @@ describe("add_transition readback", () => {
     const host = hostWith(cut => [cut, cut + 0.28]);
     const result = await add(6);
     expect(host.durations).toEqual(["00:00:01:00"]);
-    expect(result).toMatchObject({ success: true, data: { verified: true, durationMatched: false, durationSeconds: 0.28 } });
+    expect(result).toMatchObject({ success: true, data: {
+      verified: true, outcome: "verified_with_deviation", deviations: 1, durationMatched: false, durationSeconds: 0.28,
+      placements: [{ requestedDurationSeconds: 1, durationSeconds: 0.28, deviation: "duration_mismatch" }],
+    } });
   });
 
   it.each([
@@ -188,6 +191,29 @@ describe("add_transition_to_clip and batch_add_transitions readback", () => {
     hostWith((cut) => [cut - (12 * FRAME) / TICKS + drift, cut + (13 * FRAME) / TICKS + drift]);
     const result = await tools.add_transition_to_clip.handler({ node_id: "n2", transition_name: "Cross Dissolve", position: "start", duration_seconds: 1 }) as { success: boolean; error?: string };
     expect(result).toMatchObject({ success: true });
+  });
+
+  it("reports a handle-limited clip-edge transition as verified with deviation", async () => {
+    hostWith((cut) => [cut, cut + 0.334]);
+    const result = await tools.add_transition_to_clip.handler({ node_id: "n2", transition_name: "Cross Dissolve", position: "start", duration_seconds: 0.5 });
+    expect(result).toMatchObject({ success: true, data: {
+      verified: true, outcome: "verified_with_deviation", deviations: 1,
+      placements: [{ requestedDurationSeconds: 0.5, durationSeconds: 0.334, deviation: "duration_mismatch" }],
+    } });
+  });
+});
+
+describe("transition duration deviations", () => {
+  it("marks each short batch placement and reports the deviation count", async () => {
+    hostWith((cut) => cut === 6 ? [cut - 0.25, cut + 0.25] : [cut, cut + 0.334]);
+    const result = await tools.batch_add_transitions.handler({ transition_name: "Cross Dissolve", track_index: 0, duration_seconds: 0.5 });
+    expect(result).toMatchObject({ success: true, data: {
+      outcome: "verified_with_deviation", deviations: 1,
+      placements: [
+        { requestedDurationSeconds: 0.5, durationSeconds: 0.5 },
+        { requestedDurationSeconds: 0.5, durationSeconds: 0.334, deviation: "duration_mismatch" },
+      ],
+    } });
   });
 });
 

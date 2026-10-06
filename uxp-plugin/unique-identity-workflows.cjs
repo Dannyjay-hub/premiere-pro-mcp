@@ -113,7 +113,7 @@
     }
     const rootItem = await project.getRootItem();
     if (!rootItem) throw createError("UXP_TARGET_NOT_FOUND", "The active project has no root item.");
-    const item = await findProjectItem(rootItem, requestedProjectItemId);
+    const item = await findProjectItem(ppro, rootItem, requestedProjectItemId);
     if (!item) throw createError("UXP_TARGET_NOT_FOUND", "The requested project item could not be resolved.");
     return {
       kind: "project_item",
@@ -122,7 +122,20 @@
     };
   }
 
-  async function findProjectItem(rootItem, requestedProjectItemId) {
+  // Premiere 26.5 returns the project root (and some folder/clip views) without
+  // getId; ProjectItem.cast exposes it.
+  function identityView(ppro, item) {
+    if (item && typeof item.getId === "function") return item;
+    if (!item || !ppro.ProjectItem || typeof ppro.ProjectItem.cast !== "function") return null;
+    try {
+      const cast = ppro.ProjectItem.cast(item);
+      return cast && typeof cast.getId === "function" ? cast : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function findProjectItem(ppro, rootItem, requestedProjectItemId) {
     const queue = [rootItem];
     let visited = 0;
     while (queue.length > 0) {
@@ -131,10 +144,11 @@
       if (visited > MAX_PROJECT_ITEMS) {
         throw createError("UXP_PROJECT_TOO_LARGE", "Project item lookup exceeded the " + MAX_PROJECT_ITEMS + " item limit.");
       }
-      if (!current || typeof current.getId !== "function") {
+      const identity = identityView(ppro, current);
+      if (!identity) {
         throw createError("UXP_COMMAND_UNAVAILABLE", "Project item ID lookup is unavailable.");
       }
-      if (requiredToken(await current.getId(), "project item ID") === requestedProjectItemId) return current;
+      if (requiredToken(await identity.getId(), "project item ID") === requestedProjectItemId) return current;
       if (typeof current.getItems === "function") {
         const children = await current.getItems();
         if (!Array.isArray(children)) {

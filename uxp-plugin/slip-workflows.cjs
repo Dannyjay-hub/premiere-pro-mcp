@@ -96,13 +96,36 @@
         // Resolve by coordinate again rather than trusting the retained object.
         // An action may have committed even when this verification fails, so
         // callers must inspect before issuing another edit after that error.
-        let after = null;
+        let after = null, compensatingMoveSeconds = null;
         try {
           const afterContext = await activeTarget(target, true);
           if (afterContext.projectGuid !== before.projectGuid || afterContext.sequenceId !== before.sequenceId) {
             throw commandError("UXP_VERIFICATION_FAILED", "Premiere changed the active project or sequence during the committed slip");
           }
           after = await slipSnapshot(afterContext);
+          // Premiere 26.3 and 26.5 apply TrackItem in/out actions like trims: the start follows
+          // the new in point and the end follows the new out point, so a slip lands as a move.
+          // When the source points are right and both edges moved by the same amount, move the
+          // item back by that measured amount in a second undoable transaction.
+          const movedBy = after.startSeconds - before.startSeconds;
+          if (!sameSlipResult(before, after, desired) && sameSnapshotIdentity(before, after) &&
+              afterContext.item && typeof afterContext.item.createMoveAction === "function" &&
+              numbersEqual(after.inSeconds, desired.inSeconds) && numbersEqual(after.outSeconds, desired.outSeconds) &&
+              numbersEqual(after.endSeconds - before.endSeconds, movedBy) && !numbersEqual(movedBy, 0)) {
+            let moved = false;
+            afterContext.project.lockedAccess(function () {
+              const moveAction = createPointAction(afterContext.item, "createMoveAction", -movedBy, "compensating move");
+              moved = afterContext.project.executeTransaction(function (compoundAction) {
+                if (compoundAction.addAction(moveAction) === false) {
+                  throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the compensating move");
+                }
+              }, "Restore slipped item position");
+            });
+            if (!moved) throw commandError("UXP_TRANSACTION_FAILED", "Premiere did not commit the compensating move after the slip");
+            compensatingMoveSeconds = -movedBy;
+            const restoredContext = await activeTarget(target, true);
+            after = await slipSnapshot(restoredContext);
+          }
           if (!sameSlipResult(before, after, desired)) {
             // The transaction already committed, so this is not a "nothing
             // happened" failure. Say what actually landed and forbid a retry:
@@ -121,13 +144,19 @@
             slipBySeconds: requestedOffset,
             outcome: "verified",
             verificationBoundary: "track_item_source_and_timeline_readback",
-            undoLabel: "Slip timeline item source"
+            undoLabel: "Slip timeline item source",
+            ...(compensatingMoveSeconds === null ? {} : {
+              compensatingMoveSeconds,
+              undoSteps: 2,
+              hostNote: "Premiere moved the item with its new source points, so a second undoable move restored its timeline position. Undo twice to revert the slip."
+            })
           };
         } catch (error) {
           return {
             slipped: false, committed: true, verified: false, partial: true,
             outcome: "committed_unverified", before, after, slipBySeconds: requestedOffset,
             timelineChanged: after ? !sameSnapshot(before, after) : null, rollbackPerformed: false,
+            ...(compensatingMoveSeconds === null ? {} : { compensatingMoveSeconds, undoSteps: 2 }),
             verificationBoundary: "committed_transaction_with_failed_readback",
             readbackError: error && error.message ? error.message : String(error),
             nextStep: "Inspect the affected track and linked audio before any retry. The committed slip was not rolled back; use Premiere Undo only after reviewing the change."

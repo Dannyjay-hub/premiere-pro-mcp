@@ -519,13 +519,42 @@ type SentenceInfo = {
   tokenSet: Set<string>;
 };
 
-export function tokenSimilarity(a: ReadonlySet<string>, b: ReadonlySet<string>): { jaccard: number; containment: number; similarity: number } {
+/** Longest common subsequence length of two token lists. */
+function commonSubsequenceLength(a: readonly string[], b: readonly string[]): number {
+  let previous = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const current = new Array<number>(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) current[j] = a[i - 1] === b[j - 1] ? previous[j - 1] + 1 : Math.max(previous[j], current[j - 1]);
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+/**
+ * Bag containment says how much of the shorter sentence appears in the longer
+ * one. For sentences of very different length that also matches unrelated
+ * lines that reuse a few words ("We have new city projects" inside a 20-word
+ * sentence about "different new city projects"). There, only a false start
+ * counts: the short sentence must match the start of the long one in order.
+ */
+export function tokenSimilarity(
+  a: ReadonlySet<string>,
+  b: ReadonlySet<string>,
+  aTokens?: readonly string[],
+  bTokens?: readonly string[],
+): { jaccard: number; containment: number; similarity: number } {
   if (a.size === 0 || b.size === 0) return { jaccard: 0, containment: 0, similarity: 0 };
   let intersection = 0;
   for (const token of a) if (b.has(token)) intersection += 1;
   const union = a.size + b.size - intersection;
   const jaccard = intersection / union;
-  const containment = intersection / Math.min(a.size, b.size);
+  let containment = intersection / Math.min(a.size, b.size);
+  if (aTokens && bTokens && aTokens.length && bTokens.length) {
+    const [shorter, longer] = aTokens.length <= bTokens.length ? [aTokens, bTokens] : [bTokens, aTokens];
+    if (shorter.length / longer.length < 0.6) {
+      containment = commonSubsequenceLength(shorter, longer.slice(0, shorter.length + 2)) / shorter.length;
+    }
+  }
   return { jaccard: roundSeconds(jaccard), containment: roundSeconds(containment), similarity: roundSeconds(Math.max(jaccard, containment)) };
 }
 
@@ -554,7 +583,7 @@ export function detectRepeatedTakes(args: Record<string, unknown>) {
   const assumptions: string[] = [
     KEEP_RANGE_ASSUMPTION,
     `Sentences are split on terminal punctuation or gaps over 0.8s; only sentences with at least ${minWords} tokens are compared, and only against sentences starting within ${maxGap}s of each other.`,
-    `Similarity is max(token Jaccard, token containment) over normalized tokens; groups form when it reaches ${threshold}.`,
+    `Similarity is max(token Jaccard, token containment) over normalized tokens; when one sentence is under 60% of the other's length, containment only counts a false start that matches the start of the longer sentence in order. Groups form when it reaches ${threshold}.`,
     `The ${keep} take in each group is kept; removed takes span from their first word to ${handleFrames} frame(s) before the following word, snapped inward at ${frameRate} fps.`,
   ];
 
@@ -572,7 +601,7 @@ export function detectRepeatedTakes(args: Record<string, unknown>) {
     for (let earlier = current - 1; earlier >= 0; earlier -= 1) {
       const other = candidates[earlier];
       if (sentence.start_seconds - other.end_seconds > maxGap) break;
-      const { similarity } = tokenSimilarity(other.tokenSet, sentence.tokenSet);
+      const { similarity } = tokenSimilarity(other.tokenSet, sentence.tokenSet, other.tokens, sentence.tokens);
       if (similarity >= threshold && (!best || similarity > best.similarity)) best = { earlier, similarity };
     }
     if (!best) continue;

@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type ItemSnapshot = {
   start_seconds: number; end_seconds: number; in_seconds: number; out_seconds: number;
@@ -63,6 +64,19 @@ function expectedSlideSnapshot(value: SlideArgs["expected_snapshot"]) {
 }
 
 /** A bounded documented-UXP composition for one contiguous three-item slide. */
+const expectedSnapshotSchema = {
+  type: "object", additionalProperties: false,
+  description: "The expected_snapshot object returned by inspect, passed unchanged.",
+  required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "previous", "target", "following"],
+  properties: {
+    project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+    media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 }, clip_index: { type: "integer", minimum: 0, maximum: 511 },
+    previous: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+    target: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+    following: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+  },
+};
+
 export function getUxpSlideWorkflowTools(bridge: UxpWebSocketBridge) {
   return {
     slide_track_item_uxp: {
@@ -75,17 +89,7 @@ export function getUxpSlideWorkflowTools(bridge: UxpWebSocketBridge) {
           media_type: { type: "string", enum: ["video", "audio"] },
           track_index: { type: "integer", minimum: 0, maximum: 511 },
           clip_index: { type: "integer", minimum: 0, maximum: 511, description: "The center item. It must have immediate previous and following clip items on the same track." },
-          expected_snapshot: {
-            type: "object", additionalProperties: false,
-            required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "previous", "target", "following"],
-            properties: {
-              project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
-              media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 }, clip_index: { type: "integer", minimum: 0, maximum: 511 },
-              previous: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-              target: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-              following: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-            },
-          },
+          expected_snapshot: expectedSnapshotSchema,
           slide_by_seconds: { type: "number", minimum: -60, maximum: 60, description: "Non-zero offset. Positive moves the center item later and lengthens the previous neighbour." },
           confirm_slide: { type: "boolean", description: "Must be true for action: apply." },
           operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$", description: "Required replay-safe operation identifier for action: apply." },
@@ -99,7 +103,7 @@ export function getUxpSlideWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: SlideArgs) => {
         const target = { mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index };
-        if (args.action === "inspect") return invoke(bridge, "trackItem.slide.inspect", target);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "trackItem.slide.inspect", target), expectedSnapshotSchema);
         if (args.action === "apply") return invoke(bridge, "trackItem.slide", {
           ...target, expectedSnapshot: expectedSlideSnapshot(args.expected_snapshot), slideBySeconds: args.slide_by_seconds,
           confirmSlide: args.confirm_slide, operationId: args.operation_id,

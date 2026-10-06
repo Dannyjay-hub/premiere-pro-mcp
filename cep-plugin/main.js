@@ -321,6 +321,9 @@ function processOneCommand(cmdFileName) {
 
   // While evalScript is in flight, heartbeat a busy file so the MCP server can
   // tell "script still running (modal dialog?)" apart from "plugin not running".
+  // This setInterval runs on CEP's own event loop. A host call that blocks that
+  // loop (as long exports or a modal can) also stalls the heartbeat; absence of
+  // a fresh marker is therefore not proof that Premiere is idle.
   // Only starts after 2s, so fast commands never touch the extra file.
   var busyFilePath = path.join(tempDir, "busy_" + id + ".json");
   var startedAt = new Date().getTime();

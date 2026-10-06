@@ -362,6 +362,20 @@ describe("detectRepeatedTakes", () => {
     expect(plan.keep_ranges).toHaveLength(1);
   });
 
+  it("does not group a short line that only reuses words from a long sentence", () => {
+    const words = [...spoken("So today at the conference, we are represented by numerous stakeholders from different countries, different new city projects, and investors.", 0), ...spoken("We have new city projects.", 12)];
+    const plan = detectRepeatedTakes({ word_timeline: timeline(words) });
+    expect(plan.group_count).toBe(0);
+    expect(plan.removal_ranges).toEqual([]);
+  });
+
+  it("still groups a short false start with the full take that follows", () => {
+    const words = [...spoken("We have new city", 0), ...spoken("We have new city projects across Africa and Asia today.", 3)];
+    const plan = detectRepeatedTakes({ word_timeline: timeline(words), min_words: 4 });
+    expect(plan.group_count).toBe(1);
+    expect(plan.groups[0].kept_index).toBe(1);
+  });
+
   it("respects similarity_threshold and min_words", () => {
     const words = [...spoken("we went to the store today.", 0), ...spoken("we went to the market today.", 4)];
     expect(detectRepeatedTakes({ word_timeline: timeline(words), similarity_threshold: 0.7 }).group_count).toBe(1);

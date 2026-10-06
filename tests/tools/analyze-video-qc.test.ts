@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -13,6 +13,8 @@ const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 
 import { getExportTools, parseVideoQcOutput } from "../../src/tools/export.js";
+
+afterAll(cleanupTempDirs);
 
 describe("parseVideoQcOutput", () => {
   it("returns exact black and freeze intervals", () => {
@@ -43,7 +45,7 @@ describe("analyze_video_qc boundary", () => {
   });
 
   it("reports decoded findings without modifying the delivery file", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-video-qc-"));
+    const directory = makeTempDir("premiere-video-qc-");
     const mediaPath = join(directory, "delivery.mp4");
     writeFileSync(mediaPath, "video-fixture");
     mockedExecFileAsync.mockResolvedValueOnce({
@@ -69,7 +71,7 @@ describe("analyze_video_qc boundary", () => {
   });
 
   it("preserves a non-timeout FFmpeg failure detail", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-video-qc-error-"));
+    const directory = makeTempDir("premiere-video-qc-error-");
     const mediaPath = join(directory, "delivery.mp4");
     writeFileSync(mediaPath, "video-fixture");
     mockedExecFileAsync.mockRejectedValueOnce(Object.assign(new Error("decode failed"), { stderr: "invalid stream" }));

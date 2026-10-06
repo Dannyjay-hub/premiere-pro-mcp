@@ -394,7 +394,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
             type: "array", minItems: 1, maxItems: 64, uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 512 },
           },
-          project_item_id: { type: "string", minLength: 1, maxLength: 512 },
+          project_item_id: { type: "string", minLength: 1, maxLength: 512, description: "One project item ID. find_by_media_path uses it as the item to match; the other actions treat it as a one-item project_item_ids." },
           expected_offline: { type: "boolean" },
           confirm_set_offline: { type: "boolean" },
           match_path: { type: "string", minLength: 1, maxLength: 4096 },
@@ -406,6 +406,13 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: MediaHealthArgs) => {
+        // inspect, refresh and set_offline take a list; a single project_item_id is a one-item list.
+        if (args.action !== "find_by_media_path" && args.project_item_id !== undefined) {
+          if (args.project_item_ids !== undefined) {
+            return { success: false, error: "Pass project_item_ids or project_item_id, not both." };
+          }
+          args = { ...args, project_item_ids: [args.project_item_id] };
+        }
         if (args.action === "inspect") return invoke(bridge, "media.health.inspect", {
           ...(args.project_item_ids !== undefined ? { projectItemIds: args.project_item_ids } : {}),
           ...(args.include_paths !== undefined ? { includePaths: args.include_paths } : {}),

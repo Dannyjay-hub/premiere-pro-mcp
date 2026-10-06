@@ -89,6 +89,14 @@
           throw commandError("UXP_STALE_TRACK_ITEM", "The reviewed target or contiguous successor changed since inspection");
         }
         assertRippleSupported(before);
+        const blockers = await crossTrackBlockers(context.sequence, context, before.target.startSeconds, before.target.endSeconds);
+        if (blockers.length) {
+          throw commandError("UXP_TARGET_UNSUPPORTED",
+            "Premiere cannot close this gap: other tracks have items over the deleted range (" +
+            blockers.slice(0, 8).map(function (blocker) { return blocker.mediaType + " track " + blocker.trackIndex + " clip " + blocker.clipIndex; }).join(", ") +
+            (blockers.length > 8 ? ", ..." : "") +
+            "). A linked audio/video partner or a spanning layer leaves a plain delete with a gap. Nothing was changed.");
+        }
         let committed = false;
         context.project.lockedAccess(function () {
           if (guidString(context.project.guid) !== before.projectGuid || guidString(context.sequence.guid) !== before.sequenceId) {
@@ -163,6 +171,36 @@
         item,
         items: resolved.items
       };
+    }
+
+    // Premiere 26.5 ripples a removal only when no other track has an item over the removed
+    // range; otherwise createRemoveItemsAction deletes the item and leaves a gap (measured with
+    // a linked audio partner and a spanning adjustment layer). Find those items before acting.
+    async function crossTrackBlockers(sequence, target, startSeconds, endSeconds) {
+      const itemType = ppro.Constants && ppro.Constants.TrackItemType, blockers = [];
+      let scanned = 0;
+      for (const mediaType of ["video", "audio"]) {
+        const title = mediaType === "video" ? "Video" : "Audio";
+        const countMethod = "get" + title + "TrackCount", trackMethod = "get" + title + "Track";
+        if (typeof sequence[countMethod] !== "function" || typeof sequence[trackMethod] !== "function") {
+          throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot list " + mediaType + " tracks to check the ripple range");
+        }
+        const count = Number(await sequence[countMethod]());
+        if (!Number.isInteger(count) || count < 0 || count > 512) throw commandError("UXP_VERIFICATION_FAILED", "Premiere returned unreadable track counts while checking the ripple range");
+        for (let trackIndex = 0; trackIndex < count; trackIndex++) {
+          if (mediaType === target.mediaType && trackIndex === target.trackIndex) continue;
+          const track = await sequence[trackMethod](trackIndex);
+          if (!track || typeof track.getTrackItems !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot inspect a track while checking the ripple range");
+          const items = Array.from(await track.getTrackItems(itemType.CLIP, false) || []);
+          for (let clipIndex = 0; clipIndex < items.length; clipIndex++) {
+            if (++scanned > 4096) throw commandError("UXP_TARGET_UNSUPPORTED", "Too many timeline items to check the ripple range safely");
+            const start = tickSeconds(await items[clipIndex].getStartTime()), end = tickSeconds(await items[clipIndex].getEndTime());
+            if (start == null || end == null) throw commandError("UXP_VERIFICATION_FAILED", "Premiere returned unreadable item timing while checking the ripple range");
+            if (start < endSeconds - 0.000001 && end > startSeconds + 0.000001) blockers.push({ mediaType, trackIndex, clipIndex });
+          }
+        }
+      }
+      return blockers;
     }
 
     async function trackItemsAt(sequence, target) {

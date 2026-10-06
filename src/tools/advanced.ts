@@ -76,7 +76,7 @@ export function getAdvancedTools(
         // Budget 400ms per mover plus 30s startup/readback headroom, capped at 15 minutes.
         const timeoutMs = Math.max(bridgeOptions.timeoutMs ?? 30000, Math.min(900000, 30000 + movers * 400));
         const script = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun: false, allowLargeRipple: args.allow_large_ripple === true, largeRippleThreshold: threshold }));
-        return sendCommand(script, { ...bridgeOptions, timeoutMs, mutationOnTimeout: true });
+        return sendCommand(script, { ...bridgeOptions, timeoutMs, mutationOnTimeout: true, mutating: true });
       },
     },
 
@@ -120,14 +120,18 @@ export function getAdvancedTools(
             var beforeStart = String(result.clip.start.ticks);
             var beforeEnd = String(result.clip.end.ticks);
             if (String(outgoing.start.ticks) !== beforeEnd) return __editFail("A roll edit requires two contiguous clips with no gap at the outgoing cut.");
-            var newCutTicks = parseFloat(beforeEnd) + __secondsToTicks(${args.offset_seconds});
+            var frameTicks = __sequenceFrameTicks(app.project.activeSequence);
+            if (!isFinite(frameTicks)) return __editFail("The active sequence frame grid could not be read; no roll was attempted.");
+            var requestedOffsetTicks = __secondsToTicks(${args.offset_seconds});
+            var offsetTicks = __snapSequenceTicks(app.project.activeSequence, requestedOffsetTicks);
+            if (!offsetTicks) return __editFail("The requested offset is smaller than one frame after sequence-grid snapping; no roll was attempted.");
+            var newCutTicks = parseFloat(beforeEnd) + offsetTicks;
             if (newCutTicks <= parseFloat(result.clip.start.ticks) || newCutTicks >= parseFloat(outgoing.end.ticks)) {
               return __editFail("The requested roll offset would create a zero- or negative-duration clip.");
             }
             // A roll moves the shared cut, so the source in/out points must move with
             // the visible edges. Writing only start/end leaves inPoint/outPoint stale
             // and inconsistent with what the timeline shows.
-            var offsetTicks = Math.round(__secondsToTicks(${args.offset_seconds}));
             var beforeOut = String(result.clip.outPoint.ticks);
             var beforeIncomingIn = String(outgoing.inPoint.ticks);
             var expectedOut = String(Math.round(parseFloat(beforeOut) + offsetTicks));
@@ -160,7 +164,7 @@ export function getAdvancedTools(
             if (afterOut !== expectedOut || afterIncomingIn !== expectedIncomingIn) {
               return __editFail("Premiere moved the visible cut but the source in/out metadata did not follow: outgoing outPoint is " + afterOut + " (expected " + expectedOut + ") and the incoming clip's inPoint is " + afterIncomingIn + " (expected " + expectedIncomingIn + "). The timeline is now inconsistent with the clips' in/out points; undo this edit in Premiere before continuing.");
             }
-            return __editOk({
+            var rollPayload = {
               rolled: true,
               verified: true,
               clipName: after.clip.name,
@@ -173,7 +177,13 @@ export function getAdvancedTools(
                 incomingInPointTicks: afterIncomingIn
               },
               verification: "timeline_edge_and_source_in_out_readback"
-            });
+            };
+            if (Math.abs(offsetTicks - requestedOffsetTicks) > frameTicks / 1000) {
+              rollPayload.requestedOffsetSeconds = __ticksToSeconds(requestedOffsetTicks);
+              rollPayload.appliedOffsetFrames = Math.round(offsetTicks / frameTicks);
+            }
+            if (Math.abs(parseFloat(after.clip.end.ticks) / frameTicks - Math.round(parseFloat(after.clip.end.ticks) / frameTicks)) > 0.001) return __editFail("The roll edit read back off the active sequence frame grid; the edit is not verified.");
+            return __editOk(rollPayload);
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");
@@ -228,7 +238,11 @@ export function getAdvancedTools(
             if (String(previous.end.ticks) !== beforeStart || String(following.start.ticks) !== beforeEnd) {
               return __editFail("A slide edit requires no gaps at either adjacent cut.");
             }
-            var deltaTicks = __secondsToTicks(${args.offset_seconds});
+            var frameTicks = __sequenceFrameTicks(app.project.activeSequence);
+            if (!isFinite(frameTicks)) return __editFail("The active sequence frame grid could not be read; no slide was attempted.");
+            var requestedOffsetTicks = __secondsToTicks(${args.offset_seconds});
+            var deltaTicks = __snapSequenceTicks(app.project.activeSequence, requestedOffsetTicks);
+            if (!deltaTicks) return __editFail("The requested offset is smaller than one frame after sequence-grid snapping; no slide was attempted.");
             var centerIn = String(result.clip.inPoint.ticks), centerOut = String(result.clip.outPoint.ticks);
             var previousIn = String(previous.inPoint.ticks), followingOut = String(following.outPoint.ticks);
             var expectedPreviousOut = Math.round(parseFloat(previous.outPoint.ticks) + deltaTicks);
@@ -244,7 +258,7 @@ export function getAdvancedTools(
             if (newStartTicks <= parseFloat(previous.start.ticks) || newEndTicks >= parseFloat(following.end.ticks)) {
               return __editFail("The requested slide offset would create a zero- or negative-duration adjacent clip.");
             }
-            return __editOk({ previous: previous, following: following, beforeStart: beforeStart, beforeEnd: beforeEnd, deltaTicks: deltaTicks, newStartTicks: newStartTicks, newEndTicks: newEndTicks,
+            return __editOk({ previous: previous, following: following, beforeStart: beforeStart, beforeEnd: beforeEnd, deltaTicks: deltaTicks, requestedOffsetTicks: requestedOffsetTicks, frameTicks: frameTicks, newStartTicks: newStartTicks, newEndTicks: newEndTicks,
               affectedNodeIds: [String(result.clip.nodeId), String(previous.nodeId), String(following.nodeId)],
               centerIn: centerIn, centerOut: centerOut, previousIn: previousIn, followingOut: followingOut,
               previousStart: String(previous.start.ticks), followingEnd: String(following.end.ticks) });
@@ -297,14 +311,21 @@ export function getAdvancedTools(
             if (String(previous.end.ticks) !== String(after.clip.start.ticks) || String(after.clip.end.ticks) !== String(following.start.ticks)) {
               return __editFail("The slide edit left a gap or overlap at an adjacent cut.");
             }
-            return __editOk({
+            var slidePayload = {
               slid: true,
               verified: true,
               clipName: after.clip.name,
               offsetSeconds: ${args.offset_seconds},
               before: { startTicks: beforeStart, endTicks: beforeEnd },
               after: { startTicks: String(after.clip.start.ticks), endTicks: String(after.clip.end.ticks) }
-            });
+            };
+            if (Math.abs(checked.data.deltaTicks - checked.data.requestedOffsetTicks) > checked.data.frameTicks / 1000) {
+              slidePayload.requestedOffsetSeconds = __ticksToSeconds(checked.data.requestedOffsetTicks);
+              slidePayload.appliedOffsetFrames = Math.round(checked.data.deltaTicks / checked.data.frameTicks);
+            }
+            if (Math.abs(parseFloat(after.clip.start.ticks) / checked.data.frameTicks - Math.round(parseFloat(after.clip.start.ticks) / checked.data.frameTicks)) > 0.001 ||
+                Math.abs(parseFloat(after.clip.end.ticks) / checked.data.frameTicks - Math.round(parseFloat(after.clip.end.ticks) / checked.data.frameTicks)) > 0.001) return __editFail("The slide edit read back off the active sequence frame grid; the edit is not verified.");
+            return __editOk(slidePayload);
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");
@@ -391,7 +412,15 @@ export function getAdvancedTools(
             var beforeEnd = String(result.clip.end.ticks);
             var beforeIn = String(result.clip.inPoint.ticks);
             var beforeOut = String(result.clip.outPoint.ticks);
-            var deltaTicks = __secondsToTicks(${args.offset_seconds});
+            var frameTicks = __sequenceFrameTicks(app.project.activeSequence);
+            if (!isFinite(frameTicks)) return __editFail("The active sequence frame grid could not be read; no slip was attempted.");
+            var requestedOffsetTicks = __secondsToTicks(${args.offset_seconds});
+            var deltaTicks = __snapSequenceTicks(app.project.activeSequence, requestedOffsetTicks);
+            if (!deltaTicks) return __editFail("The requested offset is smaller than one frame after sequence-grid snapping; no slip was attempted.");
+            var speed = null, reversed = null;
+            try { speed = result.clip.getSpeed(); } catch (speedError) {}
+            try { reversed = result.clip.isSpeedReversed(); } catch (reverseError) {}
+            if ((speed !== 1 && speed !== 100) || (reversed !== false && reversed !== 0)) return __editFail("Source-side slip snapping requires a forward 1x clip; this clip's speed could not be mapped to timeline frames. No change was attempted.");
             var newInTicks = parseFloat(beforeIn) + deltaTicks;
             var newOutTicks = parseFloat(beforeOut) + deltaTicks;
             if (newInTicks < 0 || newOutTicks <= newInTicks) return __editFail("The requested slip offset would create an invalid source range.");
@@ -412,14 +441,19 @@ export function getAdvancedTools(
             if (String(after.clip.inPoint.ticks) === beforeIn && String(after.clip.outPoint.ticks) === beforeOut) {
               return __editFail("The slip edit returned without an observable source in/out change; no successful edit is reported.");
             }
-            return __editOk({
+            var slipPayload = {
               slipped: true,
               verified: true,
               clipName: after.clip.name,
               offsetSeconds: ${args.offset_seconds},
               before: { inTicks: beforeIn, outTicks: beforeOut },
               after: { inTicks: String(after.clip.inPoint.ticks), outTicks: String(after.clip.outPoint.ticks) }
-            });
+            };
+            if (Math.abs(deltaTicks - requestedOffsetTicks) > frameTicks / 1000) {
+              slipPayload.requestedOffsetSeconds = __ticksToSeconds(requestedOffsetTicks);
+              slipPayload.appliedOffsetFrames = Math.round(deltaTicks / frameTicks);
+            }
+            return __editOk(slipPayload);
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found");

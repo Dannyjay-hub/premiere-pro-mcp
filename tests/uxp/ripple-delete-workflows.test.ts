@@ -6,7 +6,8 @@ const Commands = require("../../uxp-plugin/commands.cjs");
 const Protocol = require("../../uxp-plugin/protocol.cjs");
 
 type State = { projectItemId: string; start: number; end: number; inPoint: number; outPoint: number; speed: number; reversed: boolean };
-type HostOptions = { pauseFirstSnapshot?: boolean };
+/** audioItem adds one item on audio track 0, e.g. a linked partner over the target range. */
+type HostOptions = { pauseFirstSnapshot?: boolean; missingAudioTrack?: boolean; audioItem?: { start: number; end: number } };
 
 function rippleHost(options: HostOptions = {}) {
   const states: State[] = [
@@ -44,7 +45,11 @@ function rippleHost(options: HostOptions = {}) {
   const sequence = {
     guid: "sequence-1",
     getVideoTrackCount: vi.fn(async () => 1), getVideoTrack: vi.fn(async () => videoTrack),
-    getAudioTrackCount: vi.fn(async () => 0), getAudioTrack: vi.fn(async () => null),
+    getAudioTrackCount: vi.fn(async () => (options.audioItem ? 1 : 0)),
+    getAudioTrack: vi.fn(async () => (options.missingAudioTrack ? null : options.audioItem ? { getTrackItems: vi.fn(async () => [{
+      getStartTime: vi.fn(async () => ({ seconds: options.audioItem!.start })),
+      getEndTime: vi.fn(async () => ({ seconds: options.audioItem!.end })),
+    }]) } : null)),
   };
   let selected: typeof items[number] | null = null;
   const createRemoveItemsAction = vi.fn((_selection: unknown, ripple: boolean, mediaType: number, shiftOverlapping: boolean) => ({
@@ -95,6 +100,32 @@ describe("guarded documented UXP contiguous track-item ripple delete workflow", 
     } });
     await expect(value.registry.dispatch("trackItem.rippleDelete.inspect", targetCoordinates)).resolves.toEqual(expectedSnapshot);
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses before any change when another track has an item over the deleted range", async () => {
+    // Measured on 26.5.2: with a linked audio partner over the range, the remove action deleted
+    // the video item and left a gap instead of rippling.
+    const value = rippleHost({ audioItem: { start: 0, end: 10 } });
+    await expect(value.registry.dispatch("trackItem.rippleDelete", {
+      ...targetCoordinates, expectedSnapshot, confirmRippleDelete: true, operationId: "ripple-blocked",
+    })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED", message: expect.stringContaining("audio track 0 clip 0") });
+    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    expect(value.states).toHaveLength(2);
+  });
+
+  it("refuses unreadable cross-track state before mutation", async () => {
+    const value = rippleHost({ audioItem: { start: 0, end: 10 }, missingAudioTrack: true });
+    await expect(value.registry.dispatch("trackItem.rippleDelete", {
+      ...targetCoordinates, expectedSnapshot, confirmRippleDelete: true, operationId: "ripple-unreadable",
+    })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
+    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an item entirely after the deleted range as a blocker", async () => {
+    const value = rippleHost({ audioItem: { start: 10, end: 20 } });
+    await expect(value.registry.dispatch("trackItem.rippleDelete", {
+      ...targetCoordinates, expectedSnapshot, confirmRippleDelete: true, operationId: "ripple-after",
+    })).resolves.toMatchObject({ rippleDeleted: true, outcome: "verified" });
   });
 
   it("removes exactly one reviewed item in one ripple transaction and reads back only its successor coordinate", async () => {

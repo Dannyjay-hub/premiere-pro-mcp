@@ -119,6 +119,7 @@ function makeHost(build: (vmArray: (values: number[]) => number[]) => {
     addVideoEffect: vi.fn((effect: { name: string }) => { target.components.push(effectCatalog[effect.name]()); }),
     addAudioEffect: vi.fn(),
   };
+  const qeGap = { type: "Empty", start: { ticks: "0" } };
   context.app = {
     enableQE: vi.fn(),
     project: {
@@ -133,14 +134,14 @@ function makeHost(build: (vmArray: (values: number[]) => number[]) => {
   context.qe = {
     project: {
       getActiveSequence: () => ({
-        getVideoTrackAt: () => ({ numItems: 1, getItemAt: () => qeClip }),
+        getVideoTrackAt: () => ({ numItems: 2, getItemAt: (index: number) => index === 0 ? qeGap : qeClip }),
         getAudioTrackAt: () => ({ numItems: 0, getItemAt: () => null }),
       }),
       getVideoEffectByName: (name: string) => (effectCatalog[name] ? { name } : null),
       getAudioEffectByName: () => null,
     },
   };
-  return { context, qeClip, source, target };
+  return { context, qeClip, qeGap, source, target };
 }
 
 async function run(host: ReturnType<typeof makeHost>, args: Record<string, unknown>) {
@@ -151,6 +152,17 @@ async function run(host: ReturnType<typeof makeHost>, args: Record<string, unkno
   });
   const result = await getClipboardTools(bridgeOptions).paste_clip_attributes.handler(args as never);
   return { result: result as any, hostResult: hostResult as any };
+}
+
+async function runCopyEffects(host: ReturnType<typeof makeHost>, args: Record<string, unknown>) {
+  const hostResults: any[] = [];
+  mockedSendCommand.mockImplementation(async (script: string) => {
+    const result = JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string);
+    hostResults.push(result);
+    return result as never;
+  });
+  const result = await getClipboardTools(bridgeOptions).copy_effects_between_clips.handler(args as never);
+  return { result: result as any, hostResults };
 }
 
 beforeEach(() => {
@@ -325,22 +337,16 @@ describe("paste_clip_attributes", () => {
     expect(whiteBalance.getColorValue()).toEqual([255, 192, 192, 192]);
   });
 
-  it("copy_effect_values refuses animated colour targets without disabling animation", async () => {
+  it("refuses animated colour values in static effect-value copying without changing target keys", async () => {
     const host = makeHost(() => ({
-      source: makeClip("src", "Source", 0, 0, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 1, { color: [255, 192, 192, 192] })])]),
-      target: makeClip("tgt", "Target", 0, 10, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 2, { color: [255, 200, 180, 160], keys: [[0, 1], [TICKS_PER_SECOND, 2]] })])]),
+      source: makeClip("src", "Source", 0, 0, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 1, { color: [255, 192, 192, 192], keys: [[0, 1]] })])]),
+      target: makeClip("tgt", "Target", 0, 10, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 2, { color: [255, 1, 2, 3], keys: [[0, 2]] })])]),
     }));
-    mockedSendCommand.mockImplementationOnce(async (script: string) =>
-      JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string) as never);
-
-    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({
-      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
-    }) as any;
-
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining("White Balance (Source or target colour parameter is keyframed") });
-    const targetColor = host.target.components[0].properties[0];
-    expect(targetColor.setColorValue).not.toHaveBeenCalled();
-    expect(targetColor.setTimeVarying).not.toHaveBeenCalled();
+    mockedSendCommand.mockImplementationOnce(async script => JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string));
+    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({ source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Colour animation") });
+    expect(host.target.components[0].properties[0].setColorValue).not.toHaveBeenCalled();
+    expect(host.target.components[0].properties[0].setTimeVarying).not.toHaveBeenCalled();
   });
 
   it("copy_effect_values matches repeated display names by position and skips section headers", async () => {
@@ -495,5 +501,62 @@ describe("paste_clip_attributes", () => {
     );
     await expect(guarded({ source_node_id: "a", target_node_id: "b" })).rejects.toThrow("requires the 'edit' capability");
     expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("copy_effects_between_clips value copying", () => {
+  it("updates values on an existing target effect without stacking another instance", async () => {
+    const host = makeHost(() => ({
+      source: makeClip("src", "Source", 0, 0, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("Exposure", 0.5), makeProp("Saturation", 120)]),
+      ]),
+      target: makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("Exposure", 0), makeProp("Saturation", 100)]),
+      ]),
+    }));
+    const { result, hostResults } = await runCopyEffects(host, {
+      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
+    });
+    expect(result).toMatchObject({ success: true, data: { status: "verified", verified: true, valuesCopied: true } });
+    expect(hostResults).toHaveLength(2);
+    expect(host.target.components).toHaveLength(1);
+    expect(host.target.components[0].properties.map((prop) => prop.getValue())).toEqual([0.5, 120]);
+    expect(host.qeClip.addVideoEffect).not.toHaveBeenCalled();
+  });
+
+  it("resolves the target QE clip by timeline start when a gap precedes it", async () => {
+    const host = makeHost(() => ({
+      source: makeClip("src", "Source", 0, 0, [
+        makeComponent("Gaussian Blur", "AE.ADBE Gaussian Blur 2", [makeProp("Blurriness", 20)]),
+      ]),
+      target: makeClip("tgt", "Target", 0, 10, []),
+      effectCatalog: {
+        "Gaussian Blur": () => makeComponent("Gaussian Blur", "AE.ADBE Gaussian Blur 2", [makeProp("Blurriness", 0)]),
+      },
+    }));
+    const { result } = await runCopyEffects(host, { source_node_id: "src", target_node_id: "tgt", effect_name: "Gaussian Blur" });
+    expect(result).toMatchObject({ success: true, data: { status: "verified", verified: true } });
+    expect(host.qeClip.addVideoEffect).toHaveBeenCalledTimes(1);
+    expect(host.target.components[0].properties[0].getValue()).toBe(20);
+    expect(host.qeGap).toEqual({ type: "Empty", start: { ticks: "0" } });
+  });
+
+  it("refuses when the source has no matching effect and leaves the target unchanged", async () => {
+    const host = makeHost(() => ({
+      source: makeClip("src", "Source", 0, 0, [
+        makeComponent("Motion", "AE.ADBE Motion", [makeProp("Scale", 100)]),
+        makeComponent("Opacity", "AE.ADBE Opacity", [makeProp("Opacity", 100)]),
+      ]),
+      target: makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("Exposure", 0)]),
+      ]),
+    }));
+    const { result, hostResults } = await runCopyEffects(host, {
+      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
+    });
+    expect(result).toMatchObject({ success: false, error: "The source clip has no Lumetri Color effect; nothing was changed." });
+    expect(hostResults).toHaveLength(1);
+    expect(host.target.components[0].properties[0].getValue()).toBe(0);
+    expect(host.qeClip.addVideoEffect).not.toHaveBeenCalled();
   });
 });

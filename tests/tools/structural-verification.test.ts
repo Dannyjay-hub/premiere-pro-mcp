@@ -44,8 +44,9 @@ describe("trim_clip verification", () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls.at(-1)[0];
     expect(script).toContain("var actualIn = after.inPoint");
-    expect(script).toContain("Math.abs(actualIn - requestedIn) > tolerance");
-    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(2) - parseFloat(target.clip.inPoint.ticks)");
+    expect(script).toContain("Math.abs(actualIn - requestedIn) > tolerance / 1000");
+    expect(script).toContain("requestedTrimDeltaTicks = __secondsToTicks(2) - parseFloat(target.clip.inPoint.ticks)");
+    expect(script).toContain("__trimDeltaTicks = __snapSequenceTicks(app.project.activeSequence, requestedTrimDeltaTicks)");
     expect(script).toContain("did not apply a verified timeline trim");
     expect(script).toContain("verified: true");
   });
@@ -53,8 +54,8 @@ describe("trim_clip verification", () => {
   it("compares the read-back out point against the requested value", async () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_out_seconds: 8 });
     const script = mockedSendCommand.mock.calls.at(-1)[0];
-    expect(script).toContain("Math.abs(actualOut - requestedOut) > tolerance");
-    expect(script).toContain("var __trimDeltaTicks = __secondsToTicks(8) - parseFloat(target.clip.outPoint.ticks)");
+    expect(script).toContain("Math.abs(actualOut - requestedOut) > tolerance / 1000");
+    expect(script).toContain("requestedTrimDeltaTicks = __secondsToTicks(8) - parseFloat(target.clip.outPoint.ticks)");
   });
 
   it("only writes the edge that was actually requested", async () => {
@@ -72,7 +73,7 @@ describe("trim_clip verification", () => {
     await timeline.trim_clip.handler({ node_id: "abc", new_in_seconds: 2 });
     const script = mockedSendCommand.mock.calls.at(-1)[0];
     expect(script).toContain("seq.timebase");
-    expect(script).toContain("TICKS_PER_SECOND / 24");
+    expect(script).toContain("frame grid could not be read");
     expect(script).toContain("var tolerance = __ticksToSeconds(frameTicks)");
   });
 
@@ -290,7 +291,8 @@ describe("move_clip verification", () => {
     await timeline.move_clip.handler({ node_id: "abc", new_start_seconds: 5 });
     const script = mockedSendCommand.mock.calls.at(-1)[0];
     expect(script).toContain('var after = __findClip("abc")');
-    expect(script).toContain("Math.abs(actualStart - 5) > tolerance");
+    expect(script).toContain("Math.abs(actualStartTicks - newStartTicks) > frameTicks / 1000");
+    expect(script).toContain("actualEndTicks / frameTicks");
     expect(script).toContain("verified: true");
   });
 
