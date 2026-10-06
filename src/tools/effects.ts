@@ -1,6 +1,15 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
+const LUMETRI_SECTION_HEADER_NAMES = [
+  "Basic Correction",
+  "Creative",
+  "Curves",
+  "Color Wheels & Match",
+  "HSL Secondary",
+  "Vignette",
+];
+
 /** Shared ES3 readback for the two QE effect-add paths. */
 function applyEffectWithReadback(kind: "Video" | "Audio"): string {
   return `
@@ -323,8 +332,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
         tint?: number;
         saturation?: number;
       }) => {
-        // Lumetri repeats names (notably Saturation). Refuse duplicate requested
-        // controls instead of choosing the first writable occurrence.
+        // Resolve color_correct controls only within Lumetri Basic Correction.
         const controls: Array<{ key: string; label: string; value: number }> = (
           [
             { key: "exposure", label: "Exposure", value: args.exposure },
@@ -416,18 +424,42 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
             }
           }
 
+          var sectionHeaderNames = ${JSON.stringify(LUMETRI_SECTION_HEADER_NAMES)};
+          var basicCorrectionHeaderName = sectionHeaderNames[0];
+          var correctionStart = -1;
+          var correctionEnd = lumetri.properties.numItems;
+          for (var sectionIndex = 0; sectionIndex < lumetri.properties.numItems; sectionIndex++) {
+            if (String(lumetri.properties[sectionIndex].displayName) === basicCorrectionHeaderName) { correctionStart = sectionIndex + 1; break; }
+          }
+          // If Basic Correction is unavailable, retain the prior whole-component
+          // lookup and ambiguity refusal instead of guessing a section boundary.
+          var controlStart = correctionStart >= 0 ? correctionStart : 0;
+          if (correctionStart >= 0) {
+            for (var nextHeaderIndex = correctionStart; nextHeaderIndex < lumetri.properties.numItems; nextHeaderIndex++) {
+              var nextHeaderName = String(lumetri.properties[nextHeaderIndex].displayName);
+              var isSectionHeader = false;
+              for (var headerIndex = 0; headerIndex < sectionHeaderNames.length; headerIndex++) {
+                if (nextHeaderName === sectionHeaderNames[headerIndex]) { isSectionHeader = true; break; }
+              }
+              if (isSectionHeader) { correctionEnd = nextHeaderIndex; break; }
+            }
+          }
           var ambiguousControls = [];
+          var missingControls = [];
           for (var controlIndex = 0; controlIndex < ${controls.length}; controlIndex++) {
             var control = [${controls.map((c) => `"${c.label}"`).join(",")}][controlIndex];
             var candidateIndices = [];
-            for (var propertyIndex = 0; propertyIndex < lumetri.properties.numItems; propertyIndex++) {
+            for (var propertyIndex = controlStart; propertyIndex < correctionEnd; propertyIndex++) {
               if (String(lumetri.properties[propertyIndex].displayName) === control) candidateIndices.push(propertyIndex);
             }
             if (candidateIndices.length > 1) ambiguousControls.push(control + " at property indices [" + candidateIndices.join(", ") + "]");
+            else if (candidateIndices.length === 0) missingControls.push(control);
           }
-          if (ambiguousControls.length) {
+          if (ambiguousControls.length || missingControls.length) {
             return __jsonStringify({ success: false,
-              error: "Lumetri property names are ambiguous: " + ambiguousControls.join("; ") + ". Use set_effect_property with property_index from get_effect_properties.",
+              error: (ambiguousControls.length ? "Lumetri property names are ambiguous: " + ambiguousControls.join("; ") + ". " : "") +
+                (missingControls.length ? "Lumetri Basic Correction properties were not found: " + missingControls.join(", ") + ". " : "") +
+                "Use set_effect_property with property_index from get_effect_properties.",
               data: { colorCorrected: false, verified: false, renderVerified: false, timelineChanged: qeAttempted, outcome: qeAttempted ? "committed_unverified" : "not_applied", errors: {}, changes: {} } });
           }
 
@@ -443,7 +475,7 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
           var writeAttempted = false;
 
           try {
-            for (var p = 0; p < lumetri.properties.numItems; p++) {
+            for (var p = controlStart; p < correctionEnd; p++) {
               var prop = lumetri.properties[p];
               var name = prop.displayName;
               ${setters}
