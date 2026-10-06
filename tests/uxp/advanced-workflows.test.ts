@@ -1590,8 +1590,37 @@ describe("advanced stable Premiere UXP workflows", () => {
       splitEdit: "l_cut", extensionSeconds: 2, outcome: "verified",
       before: { audio: { endSeconds: 20, outSeconds: 10 }, video: { endSeconds: 20 } },
       after: { endSeconds: 22, outSeconds: 12 },
+      undoSteps: 2,
     });
+    // This host keeps edges and source points independent, so the source-out write follows separately.
+    expect(value.project.executeTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates an L-cut in one transaction when the end action carries the source out (Premiere 26.5.2)", async () => {
+    const value = advancedHost();
+    value.trackItem.createSetEndAction = vi.fn((time: { seconds: number }) => ({ apply: () => {
+      value.trackState.outPoint += time.seconds - value.trackState.end;
+      value.trackState.end = time.seconds;
+    } }));
+    await expect(value.registry.dispatch("trackItem.splitEdit", {
+      kind: "l_cut", audioTrackIndex: 0, audioClipIndex: 0, videoTrackIndex: 0, videoClipIndex: 0,
+      extensionSeconds: 2, operationId: "l-cut-trim-like",
+    })).resolves.toMatchObject({ outcome: "verified", after: { endSeconds: 22, outSeconds: 12 }, undoSteps: 1 });
     expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
+    expect(value.trackItem.createSetOutPointAction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a split edit that would overlap the next audio clip, without changing anything", async () => {
+    // On 26.5.2 an overlapping L-cut crashed Premiere while it drew the two audio items.
+    const value = advancedHost();
+    const following = { getStartTime: vi.fn(async () => ({ seconds: 21 })), getEndTime: vi.fn(async () => ({ seconds: 30 })) };
+    value.sequence.getAudioTrack = vi.fn(async () => ({ getTrackItems: vi.fn(async () => [value.trackItem, following]) }));
+    await expect(value.registry.dispatch("trackItem.splitEdit", {
+      kind: "l_cut", audioTrackIndex: 0, audioClipIndex: 0, videoTrackIndex: 0, videoClipIndex: 0,
+      extensionSeconds: 2, operationId: "l-cut-overlap",
+    })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED", message: expect.stringContaining("would overlap audio clip 1") });
+    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    expect(value.trackState).toMatchObject({ end: 20, outPoint: 10 });
   });
 
   it("verifies an L-cut from the re-fetched audio timeline edge when source-out readback lags", async () => {

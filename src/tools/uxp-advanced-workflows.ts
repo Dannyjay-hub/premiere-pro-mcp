@@ -261,7 +261,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         if (args.action === "inspect") return invoke(bridge, "markers.inspect", common);
         if (args.action === "add") return invoke(bridge, "markers.add", { ...common, ...compact({
           name: args.name, markerType: args.marker_type, startSeconds: args.start_seconds,
-          durationSeconds: args.duration_seconds, comments: args.comments,
+          durationSeconds: args.duration_seconds, comments: args.comments, colorIndex: args.color_index,
         }), ...operation(args) });
         if (args.action === "update") return invoke(bridge, "markers.update", { ...common, ...compact({
           name: args.name, markerType: args.marker_type, startSeconds: args.start_seconds,

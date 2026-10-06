@@ -1207,10 +1207,24 @@
       const size = await context.sequence.getFrameSize();
       const width = positiveInt(args.width, size.width, "width"), height = positiveInt(args.height, size.height, "height");
       const before = await frameOutputsBefore(outputDirectory, filename, exporterFilename);
-      const returned = await ppro.Exporter.exportSequenceFrame(context.sequence, position, exporterFilename, outputDirectory, width, height);
+      let returned;
+      try {
+        returned = await ppro.Exporter.exportSequenceFrame(context.sequence, position, exporterFilename, outputDirectory, width, height);
+      } catch (error) {
+        // Premiere 26.5.2 rejects an extension-less name with "File Format is not supported";
+        // its documented contract takes the image extension in the filename. Retry with it.
+        if (exporterFilename === filename || !/format is not supported/i.test(String(error && error.message || error))) throw error;
+        returned = await ppro.Exporter.exportSequenceFrame(context.sequence, position, filename, outputDirectory, width, height);
+      }
       if (returned !== true) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm frame export; no output path is reported");
       const expectedPath = Protocol.joinPath(outputDirectory, filename);
-      const output = await locateFrameOutput(outputDirectory, filename, exporterFilename);
+      // Premiere 26.5.2 returns true before the PNG is on disk (it appeared about two seconds
+      // later), so poll briefly before deciding nothing was written.
+      let output = await locateFrameOutput(outputDirectory, filename, exporterFilename);
+      for (let waited = 0; output.found === false && waited < FRAME_OUTPUT_WAIT_MS; waited += FRAME_OUTPUT_POLL_MS) {
+        await frameWait(FRAME_OUTPUT_POLL_MS);
+        output = await locateFrameOutput(outputDirectory, filename, exporterFilename);
+      }
       if (output.found === false) {
         throw commandError("UXP_VERIFICATION_FAILED", "Premiere reported the frame export as done, but no file was written at " + expectedPath);
       }
@@ -1250,6 +1264,11 @@
     // The exporter appends ".png" to the bare stem on most builds, but #642
     // reported 26.5.1 needing the full name. Look for every name the host could
     // have produced instead of trusting the return value.
+    const FRAME_OUTPUT_WAIT_MS = 15000, FRAME_OUTPUT_POLL_MS = 250;
+    function frameWait(ms) {
+      if (typeof deps.frameWait === "function") return deps.frameWait(ms);
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
     async function locateFrameOutput(outputDirectory, filename, exporterFilename) {
       for (const name of [filename, exporterFilename, exporterFilename + ".png.png"]) {
         const candidatePath = Protocol.joinPath(outputDirectory, name);

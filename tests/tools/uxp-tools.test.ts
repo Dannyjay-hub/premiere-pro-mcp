@@ -39,8 +39,20 @@ describe("UXP MCP tools", () => {
       getState: vi.fn(() => state),
     } as unknown as UxpWebSocketBridge;
     const result = await getUxpTools(bridge).get_uxp_capabilities.handler();
-    expect(result).toEqual({ success: true, data: state });
+    expect(result).toEqual({ success: true, data: { ...state, capabilitiesSource: "handshake" } });
     expect(bridge.request).not.toHaveBeenCalled();
+  });
+
+  it("reports the panel's live capabilities instead of the connect-time handshake", async () => {
+    let commands = { "frame.export": { supported: false } };
+    const bridge = {
+      request: vi.fn(),
+      getState: vi.fn(() => ({ status: "connected", connected: true, protocolVersion: 2, connectedAt: "t", capabilities: { backend: "uxp", protocolVersion: 2, commands } })),
+      refreshCapabilities: vi.fn(async () => { commands = { "frame.export": { supported: true } }; return { backend: "uxp", protocolVersion: 2, commands }; }),
+    } as unknown as UxpWebSocketBridge;
+    const result = await getUxpTools(bridge).get_uxp_capabilities.handler() as any;
+    expect(result.data.capabilitiesSource).toBe("live");
+    expect(result.data.capabilities.commands["frame.export"]).toEqual({ supported: true });
   });
 
   it("maps verified project and interchange workflows to versioned UXP commands", async () => {
