@@ -236,6 +236,12 @@ const tools = getStockTitleTools(bridgeOptions, () => catalog);
 type TitleResult = { success: boolean; error?: string; data: Record<string, any> };
 
 describe("add_title", () => {
+  it("documents the baked-copy location and preserves the path in the result", () => {
+    expect(tools.add_title.description).toContain("~/Library/Application Support/premiere-pro-mcp/titles");
+    expect(tools.add_title.description).toContain("templateFile");
+    expect(tools.add_title.description).toContain("Do not delete copies automatically");
+  });
+
   it("imports the default template on V2, writes the text, trims to duration, and verifies both", async () => {
     const state = hostWith();
     const result = await tools.add_title.handler({ text: 'Say "hi" \\ there' }) as TitleResult;
