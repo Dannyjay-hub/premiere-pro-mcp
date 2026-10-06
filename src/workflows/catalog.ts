@@ -60,7 +60,7 @@ export const WORKFLOW_CATALOG = [
     title: "Review and update clip metadata",
     summary: "Inspect visible Project-panel columns first, then named project/XMP fields. Request full XML only when needed. Writes use field_name/value or complete XML, or a locked UXP field/packet transaction with readback; schema creation does not set per-item values.",
     recommendedTools: ["get_metadata", "get_xmp_metadata", "inspect_project_panel_metadata_uxp", "manage_metadata_uxp", "set_metadata", "set_xmp_metadata"],
-    promptNotes: "Prefer inspect_project_panel_metadata_uxp action item_columns or manage_metadata_uxp inspect_fields / get_metadata parse_fields. Request full project-metadata XML or XMP only when a named field is missing. Premiere-private project metadata is not file XMP. Do not treat premiere://project/metadata as a packet dump. Writes use field_name/value or complete XML, or a UXP update_field/update with readback; never fall back from a failed UXP write to CEP.",
+    promptNotes: "Prefer inspect_project_panel_metadata_uxp action item_columns or manage_metadata_uxp inspect_fields / get_metadata parse_fields. CEP metadata reads default to bounded parsed fields with personal data omitted. Raw packets require explicit packet flags (include_raw for get_xmp_metadata) and include_sensitive true; source paths require include_media_path true. Request raw packets only with user authorization for their personal-data disclosure. Premiere-private project metadata is not file XMP. Do not treat premiere://project/metadata as a packet dump. Writes use field_name/value or complete XML, or a UXP update_field/update with readback; never fall back from a failed UXP write to CEP.",
   },
   {
     id: "project-organization",

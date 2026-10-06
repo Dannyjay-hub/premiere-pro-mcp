@@ -68,7 +68,7 @@ describe("export_frame file names", () => {
     }))));
     const result = await getExportTools({}).export_frame.handler({ output_path: "/work/frame.png" });
     expect(result).toMatchObject({ success: true, data: { exported: true, method: "qe", renderVerified: false,
-      verificationScope: expect.stringContaining("actual short video export") } });
+      verificationScope: expect.stringContaining("does not establish motion over time") } });
   });
   it("still works for plain names", () => {
     const { result, files } = run("/Users/me/frames/plain.png");

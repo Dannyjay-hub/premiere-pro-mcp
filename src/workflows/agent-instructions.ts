@@ -17,8 +17,12 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "For compound insert/remove edits, preview the exact plan, then apply only that unchanged plan with its issued confirmation token and required approval. Changed plans need a fresh preview.");
   route(["get_active_sequence", "get_sequence_structure", "get_full_sequence_info", "get_timeline_gaps"],
     "Sequence reads return bounded pages, default 50 clips or gaps. Keep track counts and pagination; follow nextOffset with the same filters until truncated is false before treating a snapshot as complete for QA or edit planning. Re-read after edits; offsets are not stable across timeline mutations. Inspect markers and transitions separately when their capped collections are truncated. Clip node IDs resolve in the active sequence; re-check sequence identity after switching sequences.");
+  route(["detect_silence", "map_source_ranges_to_timeline"],
+    "detect_silence returns source-media ranges. To place them against an edited source split across clips, map those ranges with map_source_ranges_to_timeline on the relevant track; follow its nextOffset pages, and confirm sequence identity and placement before planning edits. The mapper refuses speed-changed or reversed source clips.");
   route(["get_clip_transcript_uxp", "search_clip_transcript_uxp"],
     "Retrieve native transcript evidence when this UXP backend is connected. Preserve source timing and speaker evidence; do not infer speech from filenames.");
+  route(["plan_filler_word_removal"],
+    "Hesitation-sound removal needs a transcript that preserves disfluencies, such as Premiere transcription or verbatim ASR; Whisper's default output omits 'um' and 'uh'. Check transcript provenance before treating an empty match as evidence that no hesitation sounds occurred.");
   route(["set_clip_duration"],
     "Set a placed clip's timeline length or extend a still image by moving only its end; it refuses overlaps with the next clip and restores the original end if Premiere clamps. Clip speed has no documented scripting setter, so speed_change and set_clip_speed_qe always fail before mutation; use set_clip_duration for timing, or the Speed/Duration UI to retime.");
   route(["capture_frame"],
@@ -28,19 +32,19 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
     "Create scoped review images when requested. Inspect the resulting images in a client that can view local artifacts; distinguish image review from playback and audio review.");
   route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
-    "Still capture verifies output files, not temporal animation. QE exportFramePNG can show held opacity while actual video exports honor keyframe curves; compare a short actual video export before claiming animation or rendered-curve correctness.");
+    "Still capture verifies output files, not motion over time. QE PNG stills keep the sequence's transparency as straight alpha: a fading clip keeps its colours and carries the fade only in alpha, so composite stills over black before measuring them or comparing them with a short actual video export.");
   route(["export_sequence", "verify_delivery_file", "verify_delivery_conformance"],
     "Preflight the requested destination and preset, export, then verify the actual file and delivery requirements. Queue acceptance is not render completion.");
   route(["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder"],
     "For reaction Shorts, plan stacked speaker-colored captions without guessing unknown colors, place a subscribe overlay about two-thirds through, and export into a series-named folder created if missing. Caption-track import cannot encode speaker colors; apply reviewed graphics or a MOGRT, and keep Cafe styling off Watch Club kits.");
   route(["list_stock_titles", "add_title"],
-    "For a title, lower third, or credit from plain text, prefer add_title with a stock template that ships with Premiere; call list_stock_titles to see how many lines each template takes. Check textVerification and duration in the result.");
+    "For a title, lower third, or credit from plain text, prefer add_title with a stock template that ships with Premiere; call list_stock_titles to see how many lines each template takes. Check textVerification, duration, and templateFile in the result. Premiere-built template copies are saved in the application support premiere-pro-mcp/titles folder; never delete them automatically, and remove an unused copy only after confirming no project references it.");
   route(["import_mogrt", "get_mogrt_component"],
     "When building MOGRT title cards, pass text_values so every text control (for example Headline) is written explicitly and read back; never rely on template defaults or a prior build. Audit a series with get_mogrt_component expected_values. The Essential Graphics panel can display stale text; trust the stored-property readback and a captured frame, not the panel.");
   route(["inspect_project_panel_metadata_uxp"],
     "Read visible Project-panel columns as JSON (item_columns) or the panel layout XML (panel). Column JSON is the current view, not every XMP namespace.");
   route(["get_metadata", "get_xmp_metadata"],
-    "Read Premiere-private project metadata and the separate file/clip XMP packet. Prefer parse_fields for named properties. Disable unused XML payloads; packets are size-bounded and can include GPS, serials, or other sensitive EXIF.");
+    "Read Premiere-private project metadata and the separate file/clip XMP packet. CEP reads default to bounded parsed fields with personal data omitted. Raw XML requires explicit packet flags and include_sensitive true; full media paths require include_media_path true.");
   route(["inspect_project_panel_metadata_uxp", "manage_metadata_uxp"],
     "Inspect columns or named fields, then update one field with update_field or both packets with update in one locked UXP transaction with readback. Do not retry a failed UXP write through CEP.");
   route(["get_metadata", "set_metadata"],
@@ -68,10 +72,10 @@ PLAN AND EXECUTE:
 METADATA:
 - Premiere stores several distinct surfaces. Do not conflate them: visible Project-panel columns, Premiere-private project metadata XML, file/clip XMP, panel-layout/schema XML, color labels, footage interpretation, markers, and transcripts.
 - Prefer column JSON from inspect_project_panel_metadata_uxp action item_columns, or named fields from manage_metadata_uxp inspect_fields / get_metadata parse_fields, when the user wants Scene, Shot, Take, Log Note, Description, Tape Name, or other currently visible columns. Column JSON includes ColumnName, ColumnValue, ColumnID, and ColumnPath.
-- Request full project-metadata XML or XMP only when a named field is missing from the column or field view, or the user explicitly needs the packet. Omit either XML when identity/path is enough. Do not dump bounded packets into planning text.
+- Request full project-metadata XML or XMP only when the user explicitly needs the packet and its potential personal-data disclosure. CEP get_metadata requires include_project_metadata/include_xmp_metadata plus include_sensitive true; get_xmp_metadata requires include_raw plus include_sensitive true. Both default to bounded parsed fields. Full source paths require include_media_path true. Do not dump bounded packets into planning text.
 - premiere://project/metadata is a path-redacted project/timeline summary, not XMP or Project Metadata XML.
 - Writes: CEP set_metadata accepts field_name plus value (read-modify-write through AdobeXMPScript with field readback) or complete Project Metadata XML plus updated_fields. set_xmp_metadata merges a patch into the existing XMP packet. UXP manage_metadata_uxp update_field writes one property; update can still replace either packet together with readback. add_custom_metadata_field and create_project_metadata_field_uxp create schema columns only; they do not set per-item values. Adobe exposes no field-level schema enumerator.
-- Treat GPS, camera serials, and similar EXIF as sensitive. Report them only when the user asked. Never enable unsafe-script to parse or rewrite metadata.
+- Treat GPS, camera serials, author, owner, and contact data as sensitive. Report them only when the user asked. Never enable unsafe-script to parse or rewrite metadata.
 
 AVAILABLE WORKFLOW ROUTES:
 ${routes.length ? routes.join("\n") : "- Use task-keyword discovery to identify the operations enabled in this session."}

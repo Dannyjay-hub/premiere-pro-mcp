@@ -224,8 +224,20 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           ${target}
           var requested = [${emitted}];
           var frameTicks = parseFloat(seq.timebase);
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 30;
+          if (!frameTicks || isNaN(frameTicks) || frameTicks <= 0) return __error("The active sequence frame grid could not be read; no markers were created.");
           var frameSeconds = frameTicks / TICKS_PER_SECOND;
+          for (var snapIndex = 0; snapIndex < requested.length; snapIndex++) {
+            var snapSpec = requested[snapIndex];
+            snapSpec.requestedT = snapSpec.t;
+            var requestedStartTicks = __secondsToTicks(snapSpec.t);
+            var appliedStartTicks = targetKind === "clip" ? requestedStartTicks : __snapSequenceTicks(seq, requestedStartTicks);
+            snapSpec.t = __ticksToSeconds(appliedStartTicks);
+            if (snapSpec.d > 0) {
+              snapSpec.requestedEnd = snapSpec.requestedT + snapSpec.d;
+              var appliedEndTicks = targetKind === "clip" ? __secondsToTicks(snapSpec.requestedEnd) : __snapSequenceTicks(seq, __secondsToTicks(snapSpec.requestedEnd));
+              snapSpec.d = __ticksToSeconds(appliedEndTicks - appliedStartTicks);
+            }
+          }
           var allowBeyondEnd = ${args.allow_beyond_end ? "true" : "false"};
           var existing = [];
           var probe = markers.getFirstMarker();
@@ -279,7 +291,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
               return __batchFailure("Premiere created marker " + i + " but rejected its properties: " + assignError.toString(), true);
             }
             var actualStart = __ticksToSeconds(marker.start.ticks);
-            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds) {
+            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds / 1000 || (targetKind === "sequence" && Math.abs(actualStart / frameSeconds - Math.round(actualStart / frameSeconds)) > 0.001)) {
               return __batchFailure("Marker " + i + " landed at " + actualStart + "s instead of " + spec.t + "s; the batch is not reported as verified.", true);
             }
             var actualEnd = __ticksToSeconds(marker.end.ticks);
@@ -288,11 +300,14 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             var fieldProblems = [];
             if (spec.n !== null && String(marker.name) !== spec.n) fieldProblems.push("name reads back as " + marker.name);
             if (spec.c !== null && String(marker.comments) !== spec.c) fieldProblems.push("comments read back as " + marker.comments);
-            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds)) fieldProblems.push("end reads back as " + actualEnd + "s");
+            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds / 1000 || (targetKind === "sequence" && Math.abs(actualEnd / frameSeconds - Math.round(actualEnd / frameSeconds)) > 0.001))) fieldProblems.push("end reads back as " + actualEnd + "s");
             if (spec.k !== null && (typeof actualColor !== "number" || !isFinite(actualColor))) unverifiedFields.push({ markerIndex: i, field: "color" });
             else if (spec.k !== null && actualColor !== spec.k) fieldProblems.push("color index reads back as " + actualColor);
             if (fieldProblems.length) return __batchFailure("Marker " + i + " at " + spec.t + "s was created, but " + fieldProblems.join("; ") + ".", true);
-            created.push({ timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: actualEnd, color: typeof actualColor === "number" && isFinite(actualColor) ? actualColor : null });
+            var createdMarker = { timeSeconds: actualStart, name: marker.name, comments: marker.comments, endSeconds: actualEnd, color: typeof actualColor === "number" && isFinite(actualColor) ? actualColor : null };
+            if (Math.abs(actualStart - spec.requestedT) > frameSeconds / 1000) { createdMarker.requestedSeconds = spec.requestedT; createdMarker.appliedSeconds = actualStart; }
+            if (spec.requestedEnd !== undefined && Math.abs(actualEnd - spec.requestedEnd) > frameSeconds / 1000) { createdMarker.requestedEndSeconds = spec.requestedEnd; createdMarker.appliedEndSeconds = actualEnd; }
+            created.push(createdMarker);
           }
           var afterCount = 0;
           probe = markers.getFirstMarker();
@@ -570,14 +585,13 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           if (Math.abs(observed - target) > frameTicks) {
             return __error("Premiere reports the playhead at " + __ticksToSeconds(observed) + "s instead of " + __ticksToSeconds(target) + "s after " + action + ".");
           }
-          var fps = TICKS_PER_SECOND / frameTicks;
           return __result({
             action: action,
             verified: true,
             fromSeconds: __ticksToSeconds(currentTicks),
             toSeconds: __ticksToSeconds(observed),
             deltaFrames: Math.round((observed - currentTicks) / frameTicks),
-            timecode: __ticksToTimecode(observed, Math.round(fps)),
+            timecode: __qeTimecodeForTicks(seq, observed).timecode,
             clamped: target === 0 || target === endTicks
           });
         `);
@@ -709,7 +723,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_edl: {
       description:
-        "Generate a CMX 3600 EDL for one video or audio track of a sequence from Premiere timeline readback (cuts, reels, source/record timecode, M2 lines for retimed clips), self-validate it, and return it inline or write it inside an approved workspace. Premiere is only read; this is not a Premiere-native export.",
+        "Generate a CMX 3600 EDL for one video or audio track of a sequence from Premiere timeline readback (cuts, reels, source/record timecode, M2 lines for retimed clips), self-validate it, and return it inline or write it inside an approved workspace. Premiere is only read; this is not a Premiere-native export. Long sequences can use a longer timeout (default 30 minutes).",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -726,6 +740,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           include_clip_name_comments: { type: "boolean", description: "Emit '* FROM CLIP NAME:' comments (default true)." },
           output_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Optional absolute .edl path to write. Requires approved_workspace_path; the file must not already exist. When omitted the EDL text is returned inline." },
           approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path. Required with output_path." },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for Premiere timeline readback (default: 30 minutes)." },
         },
       },
       handler: async (args: {
@@ -741,9 +756,12 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
         include_clip_name_comments?: boolean;
         output_path?: string;
         approved_workspace_path?: string;
+        timeout_minutes?: number;
       }): Promise<CommandResult> => {
         const trackType = args.track_type ?? "video";
         const trackIndex = args.track_index ?? 0;
+        const timeoutMinutes = args.timeout_minutes ?? 30;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) return { success: false, error: "timeout_minutes must be between 1 and 240" };
         if (!EDL_TRACK_TYPES.includes(trackType)) return { success: false, error: `track_type must be one of: ${EDL_TRACK_TYPES.join(", ")}` };
         if (!isInteger(trackIndex, 0, 255)) return { success: false, error: "track_index must be an integer from 0 through 255." };
         let target: string | null = null;
@@ -810,7 +828,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             tracks: [{ type: "${trackType}", index: trackIndex, name: track.name, clips: clips }]
           });
         `);
-        const readback = await sendCommand(script, bridgeOptions);
+        const readback = await sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 });
         if (!readback.success) return readback;
         try {
           const exported = buildCmx3600Edl(readback.data, {

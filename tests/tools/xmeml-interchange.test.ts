@@ -1,10 +1,12 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import { getInterchangeAnalysisTools } from "../../src/tools/interchange-analysis.js";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
+
+afterAll(cleanupTempDirs);
 
 const tools = getInterchangeAnalysisTools({ tempDir: "/tmp/xmeml" } as BridgeOptions);
 type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
@@ -19,12 +21,13 @@ function premiereXmeml(mediaPath: string) {
   <sequence id="sequence-1"><name>Cut</name><media><video><track>
     <clipitem id="clipitem-1"><name>Interview.mp4</name><file id="file-1"><name>Interview.mp4</name><pathurl>${url}</pathurl><media/></file></clipitem>
     <clipitem id="clipitem-2"><name>Interview.mp4</name><file id="file-1"/></clipitem>
+    <clipitem id="clipitem-3"><name>Graphic</name><file id="file-2"><name>Graphic</name></file></clipitem>
   </track></video></media></sequence>
 </xmeml>`;
 }
 
 describe("FCP7 XML (xmeml) from Premiere's own export", () => {
-  const dir = mkdtempSync(join(tmpdir(), "xmeml-"));
+  const dir = makeTempDir("xmeml-");
   const media = join(dir, "Interview.mp4");
   writeFileSync(media, "x");
   const xml = join(dir, "cut.xml");
@@ -33,14 +36,17 @@ describe("FCP7 XML (xmeml) from Premiere's own export", () => {
   it("is identified as FCP7 XML with its media declaration (live: reported as FCPXML with 0 assets)", async () => {
     const result = await tools.inspect_fcpxml_interchange.handler({ path: xml }) as Result;
     expect(result.data).toMatchObject({
-      format: "FCP7 XML (xmeml)", version: "4", sequenceCount: 1, clipElementCount: 2, assetCount: 1,
-      assets: [{ id: "file-1", name: "Interview.mp4", source: expect.stringContaining("file://localhost") }],
+      format: "FCP7 XML (xmeml)", version: "4", sequenceCount: 1, clipElementCount: 3, assetCount: 2,
+      assets: [
+        { id: "file-1", name: "Interview.mp4", source: expect.stringContaining("file://localhost") },
+        { id: "file-2", name: "Graphic", source: null },
+      ],
     });
   });
 
   it("verifies the pathurl references (live: checked 0 references and still passed)", async () => {
     const result = await tools.verify_fcpxml_media_references.handler({ path: xml, allowed_roots: [dir] }) as Result;
-    expect(result.data).toMatchObject({ checkedReferenceCount: 1, allAvailable: true, references: [{ status: "available", path: media }] });
+    expect(result.data).toMatchObject({ checkedReferenceCount: 1, generatedNoFileCount: 1, allAvailable: true, references: [{ status: "available", path: media }, { name: "Graphic", status: "generated_no_file" }] });
   });
 
   it("warns instead of passing silently when a document has no references", async () => {

@@ -38,7 +38,8 @@ type FakeClip = {
  * One linked video/audio pair over 0-121.6 s. Like Premiere 25.2, a QE razor
  * keeps the left piece linked and leaves the right piece unlinked.
  */
-function host(options: { linkWorks?: boolean } = {}) {
+function host(options: { linkWorks?: boolean; landFramesEarly?: number; formatted?: boolean } = {}) {
+  const razorCalls: string[] = [];
   let ids = 0;
   const time = (seconds: number) => ({ ticks: String(Math.round(seconds * TICKS)), seconds });
   const make = (start: number, end: number): FakeClip => {
@@ -70,8 +71,9 @@ function host(options: { linkWorks?: boolean } = {}) {
   });
   const razorTrack = (list: FakeClip[]) => ({
     razor(timecode: string) {
-      const [h, m, s, f] = timecode.split(":").map(Number);
-      const at = h * 3600 + m * 60 + s + f / FPS;
+      razorCalls.push(timecode);
+      const [h, m, s, f] = timecode.split(/[:;]/).map(Number);
+      const at = h * 3600 + m * 60 + s + (f - (options.landFramesEarly ?? 0)) / FPS;
       const index = list.findIndex((c) => c.start.seconds < at && c.end.seconds > at);
       if (index < 0) return;
       const left = list[index];
@@ -94,12 +96,21 @@ function host(options: { linkWorks?: boolean } = {}) {
       chosen.forEach((c) => { c.group = chosen; });
     },
   };
+  function Time(this: { ticks: string; getFormatted?: (rate: unknown, format: number) => string }) {
+    this.ticks = "0";
+    if (options.formatted) this.getFormatted = function (this: { ticks: string }) {
+      const frames = Math.round(Number(this.ticks) / (TICKS / FPS));
+      const p = (n: number) => String(n).padStart(2, "0");
+      return `${p(Math.floor(frames / (FPS * 3600)))}:${p(Math.floor(frames / (FPS * 60)) % 60)}:${p(Math.floor(frames / FPS) % 60)};${p(frames % FPS)}`;
+    };
+  }
   const context = {
+    Time,
     app: { enableQE: () => {}, project: { activeSequence: seq, sequences: { numSequences: 1, 0: seq } } },
     qe: { project: { getActiveSequence: () => ({ getVideoTrackAt: () => razorTrack(video), getAudioTrackAt: () => razorTrack(audio) }) } },
   };
   mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))));
-  return { video, audio };
+  return { video, audio, razorCalls };
 }
 
 describe("razor_all_tracks keeps linked video and audio linked", () => {
@@ -131,5 +142,21 @@ describe("razor_all_tracks keeps linked video and audio linked", () => {
     const result = await tools.razor_all_tracks.handler({ time_seconds: 10 }) as Result;
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/did not keep 1 linked video\/audio group/);
+  });
+});
+
+describe("razor_all_tracks drop-frame timecode", () => {
+  it("razors with Premiere's own display-format timecode", async () => {
+    const { razorCalls, video } = host({ formatted: true });
+    await expect(tools.razor_all_tracks.handler({ time_seconds: 10 })).resolves.toMatchObject({ success: true, data: { verified: true, timecode: "00:00:10;00" } });
+    expect(razorCalls).toEqual(["00:00:10;00", "00:00:10;00"]);
+    expect(video.map((c) => c.start.seconds)).toEqual([0, 10]);
+  });
+
+  it("reports a cut that lands off the requested frame as unverified", async () => {
+    host({ landFramesEarly: 2 });
+    const result = await tools.razor_all_tracks.handler({ time_seconds: 10 }) as Result;
+    expect(result).toMatchObject({ success: false, data: { outcome: "committed_unverified", verified: false, timelineChanged: true } });
+    expect(result.error).toMatch(/not at the requested frame/);
   });
 });

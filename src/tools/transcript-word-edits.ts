@@ -30,7 +30,7 @@ const HANDLE_FRAMES = { type: "integer", minimum: 0, maximum: 24, description: "
 export function getTranscriptWordEditTools() {
   return {
     plan_filler_word_removal: {
-      description: "Plan word-level filler removal (um, uh, you know...) from a revision-bound word timeline. Returns frame-snapped removal and keep ranges plus apply routes. Local-only; never changes Premiere.",
+      description: "Plan word-level filler removal (um, uh, you know...) from a revision-bound word timeline. Hesitation-sound removal requires a transcript that preserves disfluencies, such as Premiere transcription or verbatim ASR; Whisper's default output omits them. Returns frame-snapped removal and keep ranges plus apply routes. Local-only; never changes Premiere.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
