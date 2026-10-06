@@ -17,6 +17,7 @@ const commandRegistry = Commands.createCommandRegistry({
   ppro,
   Protocol,
   workspace: workspaceBroker,
+  fileExists: (path) => workspaceBroker.fileExists(path),
   events: eventJournal,
   storage: typeof globalThis !== "undefined" ? globalThis.localStorage : null,
   xmp: uxp.xmp && typeof uxp.xmp.XMPMeta === "function"

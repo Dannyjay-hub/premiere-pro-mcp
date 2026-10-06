@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type ItemSnapshot = {
   project_item_id: string;
@@ -63,6 +64,18 @@ function expectedCloneSnapshot(value: CloneArgs["expected_snapshot"]) {
 }
 
 /** A bounded documented-UXP append-only counterpart to a timeline duplicate. */
+const expectedSnapshotSchema = {
+  type: "object",
+  description: "The expected_snapshot object returned by inspect, passed unchanged.", additionalProperties: false,
+  required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "track_item_count", "source"],
+  properties: {
+    project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+    media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 },
+    clip_index: { type: "integer", minimum: 0, maximum: 511 }, track_item_count: { type: "integer", minimum: 1, maximum: 512 },
+    source: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
+  },
+};
+
 export function getUxpCloneWorkflowTools(bridge: UxpWebSocketBridge) {
   return {
     duplicate_track_item_uxp: {
@@ -75,16 +88,7 @@ export function getUxpCloneWorkflowTools(bridge: UxpWebSocketBridge) {
           media_type: { type: "string", enum: ["video", "audio"] },
           track_index: { type: "integer", minimum: 0, maximum: 511 },
           clip_index: { type: "integer", minimum: 0, maximum: 511, description: "The final clip item on the requested track. Inspection rejects a non-final item." },
-          expected_snapshot: {
-            type: "object", additionalProperties: false,
-            required: ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "track_item_count", "source"],
-            properties: {
-              project_guid: { type: "string", minLength: 1, maxLength: 128 }, sequence_id: { type: "string", minLength: 1, maxLength: 128 },
-              media_type: { type: "string", enum: ["video", "audio"] }, track_index: { type: "integer", minimum: 0, maximum: 511 },
-              clip_index: { type: "integer", minimum: 0, maximum: 511 }, track_item_count: { type: "integer", minimum: 1, maximum: 512 },
-              source: { type: "object", additionalProperties: false, required: itemSnapshotRequired, properties: itemSnapshotProperties },
-            },
-          },
+          expected_snapshot: expectedSnapshotSchema,
           confirm_duplicate: { type: "boolean", description: "Must be true for action: apply." },
           operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$", description: "Required replay-safe operation identifier for action: apply." },
         },
@@ -97,7 +101,7 @@ export function getUxpCloneWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: CloneArgs) => {
         const target = { mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index };
-        if (args.action === "inspect") return invoke(bridge, "trackItem.clone.inspect", target);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "trackItem.clone.inspect", target), expectedSnapshotSchema);
         if (args.action === "apply") return invoke(bridge, "trackItem.clone", {
           ...target, expectedSnapshot: expectedCloneSnapshot(args.expected_snapshot),
           confirmDuplicate: args.confirm_duplicate, operationId: args.operation_id,

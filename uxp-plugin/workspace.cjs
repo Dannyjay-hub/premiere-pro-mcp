@@ -291,7 +291,32 @@
       return canonicalCandidate.normalized;
     }
 
-    return { initialize, requestRoot, revoke, status, assertPathAllowed };
+    // Whether a file exists inside the approved folder. A plugin with "request" file access
+    // cannot open arbitrary file: URLs (getEntryWithUrl fails even for files that exist), so
+    // walk from the granted folder Entry. Null means the answer is unavailable here.
+    async function fileExists(value) {
+      const rootPath = nativePathFor(rootEntry);
+      if (!rootEntry || !rootPath || !canWalkGrantedFolder()) return null;
+      let segments;
+      try {
+        segments = relativeSegments(rootPath, value, "path");
+      } catch (_) {
+        return null;
+      }
+      if (!segments.length) return false;
+      let entry = rootEntry;
+      for (let index = 0; index < segments.length; index += 1) {
+        if (!entry || typeof entry.getEntry !== "function") return false;
+        try {
+          entry = await entry.getEntry(segments[index]);
+        } catch (_) {
+          return false;
+        }
+      }
+      return !!(entry && !entry.isFolder);
+    }
+
+    return { initialize, requestRoot, revoke, status, assertPathAllowed, fileExists };
   }
 
   return { createWorkspaceBroker, createCanonicalPathResolver, parseAbsolutePath, isContained, validateLoopbackBridgeUrl, workspaceError };
