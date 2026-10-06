@@ -1,6 +1,6 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { createReadStream, readFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { closeSync, createReadStream, openSync, readFileSync, readSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { extname, join, resolve } from "node:path";
@@ -8,6 +8,37 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { parseEbur128Summary } from "./audio.js";
+
+/**
+ * Whether a PNG header declares an alpha channel (colour type 4 or 6), or null when
+ * the bytes are not a PNG. Premiere's QE still exporters write RGBA with straight
+ * alpha: on 26.5.2 a frame from a half-faded clip kept the clip's colours and carried
+ * the fade only in alpha, so measuring it without compositing showed no fade.
+ */
+export function pngHasAlpha(header: Uint8Array): boolean | null {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (header.length < 26 || signature.some((byte, index) => header[index] !== byte)) return null;
+  if (String.fromCharCode(header[12], header[13], header[14], header[15]) !== "IHDR") return null;
+  const colourType = header[25];
+  return colourType === 4 || colourType === 6;
+}
+
+function pngFileHasAlpha(path: string): boolean | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const header = Buffer.alloc(26);
+    const read = readSync(fd, header, 0, 26, 0);
+    return pngHasAlpha(header.subarray(0, read));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+const STILL_ALPHA_NOTE = "PNG stills keep the sequence's transparency as straight alpha: where no opaque layer covers the frame, pixels are transparent but keep their colour, so a fading clip can look unchanged until the still is composited over black. Composite over black before measuring brightness or comparing with a video export.";
+
 
 const execFileAsync = promisify(execFile);
 const VIDEO_QC_TIMEOUT_MS = 300_000;
@@ -859,7 +890,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_frame: {
-      description: "Export a file-verified still image. QE frame capture may not evaluate keyframed animation like an actual video export; it does not verify temporal curves or playback.",
+      description: "Export a file-verified still image. PNG stills keep the sequence's transparency (straight alpha, reported as hasAlpha); composite them over black before measuring brightness or comparing with a video render. A single still does not verify motion over time, playback or audio.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -884,15 +915,20 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           var res = __exportStillFrame(outputPath, ticks);
           if (!res.ok) return __error(res.error + " [" + res.notes.join("; ") + "]");
 
-          return __result({ exported: true, outputPath: res.path, method: res.method, renderVerified: false, verificationScope: "Output file exists only; still capture does not establish temporal animation, playback or audio. QE exportFramePNG has a reported keyframed-opacity capture artifact on Premiere 25.2.3 macOS; compare an actual short video export." });
+          return __result({ exported: true, outputPath: res.path, method: res.method, renderVerified: false, verificationScope: "Output file exists only; a single still does not establish motion over time, playback or audio." });
         `);
-        return sendCommand(script, { ...bridgeOptions, timeoutMs: 60000 });
+        const result = await sendCommand(script, { ...bridgeOptions, timeoutMs: 60000 });
+        const data = result.success ? (result.data as { outputPath?: string } | undefined) : undefined;
+        if (!data?.outputPath) return result;
+        const hasAlpha = pngFileHasAlpha(data.outputPath);
+        if (hasAlpha === null) return result;
+        return { ...result, data: { ...data, hasAlpha, ...(hasAlpha ? { alphaNote: STILL_ALPHA_NOTE } : {}) } };
       },
     },
 
     export_sequence_review_frames: {
       description:
-        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. Still capture does not verify temporal animation, playback, audio, or editorial quality; QE frames can differ from actual video exports.",
+        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. Still capture does not verify temporal animation, playback, audio, or editorial quality; PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -980,7 +1016,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             frames: frames,
             failures: failures,
             renderVerified: false,
-            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge. Temporal animation, playback, audio, and editorial quality remain unverified; QE still capture can differ from an actual video export."
+            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge. Temporal animation, playback, audio, and editorial quality remain unverified; PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, frameCount * 30000) });
@@ -1108,7 +1144,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             frames: frames,
             failures: failures,
             renderVerified: false,
-            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge at the matched marker start. This reads existing markers and does not prove temporal animation, playback, audio, marker intent, or editorial quality; QE still capture can differ from actual video exports."
+            verificationScope: "Each returned frame path was verified on disk by the Premiere bridge at the matched marker start. This reads existing markers and does not prove temporal animation, playback, audio, marker intent, or editorial quality; PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, limit * 30000) });
@@ -1165,7 +1201,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             trackIndex: ${trackIndex}, requested: count, exported: frames.length,
             complete: frames.length === count, frames: frames, failures: failures,
             renderVerified: false,
-            verificationScope: "Each returned path exists on disk. Still capture samples each selected clip midpoint but does not establish the finished composite or temporal animation. QE still capture can differ from actual video exports; composition and editorial quality require review."
+            verificationScope: "Each returned path exists on disk. Still capture samples each selected clip midpoint but does not establish the finished composite or temporal animation. PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export; composition and editorial quality require review."
           });
         `);
         return sendCommand(script, { ...bridgeOptions, timeoutMs: Math.max(60000, limit * 30000) });
@@ -1427,7 +1463,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     capture_frame: {
-      description: "Capture the current frame and return it as inline image data for the LLM to see. This supports still-image review only; QE capture may differ from actual video exports and cannot verify temporal animation.",
+      description: "Capture the current frame and return it as inline image data for the LLM to see. This supports still-image review only. The PNG keeps the sequence's transparency (hasAlpha); transparent areas may display as white or a checkerboard rather than the black a video render shows.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1473,13 +1509,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
               error: `Captured frame exceeds the ${MAX_CAPTURE_FRAME_BYTES}-byte inline response limit`,
             };
           }
-          const base64 = readFileSync(framePath).toString("base64");
+          const bytes = readFileSync(framePath);
+          const hasAlpha = pngHasAlpha(bytes);
+          const base64 = bytes.toString("base64");
           return {
             success: true,
             data: {
               captured: true,
               renderVerified: false,
-              verificationScope: "Still-image capture only. QE frames may not evaluate animated properties like an actual video export; compare a short actual video export before verifying temporal curves.",
+              verificationScope: "Still-image capture only; a single frame does not verify motion over time, playback or audio.",
+              ...(hasAlpha === null ? {} : { hasAlpha }),
+              ...(hasAlpha ? { alphaNote: STILL_ALPHA_NOTE } : {}),
               mimeType: "image/png",
               base64: base64,
             },

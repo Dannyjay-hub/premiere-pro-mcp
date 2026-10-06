@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the still-capture guidance from #771. Premiere's QE PNG stills are not wrong about keyframes. They are RGBA with straight alpha, so a fading clip keeps its colours and carries the fade only in alpha. On Premiere 26.5.2 macOS, stills composited over black matched an actual H.264 export (58.0 against 58.4 YAVG at mid-fade), and linear, hold and bezier gave different alpha (168, 255 and 189) at the same instant. The earlier "QE stills hold opacity" note came from measuring stills without their alpha channel. `export_frame` and `capture_frame` now report `hasAlpha` from the PNG header with a compositing note, and the client instructions, skills, interpolation receipts and review-frame scopes say to composite stills over black before comparing them with a video export.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
