@@ -723,7 +723,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_edl: {
       description:
-        "Generate a CMX 3600 EDL for one video or audio track of a sequence from Premiere timeline readback (cuts, reels, source/record timecode, M2 lines for retimed clips), self-validate it, and return it inline or write it inside an approved workspace. Premiere is only read; this is not a Premiere-native export.",
+        "Generate a CMX 3600 EDL for one video or audio track of a sequence from Premiere timeline readback (cuts, reels, source/record timecode, M2 lines for retimed clips), self-validate it, and return it inline or write it inside an approved workspace. Premiere is only read; this is not a Premiere-native export. Long sequences can use a longer timeout (default 30 minutes).",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -740,6 +740,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           include_clip_name_comments: { type: "boolean", description: "Emit '* FROM CLIP NAME:' comments (default true)." },
           output_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Optional absolute .edl path to write. Requires approved_workspace_path; the file must not already exist. When omitted the EDL text is returned inline." },
           approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path. Required with output_path." },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for Premiere timeline readback (default: 30 minutes)." },
         },
       },
       handler: async (args: {
@@ -755,9 +756,12 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
         include_clip_name_comments?: boolean;
         output_path?: string;
         approved_workspace_path?: string;
+        timeout_minutes?: number;
       }): Promise<CommandResult> => {
         const trackType = args.track_type ?? "video";
         const trackIndex = args.track_index ?? 0;
+        const timeoutMinutes = args.timeout_minutes ?? 30;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) return { success: false, error: "timeout_minutes must be between 1 and 240" };
         if (!EDL_TRACK_TYPES.includes(trackType)) return { success: false, error: `track_type must be one of: ${EDL_TRACK_TYPES.join(", ")}` };
         if (!isInteger(trackIndex, 0, 255)) return { success: false, error: "track_index must be an integer from 0 through 255." };
         let target: string | null = null;
@@ -824,7 +828,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             tracks: [{ type: "${trackType}", index: trackIndex, name: track.name, clips: clips }]
           });
         `);
-        const readback = await sendCommand(script, bridgeOptions);
+        const readback = await sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 });
         if (!readback.success) return readback;
         try {
           const exported = buildCmx3600Edl(readback.data, {

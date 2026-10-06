@@ -187,6 +187,8 @@ export interface BridgeOptions {
    * so a closed host is reported immediately instead of after the full timeout.
    */
   requireHeartbeat?: boolean;
+  /** Mark a command as mutating so a queued-behind-busy timeout can prove it was not applied. */
+  mutating?: boolean;
 }
 
 export interface BridgeHelpers {
@@ -575,7 +577,7 @@ async function sendCommandUnchecked(
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
 
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true);
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -640,7 +642,7 @@ async function sendRawCommandUnchecked(
     writeFileSync(stagedCmdFile, `${ensureHelpers(tempDir, options?.helpers)}
 ${script}`, "utf-8");
     renameSync(stagedCmdFile, cmdFile);
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel);
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -658,6 +660,7 @@ async function pollForResponse(
   timeoutMs: number,
   hostLabel = "Premiere Pro",
   mutationOnTimeout = false,
+  mutating = false,
 ): Promise<CommandResult> {
   const start = Date.now();
   // The CEP plugin writes busy_<id>.json every ~2s while evalScript is in flight.
@@ -759,7 +762,9 @@ async function pollForResponse(
               ? `${hostLabel} accepted the edit but stopped responding; the timeline state is unknown and ${hostLabel} may still be applying it. Wait until the host is idle, inspect the timeline, then decide whether a retry is safe.`
               :
               `The CEP panel appears stuck: its busy marker for this command has not changed for ${Math.round(busyAgeMs / 1000)} s. ` +
-              `Reload it in ${hostLabel} (Window > Extensions > MCP Bridge). The command may or may not have run; check ${hostLabel} before retrying.`,
+              `Reload it in ${hostLabel} (Window > Extensions > MCP Bridge). ` +
+              (mutating ? `The mutation outcome is unknown; inspect ${hostLabel} before retrying.` : `The command may or may not have run; check ${hostLabel} before retrying.`),
+            ...(mutating ? { data: { mutationOutcome: "unknown", timelineChanged: null } } : {}),
           });
           return;
         }
@@ -767,6 +772,9 @@ async function pollForResponse(
           finish({ success: false, error: lastResponseParseError });
           return;
         }
+        const cmdFile = join(dirname(resFile), basename(resFile).replace(/^res_/, "cmd_").replace(/\.json$/, ".jsx"));
+        const queuedState = cancelQueuedBehindLivePanel(cmdFile, busyFile, hardCapMs);
+        const panelHostName = hostLabel === "Premiere Pro" ? "Premiere" : hostLabel;
         finish({
           success: false,
           ...(mutationOnTimeout && sawBusy ? { data: { mutationOutcome: "unknown", timelineChanged: null } } : {}),
@@ -775,9 +783,22 @@ async function pollForResponse(
               ? `${hostLabel} accepted the edit but did not finish within ${elapsed}ms. The timeline state is unknown; ${hostLabel} may still be applying it. Wait until the host is idle, inspect the timeline, and only then consider a retry.`
               : `${hostLabel} accepted the script but did not finish within ${elapsed}ms. ` +
               `A modal dialog or a long analysis inside ${hostLabel} is likely blocking the scripting engine — ` +
-              `check the ${hostLabel} window and dismiss any open dialog. ` +
-              `(The result, if any, will be discarded.)`
-            : `Command timed out after ${timeoutMs}ms. Is the MCP connector panel running in ${hostLabel}?`,
+              `check the ${hostLabel} window and dismiss any open dialog.` +
+              (mutating ? ` The mutation outcome is unknown; inspect the timeline before retrying.` : ` The result, if any, will be discarded.`)
+              : queuedState === "cancelled"
+              ? `${panelHostName} is busy or blocked by an earlier command (for example an export or a dialog). This command was not run; retry when ${panelHostName} is responsive.`
+              : queuedState === "claim_race"
+                ? `${hostLabel} is busy with an earlier command, and Premiere claimed this command while its timeout was expiring. Its outcome is unknown; inspect ${hostLabel} before retrying.`
+                : mutating
+                  ? `The mutation did not return within ${timeoutMs}ms. Its outcome is unknown; inspect ${hostLabel} before retrying.`
+              : `Command timed out after ${timeoutMs}ms. Is the MCP connector panel running in ${hostLabel}?`,
+          ...(mutating && queuedState === "cancelled"
+            ? { data: { mutationOutcome: "not_applied", timelineChanged: false } }
+            : mutating && (sawBusy || queuedState === "claim_race")
+              ? { data: { mutationOutcome: "unknown", timelineChanged: null } }
+              : mutating
+                ? { data: { mutationOutcome: "unknown", timelineChanged: null } }
+              : {}),
         });
         return;
       }
@@ -791,6 +812,42 @@ async function pollForResponse(
     stopWatching = watchResponseFile(resFile, check);
     check();
   });
+}
+
+function cancelQueuedBehindLivePanel(
+  cmdFile: string,
+  ownBusyFile: string,
+  hardCapMs: number,
+): "cancelled" | "claim_race" | "none" {
+  // The panel atomically renames a command to `.claimed` immediately before
+  // execution. A mere existence check races that rename, so claim the opposite
+  // rename ourselves: success proves the panel did not pick up this command.
+  if (!existsSync(cmdFile)) return "none";
+  try {
+    const directory = dirname(ownBusyFile);
+    const now = Date.now();
+    const anotherCommandIsWithinHardCap = readdirSync(directory).some((name) => {
+      if (!name.startsWith("busy_") || !name.endsWith(".json")) return false;
+      const otherBusyFile = join(directory, name);
+      if (otherBusyFile === ownBusyFile) return false;
+      try { return now - statSync(otherBusyFile).mtimeMs < hardCapMs; }
+      catch { return false; }
+    });
+    const heartbeat = getBridgeLiveness({ tempDir: directory }, now);
+    const panelHeartbeatIsRecent = heartbeat.state === "running" || heartbeat.state === "waiting";
+    if (!anotherCommandIsWithinHardCap && !panelHeartbeatIsRecent) return "none";
+    const cancelledFile = `${cmdFile}.cancelled`;
+    try {
+      renameSync(cmdFile, cancelledFile);
+      safeUnlink(cancelledFile);
+      return "cancelled";
+    } catch {
+      // CEP claimed the command first. It may still run, so timeout is unknown.
+      return "claim_race";
+    }
+  } catch {
+    return "none";
+  }
 }
 
 function safeUnlink(path: string): void {

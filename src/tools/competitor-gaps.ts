@@ -636,6 +636,9 @@ export function getCompetitorGapTools(
           preset_path: { type: "string", minLength: 1, maxLength: 4096, description: "Optional .epr preset path to check." },
           require_non_empty_timeline: { type: "boolean", description: "Treat an empty sequence as a blocking error (defaults to true)." },
           check_gaps: { type: "boolean", description: "Report gaps on populated tracks as warnings (defaults to true)." },
+          per_track_gaps: { type: "boolean", description: "Include the per-track gap list in a bounded page (default false); composite black/dead-air checks remain available without it." },
+          gap_offset: { type: "integer", minimum: 0, description: "Zero-based offset into the optional per-track gap list (default 0)." },
+          gap_limit: { type: "integer", minimum: 1, maximum: 2000, description: "Maximum per-track gaps to return when per_track_gaps is true (default 200)." },
         },
       },
       handler: async (args: {
@@ -644,9 +647,17 @@ export function getCompetitorGapTools(
         preset_path?: string;
         require_non_empty_timeline?: boolean;
         check_gaps?: boolean;
+        per_track_gaps?: boolean;
+        gap_offset?: number;
+        gap_limit?: number;
       }) => {
         const requireNonEmpty = args.require_non_empty_timeline !== false;
-        const checkGaps = args.check_gaps !== false;
+        const perTrackGaps = args.per_track_gaps === true;
+        const checkGaps = args.check_gaps !== false || perTrackGaps;
+        const gapOffset = args.gap_offset ?? 0;
+        const gapLimit = args.gap_limit ?? 200;
+        if (!Number.isSafeInteger(gapOffset) || gapOffset < 0) return { success: false, error: "gap_offset must be a non-negative integer" };
+        if (!Number.isSafeInteger(gapLimit) || gapLimit < 1 || gapLimit > 2000) return { success: false, error: "gap_limit must be an integer from 1 through 2000" };
         const sequenceLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found: ${escapeForExtendScript(args.sequence_id)}");`
           : "var seq = app.project.activeSequence; if (!seq) return __error(\"No active sequence\");";
@@ -658,7 +669,11 @@ export function getCompetitorGapTools(
           var warnings = [];
           var usedSources = {};
           var offlineMedia = [];
-          var gaps = [];
+          var trackGaps = [];
+          var videoTrackGaps = [];
+          var audioTrackGaps = [];
+          var videoTrackCount = 0;
+          var audioTrackCount = 0;
           var totalVideoClips = 0;
           var totalAudioClips = 0;
           function secondsOf(value) {
@@ -671,16 +686,26 @@ export function getCompetitorGapTools(
             } catch (timeError) {}
             return NaN;
           }
+          var duration = secondsOf(seq.end);
+          var checkStart = 0;
+          var checkEnd = duration;
+          try { var inPoint = __sequencePointSeconds(seq.getInPoint()); if (isFinite(inPoint) && inPoint > checkStart) checkStart = inPoint; } catch (inError) {}
+          try { var outPoint = __sequencePointSeconds(seq.getOutPoint()); if (isFinite(outPoint) && outPoint > checkStart && outPoint < checkEnd) checkEnd = outPoint; } catch (outError) {}
           function inspectTracks(tracks, trackType) {
             for (var t = 0; t < tracks.numTracks; t++) {
               var track = tracks[t];
-              var cursor = 0;
+              var populated = track.clips.numItems > 0;
+              if (!populated) continue;
+              if (trackType === "video") videoTrackCount++; else audioTrackCount++;
+              var cursor = checkStart;
               for (var c = 0; c < track.clips.numItems; c++) {
                 var clip = track.clips[c];
-                var start = __ticksToSeconds(clip.start.ticks);
-                var end = __ticksToSeconds(clip.end.ticks);
-                if (${checkGaps ? "true" : "false"} && start - cursor > 0.05) {
-                  gaps.push({ trackType: trackType, trackIndex: t, startSeconds: cursor, endSeconds: start, durationSeconds: start - cursor });
+                var start = Math.min(checkEnd, Math.max(checkStart, __ticksToSeconds(clip.start.ticks)));
+                var end = Math.min(checkEnd, __ticksToSeconds(clip.end.ticks));
+                if (${checkGaps ? "true" : "false"} && start - cursor > 0.001 && cursor < checkEnd) {
+                  var gap = { trackType: trackType, trackIndex: t, trackLabel: (trackType === "video" ? "V" : "A") + (t + 1), startSeconds: cursor, endSeconds: start, durationSeconds: start - cursor };
+                  trackGaps.push(gap);
+                  if (trackType === "video") videoTrackGaps.push({ startSeconds: cursor, endSeconds: start }); else audioTrackGaps.push({ startSeconds: cursor, endSeconds: start });
                 }
                 if (end > cursor) cursor = end;
                 if (trackType === "video") totalVideoClips++; else totalAudioClips++;
@@ -696,6 +721,11 @@ export function getCompetitorGapTools(
                   }
                 } catch (sourceError) {}
               }
+              if (${checkGaps ? "true" : "false"} && checkEnd - cursor > 0.001) {
+                var tailGap = { trackType: trackType, trackIndex: t, trackLabel: (trackType === "video" ? "V" : "A") + (t + 1), startSeconds: cursor, endSeconds: checkEnd, durationSeconds: checkEnd - cursor };
+                trackGaps.push(tailGap);
+                if (trackType === "video") videoTrackGaps.push({ startSeconds: cursor, endSeconds: checkEnd }); else audioTrackGaps.push({ startSeconds: cursor, endSeconds: checkEnd });
+              }
             }
           }
           inspectTracks(seq.videoTracks, "video");
@@ -707,8 +737,39 @@ export function getCompetitorGapTools(
           if (totalVideoClips === 0) warnings.push({ code: "NO_VIDEO_CLIPS", message: "The sequence has no video clips." });
           if (totalAudioClips === 0) warnings.push({ code: "NO_AUDIO_CLIPS", message: "The sequence has no audio clips." });
           if (offlineMedia.length) errors.push({ code: "OFFLINE_MEDIA", message: "One or more media items used by this sequence are offline.", items: offlineMedia });
-          if (${checkGaps ? "true" : "false"} && gaps.length) warnings.push({ code: "TIMELINE_GAPS", message: "Gaps were found on populated tracks; verify that they are intentional.", gaps: gaps });
-          var duration = secondsOf(seq.end);
+          function commonGaps(trackSets) {
+            if (!trackSets.length) return [];
+            var common = trackSets[0];
+            for (var si = 1; si < trackSets.length; si++) {
+              var next = [];
+              for (var gi = 0; gi < common.length; gi++) for (var gj = 0; gj < trackSets[si].length; gj++) {
+                var left = Math.max(common[gi].startSeconds, trackSets[si][gj].startSeconds);
+                var right = Math.min(common[gi].endSeconds, trackSets[si][gj].endSeconds);
+                if (right - left > 0.001) next.push({ startSeconds: left, endSeconds: right, durationSeconds: right - left });
+              }
+              common = next;
+            }
+            return common;
+          }
+          var videoSets = [];
+          var audioSets = [];
+          for (var tg = 0; tg < trackGaps.length; tg++) {
+            var targetSets = trackGaps[tg].trackType === "video" ? videoSets : audioSets;
+            var targetIndex = trackGaps[tg].trackIndex;
+            if (!targetSets[targetIndex]) targetSets[targetIndex] = [];
+            targetSets[targetIndex].push({ startSeconds: trackGaps[tg].startSeconds, endSeconds: trackGaps[tg].endSeconds });
+          }
+          var compactVideoSets = []; for (var vs = 0; vs < seq.videoTracks.numTracks; vs++) if (seq.videoTracks[vs].clips.numItems > 0) compactVideoSets.push(videoSets[vs] || []);
+          var compactAudioSets = []; for (var aus = 0; aus < seq.audioTracks.numTracks; aus++) if (seq.audioTracks[aus].clips.numItems > 0) compactAudioSets.push(audioSets[aus] || []);
+          var compositeVideoGaps = commonGaps(compactVideoSets);
+          var compositeAudioGaps = commonGaps(compactAudioSets);
+          if (${checkGaps ? "true" : "false"} && compositeVideoGaps.length) warnings.push({ code: "TIMELINE_GAPS", message: "All populated video tracks are empty during these intervals (black frames); verify that they are intentional.", trackType: "video", gaps: compositeVideoGaps });
+          if (${checkGaps ? "true" : "false"} && compositeAudioGaps.length) warnings.push({ code: "TIMELINE_GAPS", message: "All populated audio tracks are empty during these intervals (dead air); verify that they are intentional.", trackType: "audio", gaps: compositeAudioGaps });
+          var perTrackGapPage = null;
+          if (${perTrackGaps ? "true" : "false"}) {
+            var page = trackGaps.slice(${gapOffset}, ${gapOffset + gapLimit});
+            perTrackGapPage = { total: trackGaps.length, offset: ${gapOffset}, limit: ${gapLimit}, returned: page.length, truncated: ${gapOffset + gapLimit} < trackGaps.length, nextOffset: ${gapOffset + gapLimit} < trackGaps.length ? ${gapOffset + gapLimit} : null, gaps: page };
+          }
           if (!isFinite(duration) || duration <= 0) errors.push({ code: "ZERO_DURATION", message: "The sequence has no readable positive duration." });
           var presetPath = ${presetPath ? presetPath : "null"};
           if (presetPath) {
@@ -736,12 +797,16 @@ export function getCompetitorGapTools(
               sequenceId: seq.sequenceID,
               sequenceName: seq.name,
               durationSeconds: duration,
+              checkedRange: { inSeconds: checkStart, outSeconds: checkEnd },
+              compositeVideoGapCount: compositeVideoGaps.length,
+              compositeAudioGapCount: compositeAudioGaps.length,
+            ${perTrackGaps ? "perTrackGapPage: perTrackGapPage," : ""}
               videoTrackCount: seq.videoTracks.numTracks,
               audioTrackCount: seq.audioTracks.numTracks,
               videoClipCount: totalVideoClips,
               audioClipCount: totalAudioClips,
               offlineMediaCount: offlineMedia.length,
-              gapCount: gaps.length
+              gapCount: trackGaps.length
             },
             checked: {
               requireNonEmptyTimeline: ${requireNonEmpty ? "true" : "false"},

@@ -76,7 +76,7 @@ export function getAdvancedTools(
         // Budget 400ms per mover plus 30s startup/readback headroom, capped at 15 minutes.
         const timeoutMs = Math.max(bridgeOptions.timeoutMs ?? 30000, Math.min(900000, 30000 + movers * 400));
         const script = buildToolScript(rippleDeleteScriptBody({ nodeId, scope, rangeDelete, dryRun: false, allowLargeRipple: args.allow_large_ripple === true, largeRippleThreshold: threshold }));
-        return sendCommand(script, { ...bridgeOptions, timeoutMs, mutationOnTimeout: true });
+        return sendCommand(script, { ...bridgeOptions, timeoutMs, mutationOnTimeout: true, mutating: true });
       },
     },
 

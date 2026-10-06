@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Transition receipts distinguish verified placement from handle-limited duration, mark each deviating placement, and count duration deviations. Premiere-built title copies report their application-support location and are documented as user-managed files that must not be removed while any project references them.
 - Filler-removal guidance explains that hesitation sounds require transcripts that preserve disfluencies; Whisper's default output omits them.
 
+- FCP XML export receipts parse Premiere's BOM-prefixed Translation Report issue lines, bound effect details while reporting truncation, and wait for the XML size and modification time to stabilize before reporting its size.
+- CEP command timeouts cancel still-unclaimed work when another recent busy marker or connector heartbeat shows Premiere is blocked; mutating commands report `not_applied`, while claimed work with a fresh busy marker continues waiting.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
@@ -44,6 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `encode_project_item`, `encode_file`, and `manage_proxies` `create` no longer call `app.encoder.startBatch()` after queueing. That API starts every ready Adobe Media Encoder job, including unrelated jobs already in the queue. Batch start is now opt-in with `start_batch: true`, matching `add_to_render_queue`. Use `start_batch_encode` to start the queue later.
 - `ripple_delete`, ripple removal in `remove_from_timeline`, and rippling `apply_edit_plan` removals shift clips with `TrackItem.move()` and single-pass per-track lookups. The contributor measured one pause cut on Premiere 25.2.3 macOS dropping from about 31 minutes to about 3 on a 2-hour, 1,490-clip podcast sequence. Ripples that would move more than 400 clips refuse before mutation with a count and time estimate unless `allow_large_ripple` is set, host waits scale with the work without shortening a longer configured timeout, and an edit that times out after Premiere accepted it reports an unknown timeline state instead of a plain failure.
 - `trim_clip`, `set_clip_duration`, `slip_edit`, `roll_edit`, and `slide_edit` no longer refuse every unlinked clip by default. On Premiere 25.2.3 `getLinkedItems()` returns `null` (without throwing) for a clip with no linked partner, which these tools treated as unreadable linkage; it now means "no partners", while throwing or malformed collections still refuse. `roll_edit` and `slide_edit` also accept the numeric `0` that `isSpeedReversed()` returns for a forward clip on that host (`1`/`true` still refuse), so they no longer refuse every clip there.
+
+### Changed
+
+- Long-host receipts detect FCP Translation Report modals and report written XML/OMF as committed_unverified after host timeout; export preflight reports composite black/dead-air intervals within sequence In/Out with optional paged per-track details; media, ripple, and marker readbacks include generated-no-file classification, 1-based track labels, marker GUID and color. Queued commands now cancel atomically behind a fresh busy operation when possible, distinguishing not_applied from unknown mutation outcomes.
 
 ## [1.19.0] - 2026-10-02
 

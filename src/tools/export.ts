@@ -1,6 +1,6 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { createReadStream, readFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, unlinkSync, existsSync, statSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { extname, join, resolve } from "node:path";
@@ -13,6 +13,209 @@ const execFileAsync = promisify(execFile);
 const VIDEO_QC_TIMEOUT_MS = 300_000;
 const MAX_FAILURE_DIAGNOSTIC_LENGTH = 4_096;
 export const MAX_CAPTURE_FRAME_BYTES = 8 * 1024 * 1024;
+
+const FCP_TRANSLATION_REPORT_LINE_LIMIT = 40;
+const FCP_TRANSLATION_REPORT_ISSUE_LIMIT = 100;
+const FCP_TRANSLATION_OUTPUT_STABLE_MS = 500;
+
+export function parseFcpTranslationReport(contents: string, lineLimit = Number.MAX_SAFE_INTEGER): {
+  lines: string[];
+  issues: Array<{
+    kind?: "effect" | "transition" | "synthetic_item" | "unparsed";
+    sequence?: string | null;
+    timecode?: string;
+    trackType?: "video" | "audio";
+    trackNumber?: number;
+    track?: string | null;
+    effect?: string | null;
+    effectIsGuid?: boolean;
+    clip?: string | null;
+    item?: string;
+    detail?: string;
+    transition?: string;
+    substitute?: string;
+    line?: string;
+  }>;
+  totalIssueLines: number;
+  issueCount: number;
+  parsedIssueCount: number;
+  issuesTruncated: boolean;
+} {
+  const allLines = contents.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const boundedLineLimit = Math.max(0, lineLimit);
+  const lines = allLines.slice(0, Math.min(FCP_TRANSLATION_REPORT_LINE_LIMIT, boundedLineLimit));
+  let sequence: string | null = null;
+  let track: string | null = null;
+  let clip: string | null = null;
+  const issues: Array<{
+    kind?: "effect" | "transition" | "synthetic_item" | "unparsed";
+    sequence?: string | null;
+    timecode?: string;
+    trackType?: "video" | "audio";
+    trackNumber?: number;
+    track?: string | null;
+    effect?: string | null;
+    effectIsGuid?: boolean;
+    clip?: string | null;
+    item?: string;
+    detail?: string;
+    transition?: string;
+    substitute?: string;
+    line?: string;
+  }> = [];
+  let totalIssueLines = 0;
+  let parsedIssueCount = 0;
+  const guidPattern = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+  const reportLines = allLines.slice(0, boundedLineLimit);
+  const pushIssue = (issue: (typeof issues)[number], parsed: boolean) => {
+    totalIssueLines += 1;
+    if (parsed) parsedIssueCount += 1;
+    if (issues.length < FCP_TRANSLATION_REPORT_ISSUE_LIMIT) issues.push(issue);
+  };
+  for (let index = 0; index < reportLines.length; index += 1) {
+    const line = reportLines[index];
+    if (/^\s*Translation issue:\s*$/i.test(line)) {
+      let detailIndex = index + 1;
+      while (detailIndex < reportLines.length && !reportLines[detailIndex].trim()) detailIndex += 1;
+      const detail = reportLines[detailIndex];
+      if (detail !== undefined) index = detailIndex;
+      const synthetic = detail?.match(/^\s*Synthetic Item \((.*?)\) not translated,\s*(.*?)\.?\s*$/i);
+      const premiere = detail?.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
+      const transition = detail?.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Transition <(.*?)> not translated,\s*(.*?) used instead\.?\s*$/i);
+      if (synthetic) {
+        pushIssue({ kind: "synthetic_item", item: synthetic[1], detail: synthetic[2] }, true);
+      } else if (transition) {
+        pushIssue({ kind: "transition", sequence: transition[1], timecode: transition[2], trackType: transition[3].toLowerCase() as "video" | "audio",
+          trackNumber: Number(transition[4]), track: `${transition[3].toLowerCase()} track ${transition[4]}`,
+          transition: transition[5], substitute: transition[6].trim() }, true);
+      } else if (premiere) {
+        const effect = premiere[5];
+        pushIssue({ kind: "effect", sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
+          trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
+          effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6] }, true);
+      } else {
+        pushIssue({ kind: "unparsed", line: detail?.trim() || line.trim() }, false);
+      }
+      continue;
+    }
+    const premiere = line.match(/^\s*Sequence <(.*?)> at (.*?), (video|audio) track (\d+): Effect <(.*?)> on Clip <(.*?)> not translated\.?\s*$/i);
+    if (premiere) {
+      const effect = premiere[5];
+      pushIssue({ kind: "effect", sequence: premiere[1], timecode: premiere[2], trackType: premiere[3].toLowerCase() as "video" | "audio",
+        trackNumber: Number(premiere[4]), track: `${premiere[3].toLowerCase()} track ${premiere[4]}`,
+        effect, effectIsGuid: guidPattern.test(effect), clip: premiere[6] }, true);
+      continue;
+    }
+    const field = (pattern: RegExp) => line.match(pattern)?.[1]?.trim().replace(/^['"“]|['"”]$/g, "") ?? null;
+    const nextSequence = field(/^\s*sequence(?:\s+name)?\s*[:=]\s*(.+)$/i);
+    if (nextSequence) { sequence = nextSequence; track = null; clip = null; }
+    const nextTrack = field(/^\s*((?:(?:video|audio)\s+)?track(?:\s+name)?\s*[:=]\s*.+)$/i);
+    if (nextTrack) { track = nextTrack; clip = null; }
+    clip = field(/^\s*clip(?:\s+name)?\s*[:=]\s*(.+)$/i) ?? clip;
+    const effect = field(/^\s*(?:untranslated\s+)?effect\s*[:=]\s*(.+)$/i)
+      ?? field(/^\s*(.+?)\s+(?:could not be translated|is not supported|was not translated)\.?\s*$/i);
+    if (effect) {
+      pushIssue({ kind: "effect", sequence, track, effect, effectIsGuid: guidPattern.test(effect), clip }, true);
+    }
+  }
+  return { lines, issues, totalIssueLines, issueCount: totalIssueLines, parsedIssueCount, issuesTruncated: totalIssueLines > issues.length };
+}
+
+// Windows file times come from a coarse clock (about 15.6 ms ticks) and FAT/exFAT
+// volumes store 2 s steps, so a report written just after startedAt can carry an
+// earlier mtime. Allow that much slack when deciding a report is from this export.
+const REPORT_MTIME_SLACK_MS = 2000;
+
+function freshFcpTranslationReport(outputPath: string, startedAt: number): { path: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null {
+  const directory = resolve(outputPath, "..");
+  try {
+    const reportName = readdirSync(directory)
+      .filter((name) => /^FCP Translation Results .*\.txt$/i.test(name))
+      .map((name) => ({ path: resolve(directory, name), snapshot: fileSnapshot(resolve(directory, name)) }))
+      .filter((entry) => entry.snapshot.exists && entry.snapshot.mtimeMs >= startedAt - REPORT_MTIME_SLACK_MS)
+      .sort((left, right) => right.snapshot.mtimeMs - left.snapshot.mtimeMs)[0];
+    if (!reportName) return null;
+    return { path: reportName.path, parsed: parseFcpTranslationReport(readFileSync(reportName.path, "utf8")) };
+  } catch { return null; }
+}
+
+function attachTranslationReport(result: any, outputPath: string, startedAt: number): any {
+  if (!result?.success || !result.data || typeof result.data !== "object") return result;
+  const report = freshFcpTranslationReport(outputPath, startedAt);
+  if (!report) return result;
+  const { parsed } = report;
+  const data = {
+    ...result.data,
+    translationReportPath: report.path,
+    translationReportLines: parsed.lines,
+    untranslatedEffects: parsed.issues,
+    translationReportIssueLines: parsed.issueCount,
+    issueCount: parsed.issueCount,
+    parsedIssueCount: parsed.parsedIssueCount,
+    untranslatedEffectsTruncated: parsed.issuesTruncated,
+    hostBlockedByModal: false,
+    ...(parsed.issueCount > 0 ? { warning: `${parsed.issueCount} item(s) in the FCP Translation Report were not translated.` } : {}),
+  };
+  return { ...result, data };
+}
+
+function fileSnapshot(filePath: string): { exists: boolean; size: number; mtimeMs: number } {
+  try {
+    const stat = statSync(filePath);
+    return { exists: stat.isFile(), size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch { return { exists: false, size: 0, mtimeMs: 0 }; }
+}
+
+function changedOutput(filePath: string, before: ReturnType<typeof fileSnapshot>): ReturnType<typeof fileSnapshot> | null {
+  const after = fileSnapshot(filePath);
+  return after.exists && (!before.exists || after.size !== before.size || after.mtimeMs !== before.mtimeMs) ? after : null;
+}
+
+function isBridgeTimeout(error: string | undefined): boolean {
+  return typeof error === "string" && /timed?\s*out|not finish within|panel appears stuck/i.test(error);
+}
+
+async function waitForFcpTranslationDialog(
+  outputPath: string,
+  startedAt: number,
+  before: ReturnType<typeof fileSnapshot>,
+  isCommandPending: () => boolean,
+): Promise<{ output: ReturnType<typeof fileSnapshot>; reportPath: string; parsed: ReturnType<typeof parseFcpTranslationReport> } | null> {
+  const directory = resolve(outputPath, "..");
+  let stableSince: number | null = null;
+  let lastStableSnapshot: ReturnType<typeof fileSnapshot> | null = null;
+  let lastReportPath: string | null = null;
+  while (isCommandPending()) {
+    const output = changedOutput(outputPath, before);
+    if (output) {
+      let names: string[] = [];
+      try { names = readdirSync(directory); } catch { /* output might be on a transient volume */ }
+      const reportName = names.find((name) => /^FCP Translation Results .*\.txt$/i.test(name)
+        && fileSnapshot(resolve(directory, name)).mtimeMs >= startedAt - REPORT_MTIME_SLACK_MS);
+      if (reportName) {
+        const reportPath = resolve(directory, reportName);
+        const current = fileSnapshot(outputPath);
+        const now = Date.now();
+        if (!current.exists) {
+          stableSince = null;
+          lastStableSnapshot = null;
+        } else if (lastStableSnapshot && current.size === lastStableSnapshot.size && current.mtimeMs === lastStableSnapshot.mtimeMs && reportPath === lastReportPath) {
+          if (stableSince !== null && now - stableSince >= FCP_TRANSLATION_OUTPUT_STABLE_MS) {
+            let contents = "";
+            try { contents = readFileSync(reportPath, "utf8"); } catch { /* retain modal detection with empty bounded details */ }
+            return { output: current, reportPath, parsed: parseFcpTranslationReport(contents) };
+          }
+        } else {
+          stableSince = now;
+          lastStableSnapshot = current;
+          lastReportPath = reportPath;
+        }
+      }
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+  return null;
+}
 
 export type ConformanceStatus = "pass" | "fail" | "not_evaluated";
 
@@ -1173,7 +1376,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_as_fcp_xml: {
-      description: "Export the active sequence as a Final Cut Pro XML file. Fails when Premiere writes no file or leaves a pre-existing output unchanged.",
+      description: "Export the active sequence as a Final Cut Pro XML file. Sequences with effects FCP XML cannot represent can make Premiere show a Translation Report modal after writing the XML; dismiss it in Premiere before any queued command can run. Detects the written XML and fresh report if the modal blocks the host. Default wait is 60 minutes for long sequences.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1181,10 +1384,17 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Full output file path (e.g., '/Users/me/export.xml')",
           },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for the host (default: 60 minutes for long sequences)." },
         },
         required: ["output_path"],
       },
-      handler: async (args: { output_path: string }) => {
+      handler: async (args: { output_path: string; timeout_minutes?: number }) => {
+        const timeoutMinutes = args.timeout_minutes ?? 60;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
+          return { success: false, error: "timeout_minutes must be between 1 and 240" };
+        }
+        const outputBefore = fileSnapshot(args.output_path);
+        const startedAt = Date.now();
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1206,7 +1416,41 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           }
           return __result({ exported: true, verified: true, outputPath: outputFile.fsName, format: "FCP XML" });
         `);
-        return sendCommand(script, bridgeOptions);
+        let commandPending = true;
+        const command = sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 })
+          .finally(() => { commandPending = false; });
+        const modal = waitForFcpTranslationDialog(args.output_path, startedAt, outputBefore, () => commandPending);
+        const first = await Promise.race([
+          command.then((result) => ({ kind: "command" as const, result })),
+          modal.then((details) => details ? ({ kind: "modal" as const, details }) : new Promise<never>(() => {})),
+        ]);
+        if (first.kind === "modal") {
+          return { success: true, data: {
+            outcome: "committed_unverified",
+            verified: false,
+            xmlWritten: true,
+            xmlSizeBytes: first.details.output.size,
+            translationReportPath: first.details.reportPath,
+            translationReportLines: first.details.parsed.lines,
+            untranslatedEffects: first.details.parsed.issues,
+            translationReportIssueLines: first.details.parsed.issueCount,
+            issueCount: first.details.parsed.issueCount,
+            parsedIssueCount: first.details.parsed.parsedIssueCount,
+            untranslatedEffectsTruncated: first.details.parsed.issuesTruncated,
+            ...(first.details.parsed.issueCount > 0 ? { warning: `${first.details.parsed.issueCount} item(s) in the FCP Translation Report were not translated.` } : {}),
+            hostBlockedByModal: true,
+            message: "Premiere wrote the XML and opened a Translation Report dialog. Dismiss the dialog in Premiere before any other command can run; the export receipt is committed_unverified because Premiere has not returned its final result.",
+          } };
+        }
+        if (!first.result.success && isBridgeTimeout(first.result.error)) {
+          const output = changedOutput(args.output_path, outputBefore);
+          if (output) return { success: true, data: {
+            outcome: "committed_unverified", verified: false, xmlWritten: true, xmlSizeBytes: output.size,
+            hostBlockedByModal: false,
+            message: "Premiere wrote the XML, but the host did not return a verified export receipt before timeout. Inspect the file before relying on it.",
+          } };
+        }
+        return attachTranslationReport(first.result, args.output_path, startedAt);
       },
     },
 
@@ -1493,7 +1737,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
     },
 
     export_omf: {
-      description: "Export the active sequence as an OMF file (Open Media Framework, for audio post-production)",
+      description: "Export the active sequence as an OMF file (Open Media Framework, for audio post-production). Long sequences can use a longer wait (default 60 minutes); if Premiere writes the file but times out, the receipt includes its size as committed_unverified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1529,6 +1773,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: "Include pan information in the OMF (default: false)",
           },
+          timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for Premiere to write the OMF (default: 60 minutes for long sequences)." },
         },
         required: ["output_path"],
       },
@@ -1541,7 +1786,13 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         trim_audio_files?: boolean;
         handle_frames?: number;
         include_pan?: boolean;
+        timeout_minutes?: number;
       }) => {
+        const timeoutMinutes = args.timeout_minutes ?? 60;
+        if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 240) {
+          return { success: false, error: "timeout_minutes must be between 1 and 240" };
+        }
+        const outputBefore = fileSnapshot(args.output_path);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1569,7 +1820,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           
           return __result({ exported: true, outputPath: outputFile.fsName, format: "OMF", verified: true });
         `);
-        return sendCommand(script, { ...bridgeOptions, timeoutMs: 120000 });
+        const result = await sendCommand(script, { ...bridgeOptions, timeoutMs: timeoutMinutes * 60_000 });
+        if (!result.success && isBridgeTimeout(result.error)) {
+          const output = changedOutput(args.output_path, outputBefore);
+          if (output) return { success: true, data: {
+            outcome: "committed_unverified", verified: false, outputPath: args.output_path, outputSizeBytes: output.size, format: "OMF",
+            message: "Premiere wrote the OMF, but did not return a verified export receipt before timeout. Inspect the file before relying on it.",
+          } };
+        }
+        return result;
       },
     },
 
