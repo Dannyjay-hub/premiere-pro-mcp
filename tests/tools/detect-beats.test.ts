@@ -122,4 +122,3 @@ describe("detect_beats analysis", () => {
     expect(drift).toBeLessThan(0.025);
   });
 });
-

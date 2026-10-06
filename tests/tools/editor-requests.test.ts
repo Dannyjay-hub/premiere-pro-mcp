@@ -118,6 +118,8 @@ describe("editor-request tools", () => {
       expect(script).toContain('__findClip("clip-9")');
       expect(script).toContain('targetKind = "clip"');
       expect(script).toContain("clipResult.clip.markers");
+      expect(script).toContain('targetKind === "clip" ? requestedStartTicks');
+      expect(script).toContain('targetKind === "clip" ? __secondsToTicks(snapSpec.requestedEnd)');
     });
   });
 

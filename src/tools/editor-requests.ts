@@ -230,11 +230,11 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             var snapSpec = requested[snapIndex];
             snapSpec.requestedT = snapSpec.t;
             var requestedStartTicks = __secondsToTicks(snapSpec.t);
-            var appliedStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
+            var appliedStartTicks = targetKind === "clip" ? requestedStartTicks : __snapSequenceTicks(seq, requestedStartTicks);
             snapSpec.t = __ticksToSeconds(appliedStartTicks);
             if (snapSpec.d > 0) {
               snapSpec.requestedEnd = snapSpec.requestedT + snapSpec.d;
-              var appliedEndTicks = __snapSequenceTicks(seq, __secondsToTicks(snapSpec.requestedEnd));
+              var appliedEndTicks = targetKind === "clip" ? __secondsToTicks(snapSpec.requestedEnd) : __snapSequenceTicks(seq, __secondsToTicks(snapSpec.requestedEnd));
               snapSpec.d = __ticksToSeconds(appliedEndTicks - appliedStartTicks);
             }
           }
@@ -291,7 +291,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
               return __batchFailure("Premiere created marker " + i + " but rejected its properties: " + assignError.toString(), true);
             }
             var actualStart = __ticksToSeconds(marker.start.ticks);
-            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds / 1000 || Math.abs(actualStart / frameSeconds - Math.round(actualStart / frameSeconds)) > 0.001) {
+            if (!isFinite(actualStart) || Math.abs(actualStart - spec.t) > frameSeconds / 1000 || (targetKind === "sequence" && Math.abs(actualStart / frameSeconds - Math.round(actualStart / frameSeconds)) > 0.001)) {
               return __batchFailure("Marker " + i + " landed at " + actualStart + "s instead of " + spec.t + "s; the batch is not reported as verified.", true);
             }
             var actualEnd = __ticksToSeconds(marker.end.ticks);
@@ -300,7 +300,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
             var fieldProblems = [];
             if (spec.n !== null && String(marker.name) !== spec.n) fieldProblems.push("name reads back as " + marker.name);
             if (spec.c !== null && String(marker.comments) !== spec.c) fieldProblems.push("comments read back as " + marker.comments);
-            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds / 1000 || Math.abs(actualEnd / frameSeconds - Math.round(actualEnd / frameSeconds)) > 0.001)) fieldProblems.push("end reads back as " + actualEnd + "s");
+            if (spec.d > 0 && (!isFinite(actualEnd) || Math.abs(actualEnd - (spec.t + spec.d)) > frameSeconds / 1000 || (targetKind === "sequence" && Math.abs(actualEnd / frameSeconds - Math.round(actualEnd / frameSeconds)) > 0.001))) fieldProblems.push("end reads back as " + actualEnd + "s");
             if (spec.k !== null && (typeof actualColor !== "number" || !isFinite(actualColor))) unverifiedFields.push({ markerIndex: i, field: "color" });
             else if (spec.k !== null && actualColor !== spec.k) fieldProblems.push("color index reads back as " + actualColor);
             if (fieldProblems.length) return __batchFailure("Marker " + i + " at " + spec.t + "s was created, but " + fieldProblems.join("; ") + ".", true);
