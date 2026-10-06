@@ -37,6 +37,7 @@ function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWr
     sequenceID: "seq-points",
     timebase: String(options.frameTicks ?? TICKS / 25),
     end: String(121.6 * TICKS),
+    getSettings: () => ({ videoDisplayFormat: 100 }),
     videoTracks: { numTracks: 0 },
     audioTracks: { numTracks: 0 },
     markers: { getFirstMarker: () => null },
@@ -56,10 +57,16 @@ function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWr
   };
 }
 
-function host(seq: ReturnType<typeof sequence>) {
+function host(seq: ReturnType<typeof sequence>, timeFormatted?: (displayFormat: number) => string) {
   mockedSendCommand.mockImplementation(async (script: string) =>
     JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
       app: { project: { activeSequence: seq, sequences: { numSequences: 1, 0: seq } } },
+      ...(timeFormatted ? {
+        Time: function Time(this: { ticks: string; getFormatted: (frameRate: unknown, displayFormat: number) => string }) {
+          this.ticks = "0";
+          this.getFormatted = (_frameRate, displayFormat) => timeFormatted(displayFormat);
+        },
+      } : {}),
     }))));
 }
 
@@ -146,6 +153,16 @@ describe("work area", () => {
 });
 
 describe("navigate_playhead to sequence points", () => {
+  it("reports Premiere's sequence display-format timecode", async () => {
+    const seq = sequence();
+    host(seq, (displayFormat) => displayFormat === 100 ? "00;00;00;01" : "00:00:00:01");
+
+    const result = await editor.navigate_playhead.handler({ action: "step_forward" } as never) as Result;
+
+    expect(result.success).toBe(true);
+    expect(result.data?.timecode).toBe("00;00;00;01");
+  });
+
   it("moves to the work-area out point in seconds", async () => {
     host(sequence());
     const result = await editor.navigate_playhead.handler({ action: "work_area_out" } as never) as Result;

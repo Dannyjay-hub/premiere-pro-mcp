@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Timeline edits for playhead, clip placement/duration/trim, sequence marks and sequence markers snap requested times to the active sequence frame grid, verify stored boundaries within 1/1000 frame, and report changed requested/applied values.
 
+- `navigate_playhead` now reports timecode using Premiere's sequence display format, including drop-frame punctuation.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
