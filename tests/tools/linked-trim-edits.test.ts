@@ -56,15 +56,18 @@ function makeClip(id: string, start: number, end: number, inPoint: number, optio
 }
 
 /** Three linked shots on V1/A1: 0-10, 10-30, 30-60 (source time = timeline time). */
-function host(options: { audioRejectsInPoint?: boolean; audioLocked?: boolean } = {}) {
-  const ranges: Array<[number, number]> = [[0, 10], [10, 30], [30, 60]];
+function host(options: { audioRejectsInPoint?: boolean; audioLocked?: boolean; frameTicks?: number } = {}) {
+  const frameTicks = options.frameTicks ?? TICKS / 25;
+  const frameSeconds = frameTicks / TICKS;
+  const atFrame = (seconds: number) => Math.round(seconds / frameSeconds) * frameSeconds;
+  const ranges: Array<[number, number]> = [[0, 10], [10, 30], [30, 60]].map(([start, end]) => [atFrame(start), atFrame(end)]);
   const video = ranges.map(([a, b], k) => makeClip(`v${k}`, a, b, a));
   const audio = ranges.map(([a, b], k) => makeClip(`a${k}`, a, b, a, { rejectInPoint: options.audioRejectsInPoint && k === 1 }));
   video.forEach((v, k) => { v.group = [v, audio[k]]; audio[k].group = [v, audio[k]]; });
   const collection = (list: unknown[]) => new Proxy({}, { get: (_t, key) => (key === "numItems" ? list.length : list[Number(key)]) });
   const seq = {
     sequenceID: "seq",
-    timebase: String(TICKS / 25),
+    timebase: String(frameTicks),
     videoTracks: { numTracks: 1, 0: { clips: collection(video), isLocked: () => false } },
     audioTracks: { numTracks: 1, 0: { clips: collection(audio), isLocked: () => options.audioLocked === true } },
   };
@@ -77,6 +80,24 @@ function host(options: { audioRejectsInPoint?: boolean; audioLocked?: boolean } 
 }
 
 describe("trim edits keep linked audio in sync", () => {
+  it.each([23.976, 29.97, 25])("snaps slip, roll and slide 0.5 second offsets onto the %s fps sequence grid", async (fps) => {
+    const frameTicks = TICKS * (fps === 23.976 ? 1001 / 24000 : fps === 29.97 ? 1001 / 30000 : 1 / 25);
+    for (const operation of ["slip_edit", "roll_edit", "slide_edit"] as const) {
+      const { video } = host({ frameTicks });
+      const result = await tools[operation].handler({ node_id: "v1", offset_seconds: 0.5 }) as Result;
+      expect(result.success, `${operation} at ${fps} fps: ${result.error ?? ""}`).toBe(true);
+      for (const clip of video) {
+        const start = ticksOf(clip.start), end = ticksOf(clip.end), sourceIn = ticksOf(clip.inPoint), sourceOut = ticksOf(clip.outPoint);
+        expect(Math.abs(start / frameTicks - Math.round(start / frameTicks))).toBeLessThan(0.001);
+        expect(Math.abs(end / frameTicks - Math.round(end / frameTicks))).toBeLessThan(0.001);
+        if (operation === "slip_edit") expect(Math.abs((sourceIn - start) / frameTicks - Math.round((sourceIn - start) / frameTicks))).toBeLessThan(0.001);
+        expect(sourceOut).toBeGreaterThan(sourceIn);
+      }
+      expect(result.data).toHaveProperty("requestedOffsetSeconds", 0.5);
+      expect(result.data).toHaveProperty("appliedOffsetFrames");
+    }
+  });
+
   it("slip_edit slips the linked audio too", async () => {
     const { video, audio } = host();
     const result = await tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
@@ -90,8 +111,8 @@ describe("trim edits keep linked audio in sync", () => {
     const { video, audio } = host();
     await expect(tools.roll_edit.handler({ node_id: "v1", offset_seconds: 0.5 })).resolves.toMatchObject({ success: true });
     for (const list of [video, audio]) {
-      expect(list[1].snapshot().slice(0, 2)).toEqual([10, 30.5]);
-      expect(list[2].snapshot().slice(0, 3)).toEqual([30.5, 60, 30.5]);
+      expect(list[1].snapshot().slice(0, 2)).toEqual([10, 30.52]);
+      expect(list[2].snapshot().slice(0, 3)).toEqual([30.52, 60, 30.52]);
     }
   });
 
@@ -99,10 +120,10 @@ describe("trim edits keep linked audio in sync", () => {
     const { video, audio } = host();
     await expect(tools.slide_edit.handler({ node_id: "v1", offset_seconds: -0.5 })).resolves.toMatchObject({ success: true });
     for (const list of [video, audio]) {
-      expect(list[0].snapshot()).toEqual([0, 9.5, 0, 9.5]);
-      expect(list[1].snapshot().slice(0, 3)).toEqual([9.5, 29.5, 10]);
+      expect(list[0].snapshot()).toEqual([0, 9.48, 0, 9.48]);
+      expect(list[1].snapshot().slice(0, 3)).toEqual([9.48, 29.48, 10]);
       // Live Premiere 25.2 bug: the following clip kept in=30 and showed source 30.5 at 30.0.
-      expect(list[2].snapshot().slice(0, 3)).toEqual([29.5, 60, 29.5]);
+      expect(list[2].snapshot().slice(0, 3)).toEqual([29.48, 60, 29.48]);
     }
   });
 
@@ -124,6 +145,36 @@ describe("trim edits keep linked audio in sync", () => {
 
 describe("trim_clip and set_clip_duration move the visible edge and follow linked audio", () => {
   const timeline = getTimelineTools(bridgeOptions);
+
+  it.each([23.976, 29.97, 25])("snaps move, trim and duration writes to the %s fps sequence grid", async (fps) => {
+    const frameTicks = TICKS * (fps === 23.976 ? 1001 / 24000 : fps === 29.97 ? 1001 / 30000 : 1 / 25);
+    const assertGrid = (tickValue: unknown) => expect(Math.abs(ticksOf(tickValue) / frameTicks - Math.round(ticksOf(tickValue) / frameTicks))).toBeLessThan(0.001);
+
+    let h = host({ frameTicks });
+    const moved = await timeline.move_clip.handler({ node_id: "v1", new_start_seconds: 70.5 }) as Result;
+    expect(moved.success, moved.error).toBe(true);
+    assertGrid(h.video[1].start);
+    assertGrid(h.video[1].end);
+    expect(moved.data).toHaveProperty("requestedStartSeconds", 70.5);
+    expect(moved.data).toHaveProperty("appliedStartSeconds");
+
+    h = host({ frameTicks });
+    const oldIn = ticksOf(h.video[2].inPoint);
+    const trimmed = await timeline.trim_clip.handler({ node_id: "v2", new_out_seconds: ticksOf(h.video[2].outPoint) / TICKS + 0.5 }) as Result;
+    expect(trimmed.success, trimmed.error).toBe(true);
+    assertGrid(h.video[2].end);
+    expect(ticksOf(h.video[2].inPoint)).toBe(oldIn);
+    expect(trimmed.data).toHaveProperty("requestedOutSeconds");
+    expect(trimmed.data).toHaveProperty("appliedOutSeconds");
+
+    h = host({ frameTicks });
+    const duration = await timeline.set_clip_duration.handler({ node_id: "v2", duration_seconds: 30.5 }) as Result;
+    expect(duration.success, duration.error).toBe(true);
+    assertGrid(h.video[2].start);
+    assertGrid(h.video[2].end);
+    expect(duration.data).toHaveProperty("requestedSeconds", 30.5);
+    expect(duration.data).toHaveProperty("appliedSeconds");
+  });
 
   it("a head trim moves the clip start with its in point (Premiere 25.2 left the start in place)", async () => {
     const { video, audio } = host();
@@ -533,7 +584,7 @@ describe("slide failure receipts (#719)", () => {
       expect.objectContaining({ nodeId: "v0", before: expect.any(String), after: expect.any(String) }),
       expect.objectContaining({ nodeId: "v1" }), expect.objectContaining({ nodeId: "v2" }),
     ]));
-    expect(video[0].snapshot()[1]).toBe(10.5);
+    expect(video[0].snapshot()[1]).toBe(10.52);
     expect(audio[0].snapshot()[1]).toBe(10);
   });
 
@@ -786,7 +837,7 @@ describe("native adjacent failure evidence classification", () => {
     const result = await tools[operation].handler({ node_id: "v1", offset_seconds: 0.5 }) as Result;
     expect(result).toMatchObject({ success: false, data: { mutationAttempted: true, outcome: "committed_unverified", timelineChanged: true, contextStable: true, rollbackPerformed: false } });
     expect(result.data?.affectedPlacements).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: first.nodeId, before: expect.any(String), after: expect.any(String) })]));
-    expect(first.snapshot()[1]).toBe(operation === "roll_edit" ? 30.5 : 10.5);
+    expect(first.snapshot()[1]).toBe(operation === "roll_edit" ? 30.52 : 10.52);
   });
 
   it.each(["roll_edit", "slide_edit"] as const)("%s reports unreadable post-attempt clocks as unknown", async (operation) => {

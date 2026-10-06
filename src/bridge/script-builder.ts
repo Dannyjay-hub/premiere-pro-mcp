@@ -57,6 +57,31 @@ function __secondsToTicks(seconds) {
   return Math.round(parseFloat(seconds) * TICKS_PER_SECOND);
 }
 
+// Sequence timeline writes use the sequence's frame grid. Premiere stores
+// sequence.timebase as ticks per frame; keep this separate from source media
+// clocks because edit offsets are expressed in timeline frames.
+function __sequenceFrameTicks(sequence) {
+  var ticks = NaN;
+  try { ticks = parseFloat(sequence.timebase); } catch (frameError) {}
+  return isFinite(ticks) && ticks > 0 ? ticks : NaN;
+}
+
+function __snapSequenceTicks(sequence, ticks) {
+  var frameTicks = __sequenceFrameTicks(sequence);
+  if (!isFinite(frameTicks)) throw new Error("the active sequence frame grid could not be read");
+  var frameCount = parseFloat(ticks) / frameTicks;
+  var roundedFrames = frameCount < 0 ? -Math.round(-frameCount) : Math.round(frameCount);
+  return Math.round(roundedFrames * frameTicks);
+}
+
+function __frameSnapReceipt(requestedTicks, appliedTicks, frameTicks, requestedName, appliedName) {
+  var receipt = {};
+  if (!isFinite(frameTicks) || frameTicks <= 0 || Math.abs(appliedTicks - requestedTicks) <= frameTicks / 1000) return receipt;
+  receipt[requestedName] = __ticksToSeconds(requestedTicks);
+  receipt[appliedName] = __ticksToSeconds(appliedTicks);
+  return receipt;
+}
+
 // TrackItem.start and TrackItem.end are independent writes on Premiere Pro
 // 26.x: writing start never carries end along, and a start write that would
 // pass the clip's current end is rejected silently. Write the two edges in the
@@ -258,6 +283,24 @@ function __isUniformScale(component) {
     }
   }
   return false;
+}
+// Colour parameters (Lumetri White Balance, Fill Color, ...) read through
+// getValue() as one 64-bit packed number above 2^53, so the low bits are lost
+// and writing it back stores a different colour (measured on 25.2: a grey
+// came back as transparent blue). getColorValue() returns the exact
+// [alpha, red, green, blue] and throws on any non-colour parameter.
+function __readColorValue(prop) {
+  if (!prop || typeof prop.getColorValue !== "function") return null;
+  var color;
+  try { color = prop.getColorValue(); } catch (eColor) { return null; }
+  if (!color || color.length !== 4) return null;
+  var out = [];
+  for (var i = 0; i < 4; i++) {
+    var channel = Number(color[i]);
+    if (!isFinite(channel)) return null;
+    out.push(channel);
+  }
+  return out;
 }
 // Built-in Motion/Opacity components have stable match names, but their
 // property display names are localized. These es-ES labels were measured on
@@ -1313,11 +1356,23 @@ function __clipSecondsFromKey(base, time) {
   return Math.round(__ticksToSeconds(parseFloat(time.ticks) - base.inTicks) * 1000000) / 1000000;
 }
 
+// A property with no keyframes reports getKeys() as 0 on some hosts and as
+// undefined on Premiere 25.2.3 (with isTimeVarying() false). Treat those as an
+// empty list only when the property readably is not time-varying; null and
+// other shapes stay unreadable.
+function __isEmptyKeyList(prop, keys) {
+  if (keys === 0) return true;
+  if (keys !== undefined) return false;
+  var timeVarying = null;
+  try { timeVarying = prop.isTimeVarying(); } catch (eTimeVarying) { return false; }
+  return timeVarying === false;
+}
+
 // The stored key within 0.01s of a time, or null.
 function __findKeyNear(prop, time, strict) {
   var keys = null;
   try { keys = prop.getKeys(); } catch (eKeys) { if (strict) throw eKeys; }
-  if (strict && keys !== 0 && (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length)) throw new Error("Invalid key-list readback");
+  if (strict && !__isEmptyKeyList(prop, keys) && (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length)) throw new Error("Invalid key-list readback");
   if (!keys) return null;
   var closest = null, closestDelta = TICKS_PER_SECOND * 0.01;
   for (var k = 0; k < keys.length; k++) {
@@ -1330,7 +1385,7 @@ function __findKeyNear(prop, time, strict) {
 
 function __findKeyExact(prop, time) {
   var keys = prop.getKeys();
-  if (keys === 0) return null;
+  if (__isEmptyKeyList(prop, keys)) return null;
   if (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length) throw new Error("Invalid key-list readback");
   for (var k = 0; k < keys.length; k++) {
     if (!keys[k] || !isFinite(parseFloat(keys[k].ticks))) throw new Error("Invalid key-time readback");
@@ -1343,7 +1398,7 @@ function __findKeyExact(prop, time) {
 function __clipKeySeconds(base, prop, strict) {
   var keys = null;
   try { keys = prop.getKeys(); } catch (eKeys) { if (strict) throw eKeys; }
-  if (strict && keys !== 0 && (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length)) throw new Error("Invalid key-list readback");
+  if (strict && !__isEmptyKeyList(prop, keys) && (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length)) throw new Error("Invalid key-list readback");
   var list = [];
   if (!keys) return list;
   for (var k = 0; k < keys.length; k++) {

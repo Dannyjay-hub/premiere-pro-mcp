@@ -15,6 +15,7 @@ import { getRippleRemoveRangesTools } from "./tools/ripple-remove-ranges.js";
 import { getEffectsTools } from "./tools/effects.js";
 import { getTransitionsTools } from "./tools/transitions.js";
 import { getAudioTools } from "./tools/audio.js";
+import { getSourceToTimelineTools } from "./tools/source-to-timeline.js";
 import { getTextTools } from "./tools/text.js";
 import { getStockTitleTools } from "./tools/stock-titles.js";
 import { getMarkerTools } from "./tools/markers.js";
@@ -279,6 +280,7 @@ function collectStaticTools(
     ...getEffectsTools(bridgeOptions),
     ...getTransitionsTools(bridgeOptions),
     ...getAudioTools(bridgeOptions),
+    ...getSourceToTimelineTools(bridgeOptions),
     ...getTextTools(bridgeOptions),
     ...getStockTitleTools(bridgeOptions),
     ...getMogrtAuthoringTools(bridgeOptions),

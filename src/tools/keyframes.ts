@@ -582,7 +582,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
     },
 
     set_keyframe_interpolation: {
-      description: "Set the interpolation type of an existing keyframe (Linear, Hold, or Bezier). Premiere exposes no interpolation readback, so a write is reported as committed_unverified. Stored curves do not establish rendering; A 26.5.2 Windows capture report shows identical modes; 25.2.3 macOS evidence distinguishes a QE still-capture artifact from correctly rendered video curves.",
+      description: "Set the interpolation type of an existing keyframe (Linear, Hold, or Bezier). Premiere exposes no interpolation readback, so a write is reported as committed_unverified. Stored curves do not establish rendering; verify with a short video export, or with PNG stills composited over black (they carry straight alpha).",
       parameters: {
         type: "object" as const,
         properties: {
@@ -641,7 +641,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             verified: false,
             verificationScope: "Premiere has no interpolation getter; get_value_at_time samples stored property values only, not rendered pixels.",
             renderVerified: false,
-            renderHonesty: "The 26.5.2 Windows curve-capture report remains unresolved. On 25.2.3 macOS QE stills showed identical modes while actual video exports honored them. Verify temporal curves using an actual short video export, not still capture alone.",
+            renderHonesty: "Stored curves are not render proof. On Premiere 26.5.2 macOS, an actual H.264 export and QE PNG stills composited over black both distinguished linear, hold and bezier. Read without their alpha channel, those stills look identical across modes, which matches the earlier still-capture reports in #771. Verify curves with a short video export, or with PNG stills composited over black.",
             interpolation: "${args.interpolation}",
             time: __clipSecondsFromKey(keyBase, key)
           });

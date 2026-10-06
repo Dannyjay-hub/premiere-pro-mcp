@@ -10,7 +10,7 @@
 
 If you discover a security vulnerability in this project, **please do not open a public GitHub issue**.
 
-Instead, report it by opening a [GitHub Security Advisory](https://github.com/kavyrattana/pp-mcp/security/advisories/new) (or contact the maintainer directly via GitHub).
+Instead, report it by opening a [GitHub Security Advisory](https://github.com/leancoderkavy/premiere-pro-mcp/security/advisories/new) (or contact the maintainer directly via GitHub).
 
 Please include:
 
@@ -24,7 +24,11 @@ You can expect an acknowledgement within **48 hours** and a resolution timeline 
 
 This MCP server executes ExtendScript inside Adobe Premiere Pro via a CEP plugin. Please note:
 
-- **Script validation** blocks dangerous patterns (`eval()`, `new Function()`, `System.callSystem()`) in user-provided scripts
-- **`sendRawCommand()`** bypasses validation and should only be used by trusted clients
-- The file-based IPC bridge writes temporary files to the system temp directory — ensure your temp directory has appropriate permissions
-- This tool grants AI assistants significant control over Premiere Pro; only connect trusted MCP clients
+- Default capabilities are `inspect,edit,export,filesystem`. Arbitrary scripting tools require an explicit `unsafe-script` capability; script-pattern validation is defense in depth, not a sandbox.
+- Connect only trusted MCP clients. Authorized tools can read project/media content and change or export projects under the Adobe user's account.
+- CEP IPC directories require verified private ownership, permissions and safe ancestry. UXP uses an authenticated loopback connection and runtime capability checks.
+- Disk-backed project context can retain project names, transcripts, notes and metadata. Context directories and files are validated as private; unsafe existing storage is rejected. Use `PREMIERE_CONTEXT_BACKEND=memory` when persistence is unwanted.
+- Metadata inspection defaults to bounded parsed fields with sensitive GPS, serial, author and contact data omitted. Raw packets require explicit sensitive-data opt-in; full media paths require separate opt-in.
+- HTTP transport requires authentication and is intended for an operator-managed Premiere host. It is not a public multi-tenant editing service.
+- Telemetry is opt-in operational metadata only. Treat local host errors and diagnostic logs as private; do not publish logs, project/media files, credentials or context databases in vulnerability reports.
+- Package tests do not establish live Adobe host compatibility or production deployment security.

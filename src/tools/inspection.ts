@@ -1113,13 +1113,15 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                       mediaPath: "",
                       offline: false,
                       useCount: 0,
-                      tracks: []
+                      tracks: [],
+                      trackDetails: []
                     };
                     try { mediaMap[key].mediaPath = src.getMediaPath(); } catch(e) {}
                     try { mediaMap[key].offline = src.isOffline(); } catch(e) {}
                   }
                   mediaMap[key].useCount++;
                   mediaMap[key].tracks.push(trackType + " " + t);
+                  mediaMap[key].trackDetails.push({ track: trackType + " " + t, trackType: trackType === "V" ? "video" : "audio", trackIndex: t, trackLabel: trackType + (t + 1) });
                 } catch(e) {}
               }
             }
@@ -1140,6 +1142,13 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
               var trackList = [];
               for (var k in unique) { if (unique.hasOwnProperty(k)) trackList.push(k); }
               mediaMap[key].tracks = trackList;
+              var detailMap = {};
+              var trackDetails = [];
+              for (var di = 0; di < mediaMap[key].trackDetails.length; di++) {
+                var detail = mediaMap[key].trackDetails[di];
+                if (!detailMap[detail.track]) { detailMap[detail.track] = true; trackDetails.push(detail); }
+              }
+              mediaMap[key].trackDetails = trackDetails;
               if (mediaMap[key].offline) offlineUsed++;
               report.push(mediaMap[key]);
             }

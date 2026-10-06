@@ -173,15 +173,46 @@ export class UxpWebSocketBridge extends EventEmitter {
     };
   }
 
+  /**
+   * Replace the handshake capabilities with the panel's live report. Project, sequence and
+   * workspace state change after the panel connects, and the handshake never updates.
+   */
+  async refreshCapabilities(): Promise<UxpHello | null> {
+    const socket = this.socket;
+    const live = await this.request("capabilities.get") as Partial<UxpHello> | null;
+    const current = this.hello;
+    if (
+      !current || socket !== this.socket || !live || live.backend !== "uxp" || live.protocolVersion !== current.protocolVersion ||
+      !live.commands || typeof live.commands !== "object" || Array.isArray(live.commands)
+    ) {
+      return null;
+    }
+    this.hello = live as UxpHello;
+    return this.hello;
+  }
+
   async request(
     command: string,
     args: Record<string, unknown> = {},
     requestOptions: UxpRequestOptions = {},
   ): Promise<unknown> {
     const socket = this.socket;
-    const hello = this.hello;
+    let hello = this.hello;
     if (!socket || socket.readyState !== WebSocket.OPEN || !hello) {
       throw new UxpBridgeError("UXP_NOT_CONNECTED", "Premiere UXP bridge is not connected");
+    }
+    if (hello.commands[command]?.supported !== true && command !== "capabilities.get") {
+      // The handshake is taken when the panel connects, often before a project is open or a
+      // workspace folder is approved (on 26.5.2 that hid 25 of 192 commands for the whole
+      // session). Re-read the live capabilities once before refusing.
+      try {
+        hello = (await this.refreshCapabilities()) ?? hello;
+      } catch {
+        // Keep the handshake capabilities; the refusal below still applies.
+      }
+    }
+    if (socket !== this.socket || socket.readyState !== WebSocket.OPEN) {
+      throw new UxpBridgeError("UXP_NOT_CONNECTED", "Premiere UXP connection changed during capability refresh");
     }
     if (hello.commands[command]?.supported !== true) {
       throw new UxpBridgeError(

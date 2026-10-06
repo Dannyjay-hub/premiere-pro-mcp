@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import { runInNewContext } from "node:vm";
 import { getHelpersSource } from "../../src/bridge/script-builder.js";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
@@ -15,6 +15,8 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getExportTools } from "../../src/tools/export.js";
+
+afterAll(cleanupTempDirs);
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const tools = getExportTools({ tempDir: "/tmp/export-seq", timeoutMs: 5000 } as BridgeOptions);
@@ -59,7 +61,7 @@ function host(options: { writes?: boolean; marks?: [number, number]; workArea?: 
   return Object.assign(written, { modes });
 }
 
-const preset = join(mkdtempSync(join(tmpdir(), "epr-")), "H264 Match Source - High bitrate.epr");
+const preset = join(makeTempDir("epr-"), "H264 Match Source - High bitrate.epr");
 writeFileSync(preset, "<PremiereData><ExporterFileType>1299148630</ExporterFileType></PremiereData>");
 
 describe("export_sequence", () => {

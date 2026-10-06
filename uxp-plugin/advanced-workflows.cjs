@@ -149,9 +149,15 @@
 
     async function projectItemId(item) {
       if (!item) return "";
-      if (typeof item.getId === "function") {
+      // Premiere 26.5 returns the project root and other folder/clip views without
+      // getId; ProjectItem.cast exposes it, as in the sibling identity helpers.
+      let identity = typeof item.getId === "function" ? item : null;
+      if (!identity && ppro.ProjectItem && typeof ppro.ProjectItem.cast === "function") {
+        try { identity = ppro.ProjectItem.cast(item) || null; } catch (_) {}
+      }
+      if (identity && typeof identity.getId === "function") {
         try {
-          const value = await item.getId();
+          const value = await identity.getId();
           if (value != null && String(value)) return String(value);
         } catch (_) {}
       }
@@ -335,6 +341,15 @@
       const wanted = boundedString(sequenceId, "sequenceId", 128), sequences = await boundedSequences(project);
       for (const sequence of sequences) if (guidString(sequence.guid) === wanted) return sequence;
       throw commandError("UXP_TARGET_NOT_FOUND", "sequenceId was not found");
+    }
+
+    async function trackItemsOn(sequence, mediaType, trackIndex) {
+      const title = mediaType === "video" ? "Video" : "Audio";
+      const count = await sequence["get" + title + "TrackCount"]();
+      if (trackIndex >= count) throw commandError("UXP_TARGET_NOT_FOUND", mediaType + " trackIndex is out of range");
+      const track = await sequence["get" + title + "Track"](trackIndex), itemType = ppro.Constants && ppro.Constants.TrackItemType;
+      if (!track || !itemType || itemType.CLIP == null || typeof track.getTrackItems !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Clip track-item APIs are unavailable");
+      return Array.from(await track.getTrackItems(itemType.CLIP, false) || []);
     }
 
     async function trackItemAt(sequence, mediaType, trackIndex, clipIndex) {
@@ -555,14 +570,45 @@
       const markerType = args.markerType == null ? String(ppro.Marker && ppro.Marker.MARKER_TYPE_COMMENT || "Comment") : boundedString(args.markerType, "markerType", 128);
       const start = tick(finiteNumber(args.startSeconds == null ? 0 : args.startSeconds, "startSeconds", 0, 86400), "startSeconds"), duration = tick(finiteNumber(args.durationSeconds == null ? 0 : args.durationSeconds, "durationSeconds", 0, 86400), "durationSeconds");
       const comments = args.comments == null ? "" : boundedStringAllowEmpty(args.comments, "comments", 4000);
+      const colorIndex = args.colorIndex == null ? null : boundedInt(args.colorIndex, "colorIndex", 0, 6);
       return withAppendLock(await markerLockKey(context), async () => {
         const before = await markerList(context.collection);
         assertAppendCapacity(before, MAX_MARKERS, "Marker creation");
         context.project.lockedAccess(() => {
           commitActions(context.project, "Add marker", [context.collection.createAddMarkerAction(name, markerType, start, duration, comments)]);
         });
-        const after = await markerList(context.collection), added = after.filter((value) => !before.some((old) => old.guid === value.guid));
-        return mutationResult(added.length === 1, { added: true, marker: added[0] || null, beforeCount: before.length, afterCount: after.length }, "marker_guid_readback", "Add marker");
+        let undoSteps = 1;
+        try {
+        let after = await markerList(context.collection), added = after.filter((value) => !before.some((old) => old.guid === value.guid));
+        // createAddMarkerAction takes no colour, so a requested colour is set on the new marker
+        // afterwards; without this the colour was dropped while the add still reported verified.
+        if (added.length === 1 && colorIndex != null) {
+          const created = await findMarker(context.collection, added[0].guid, null);
+          context.project.lockedAccess(() => {
+            commitActions(context.project, "Set marker color", [created.createSetColorByIndexAction(colorIndex)]);
+            undoSteps = 2;
+          });
+          after = await markerList(context.collection);
+          added = after.filter((value) => !before.some((old) => old.guid === value.guid));
+        }
+        const marker = added[0] || null, mismatches = [];
+        if (marker) {
+          if (marker.name !== name) mismatches.push("name");
+          if (marker.comments !== comments) mismatches.push("comments");
+          if (marker.type !== markerType) mismatches.push("markerType");
+          if (Math.abs(marker.startSeconds - tickSeconds(start)) > 0.0005) mismatches.push("startSeconds");
+          if (Math.abs(marker.durationSeconds - tickSeconds(duration)) > 0.0005) mismatches.push("durationSeconds");
+          if (colorIndex != null && marker.colorIndex !== colorIndex) mismatches.push("colorIndex");
+        }
+        return mutationResult(added.length === 1 && mismatches.length === 0, {
+          added: added.length === 1, marker, beforeCount: before.length, afterCount: after.length, undoSteps,
+          ...(mismatches.length ? { mismatchedFields: mismatches } : {})
+        }, "marker_field_readback", "Add marker");
+        } catch (error) {
+          return mutationResult(false, { added: true, committed: true, partial: true, beforeCount: before.length, undoSteps,
+            readbackError: error && error.message ? error.message : String(error),
+            nextStep: "Inspect markers before retrying. Marker creation committed; the requested fields could not all be verified." }, "marker_field_readback", "Add marker");
+        }
       });
     }
 
@@ -1528,7 +1574,7 @@
       return mutationResult(verified, {
         updated: true, interpolation: modeName, interpolationValue: readback,
         renderVerified: false,
-        renderHonesty: "Verification covers the stored interpolation mode only. The 26.5.2 Windows curve-capture report remains unresolved. On 25.2.3 macOS QE stills showed identical modes while actual video exports honored them; verify using a short video export, not still capture alone."
+        renderHonesty: "Verification covers the stored interpolation mode only. Stored curves are not render proof. On Premiere 26.5.2 macOS, an actual H.264 export and QE PNG stills composited over black both distinguished linear, hold and bezier. Read without their alpha channel, those stills look identical across modes, which matches the earlier still-capture reports in #771. Verify curves with a short video export, or with PNG stills composited over black."
       }, "keyframe_interpolation_readback", "Set keyframe interpolation");
     }
 
@@ -1656,21 +1702,46 @@
       const timelineValue = Number(before.audio[edge]) + (kind === "j_cut" ? -extension : extension);
       const sourceField = kind === "j_cut" ? "inSeconds" : "outSeconds", sourceValue = Number(before.audio[sourceField]) + (kind === "j_cut" ? -extension : extension);
       if (timelineValue < 0 || sourceValue < 0) throw commandError("UXP_TARGET_UNSUPPORTED", "The requested J-cut exceeds the available leading timeline or source handle");
+      // The extended audio must not run into another item on its own track. On Premiere 26.5.2
+      // an L-cut that overlapped the following audio clip left two items over the same range,
+      // and Premiere crashed (heap corruption) while drawing them.
+      const rangeStart = kind === "j_cut" ? timelineValue : Number(before.audio.endSeconds);
+      const rangeEnd = kind === "j_cut" ? Number(before.audio.startSeconds) : timelineValue;
+      const audioItems = await trackItemsOn(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"));
+      for (let index = 0; index < audioItems.length; index++) {
+        if (index === args.audioClipIndex) continue;
+        const otherStart = tickSeconds(await audioItems[index].getStartTime()), otherEnd = tickSeconds(await audioItems[index].getEndTime());
+        if (otherStart < rangeEnd - 0.000001 && otherEnd > rangeStart + 0.000001) {
+          throw commandError("UXP_TARGET_UNSUPPORTED", "The " + (kind === "j_cut" ? "J-cut" : "L-cut") + " would overlap audio clip " + index +
+            " on the same track; trim that clip first or use a smaller extension. Nothing was changed.");
+        }
+      }
+      // Premiere 26.5 applies a start/end action like a trim, moving the source point with it;
+      // sending the source action as well extended the audio twice. Write the source point
+      // separately only when it did not follow the edge.
       context.project.lockedAccess(() => {
-        const actions = kind === "j_cut"
-          ? [audioContext.item.createSetStartAction(tick(timelineValue)), audioContext.item.createSetInPointAction(tick(sourceValue))]
-          : [audioContext.item.createSetEndAction(tick(timelineValue)), audioContext.item.createSetOutPointAction(tick(sourceValue))];
-        commitActions(context.project, kind === "j_cut" ? "Create J-cut" : "Create L-cut", actions);
+        const edgeAction = kind === "j_cut" ? audioContext.item.createSetStartAction(tick(timelineValue)) : audioContext.item.createSetEndAction(tick(timelineValue));
+        commitActions(context.project, kind === "j_cut" ? "Create J-cut" : "Create L-cut", [edgeAction]);
       });
-      const afterItem = await trackItemAt(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"), nonNegativeInt(args.audioClipIndex, "audioClipIndex"));
-      const after = await trackItemSnapshot({ ...audioContext, item: afterItem });
+      let afterItem = await trackItemAt(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"), nonNegativeInt(args.audioClipIndex, "audioClipIndex"));
+      let after = await trackItemSnapshot({ ...audioContext, item: afterItem });
+      let undoSteps = 1;
+      if (numbersEqual(after[edge], timelineValue) && !numbersEqual(after[sourceField], sourceValue)) {
+        context.project.lockedAccess(() => {
+          const sourceAction = kind === "j_cut" ? afterItem.createSetInPointAction(tick(sourceValue)) : afterItem.createSetOutPointAction(tick(sourceValue));
+          commitActions(context.project, kind === "j_cut" ? "Set J-cut source in" : "Set L-cut source out", [sourceAction]);
+        });
+        undoSteps = 2;
+        afterItem = await trackItemAt(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"), nonNegativeInt(args.audioClipIndex, "audioClipIndex"));
+        after = await trackItemSnapshot({ ...audioContext, item: afterItem });
+      }
       const timelineMatched = numbersEqual(after[edge], timelineValue);
       const sourceMatched = numbersEqual(after[sourceField], sourceValue);
       // The user-visible result is the audio timeline edge. Source-out readback
       // can lag or stay stale after a successful SetEnd; do not false-negative
       // a completed L/J-cut when that edge moved to the requested time.
       return mutationResult(timelineMatched, {
-        splitEdit: kind, extensionSeconds: extension, before, after, timelineMatched, sourceReadbackMatched: sourceMatched
+        splitEdit: kind, extensionSeconds: extension, before, after, timelineMatched, sourceReadbackMatched: sourceMatched, undoSteps
       }, "split_edit_audio_edge_and_source_readback", kind === "j_cut" ? "Create J-cut" : "Create L-cut");
     }
 

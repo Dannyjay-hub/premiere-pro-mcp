@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type SlipArgs = Record<string, unknown> & {
   action?: string;
@@ -21,7 +22,7 @@ const targetProperties = {
 const expectedSnapshot = {
   type: "object" as const,
   additionalProperties: false,
-  description: "Complete snapshot returned by inspect. Apply rejects any changed project, sequence, coordinate, timeline, source, speed, or reverse state.",
+  description: "The expected_snapshot object returned by inspect, passed unchanged. Apply rejects any changed project, sequence, coordinate, timeline, source, speed, or reverse state.",
   properties: {
     project_guid: { type: "string" as const, minLength: 1, maxLength: 128 },
     sequence_id: { type: "string" as const, minLength: 1, maxLength: 128 },
@@ -111,7 +112,7 @@ export function getUxpSlipWorkflowTools(bridge: UxpWebSocketBridge) {
           trackIndex: args.track_index,
           clipIndex: args.clip_index,
         };
-        if (args.action === "inspect") return invoke(bridge, "trackItem.slip.inspect", target);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "trackItem.slip.inspect", target), expectedSnapshot);
         if (args.action === "apply") {
           return invoke(bridge, "trackItem.slip", {
             ...target,

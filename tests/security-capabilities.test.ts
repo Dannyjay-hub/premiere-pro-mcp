@@ -54,6 +54,7 @@ describe("capability profiles", () => {
     expect(capabilityForTool("manage_markers_uxp")).toBe("edit");
     expect(capabilityForTool("list_markers_uxp")).toBe("inspect");
     expect(capabilityForTool("get_project_info")).toBe("inspect");
+    expect(capabilityForTool("map_source_ranges_to_timeline")).toBe("inspect");
     expect(capabilityForTool("preview_transcript_edit_uxp")).toBe("inspect");
     expect(capabilityForTool("plan_transcript_rough_cut_uxp")).toBe("inspect");
     expect(capabilityForTool("create_context_edit_plan")).toBe("inspect");

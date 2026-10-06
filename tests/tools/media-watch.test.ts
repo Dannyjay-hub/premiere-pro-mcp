@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import { MediaWatchRegistry, getMediaWatchTools } from "../../src/tools/media-watch.js";
+
+afterAll(cleanupTempDirs);
 
 const registries: MediaWatchRegistry[] = [];
 afterEach(() => {
@@ -12,7 +14,7 @@ afterEach(() => {
 });
 describe("media watch", () => {
   it("proposes new media without disclosing paths by default", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     writeFileSync(path.join(root, "existing.mp4"), "old");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"] }) as any;
@@ -23,7 +25,7 @@ describe("media watch", () => {
     expect(preview.applied).toBe(false);
   });
   it("supports disclosure, rescan, stop, and handler failures", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: [".MP4"], recursive: false }) as any;
     writeFileSync(path.join(root, "new.mp4"), "new");
@@ -34,7 +36,7 @@ describe("media watch", () => {
     await expect(registry.preview({ watch_id: started.watch_id })).rejects.toThrow(/no media watch/);
   });
   it("rejects unsafe starts and stale preview arguments", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-")), outside = mkdtempSync(path.join(tmpdir(), "outside-"));
+    const root = makeTempDir("premiere-watch-"), outside = makeTempDir("outside-");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     await expect(registry.start({ approved_workspace_path: root, watch_path: outside, allowed_extensions: ["mp4"] })).rejects.toThrow(/contained/);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"] }) as any;
@@ -44,7 +46,7 @@ describe("media watch", () => {
     await expect(registry.preview({ watch_id: started.watch_id, known_media_path_hashes: ["bad"] })).rejects.toThrow(/sha256/);
   });
   it("validates paths, extensions, recursion, bins, and inactive scans", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     for (const args of [
       { approved_workspace_path: "relative", watch_path: root, allowed_extensions: ["mp4"] },
       { approved_workspace_path: root, watch_path: root, allowed_extensions: [] },
@@ -58,7 +60,7 @@ describe("media watch", () => {
     await expect(new MediaWatchRegistry().rescan()).rejects.toThrow(/no media watch/);
   });
   it("routes every management action through the public handlers", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-")), registry = new MediaWatchRegistry(); registries.push(registry);
+    const root = makeTempDir("premiere-watch-"), registry = new MediaWatchRegistry(); registries.push(registry);
     const tools = getMediaWatchTools(registry);
     const started = await tools.manage_media_watch.handler({ action: "start", approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"] }) as any;
     expect((await tools.manage_media_watch.handler({ action: "status" })).success).toBe(true);
@@ -69,7 +71,7 @@ describe("media watch", () => {
     expect((await tools.preview_watched_media_import.handler({ watch_id: started.data.watch_id })).success).toBe(false);
   });
   it("filters known hashes and proposes changed baseline files to a bin", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-")), file = path.join(root, "clip.mp4"); writeFileSync(file, "a");
+    const root = makeTempDir("premiere-watch-"), file = path.join(root, "clip.mp4"); writeFileSync(file, "a");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"], target_bin_id: "bin" }) as any;
     writeFileSync(file, "changed-size");
@@ -79,13 +81,13 @@ describe("media watch", () => {
     await expect(registry.preview({ watch_id: started.watch_id, known_media_path_hashes: "bad" })).rejects.toThrow(/at most 5000/);
   });
   it("does not propose an unchanged baseline file", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-")); writeFileSync(path.join(root, "clip.mp4"), "same");
+    const root = makeTempDir("premiere-watch-"); writeFileSync(path.join(root, "clip.mp4"), "same");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"] }) as any;
     expect(((await registry.preview({ watch_id: started.watch_id })) as any).proposed_count).toBe(0);
   });
   it("detects same-size timestamp changes and recursively scans subfolders", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-")), nested = path.join(root, "nested"); mkdirSync(nested);
+    const root = makeTempDir("premiere-watch-"), nested = path.join(root, "nested"); mkdirSync(nested);
     const file = path.join(nested, "clip.mp4"); writeFileSync(file, "same");
     const registry = new MediaWatchRegistry(); registries.push(registry);
     const started = await registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"], recursive: true }) as any;
@@ -99,7 +101,7 @@ describe("media watch", () => {
     ["directory_limit", { maxDirectories: 1 }, ["one", "two", "three"]],
     ["queue_limit", { maxQueue: 1 }, ["one", "two", "three"]],
   ])("reports %s truncation instead of traversing an unbounded tree", async (reason, scanLimits, names) => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     for (const name of names) {
       if (name.includes(".")) writeFileSync(path.join(root, name), "fixture");
       else mkdirSync(path.join(root, name));
@@ -113,7 +115,7 @@ describe("media watch", () => {
   });
 
   it("bounds recursive depth and elapsed scan time", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     const nested = path.join(root, "one"); mkdirSync(nested); mkdirSync(path.join(nested, "two"));
     const depthRegistry = new MediaWatchRegistry({ scanLimits: { maxDepth: 1, maxElapsedMs: 5_000 } }); registries.push(depthRegistry);
     const depthStatus = await depthRegistry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"], recursive: true }) as any;
@@ -126,7 +128,7 @@ describe("media watch", () => {
   });
 
   it("stops a wide directory when the cooperative elapsed budget expires between entries", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     writeFileSync(path.join(root, "one.txt"), "ignored");
     vi.spyOn(performance, "now")
       .mockReturnValueOnce(0)
@@ -146,7 +148,7 @@ describe("media watch", () => {
   });
 
   it("cancels an in-flight asynchronous scan when the registry closes", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     const registry = new MediaWatchRegistry({ scanLimits: { yieldEveryEntries: 1 } }); registries.push(registry);
 
     const starting = registry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"], recursive: true });
@@ -156,7 +158,7 @@ describe("media watch", () => {
   });
 
   it("does not publish preview or rescan results after the watch closes", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "premiere-watch-"));
+    const root = makeTempDir("premiere-watch-");
     const previewRegistry = new MediaWatchRegistry({ scanLimits: { yieldEveryEntries: 1 } }); registries.push(previewRegistry);
     const started = await previewRegistry.start({ approved_workspace_path: root, watch_path: root, allowed_extensions: ["mp4"] }) as any;
     const preview = previewRegistry.preview({ watch_id: started.watch_id });

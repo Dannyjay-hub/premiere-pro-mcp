@@ -18,7 +18,7 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getMarkerTools } from "../../src/tools/markers.js";
 import { getExportTools } from "../../src/tools/export.js";
-import { getUtilityTools } from "../../src/tools/utility.js";
+import { getUtilityTools, sequenceFrameTicks } from "../../src/tools/utility.js";
 import { getTrackTargetingTools } from "../../src/tools/track-targeting.js";
 import { getEffectsTools } from "../../src/tools/effects.js";
 import { getClipboardTools } from "../../src/tools/clipboard.js";
@@ -29,6 +29,7 @@ import { getMediaTools } from "../../src/tools/media.js";
 import { getTextTools } from "../../src/tools/text.js";
 import { getKeyframeTools } from "../../src/tools/keyframes.js";
 import { getCaptionTools } from "../../src/tools/captions.js";
+import { getInspectionTools } from "../../src/tools/inspection.js";
 import { getSequenceTools } from "../../src/tools/sequence.js";
 import { getPlayheadTools } from "../../src/tools/playhead.js";
 import { getAudioTools } from "../../src/tools/audio.js";
@@ -161,10 +162,10 @@ describe("real-host social sequence regressions", () => {
 
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
-    expect(setScript).toContain("seq.setInPoint(0)");
-    expect(setScript).toContain("seq.setOutPoint(60)");
-    expect(setScript).not.toContain("__secondsToTicks(60)");
-    expect(setScript).toContain("Math.abs(observedOut - 60)");
+    expect(setScript).toContain("seq.setInPoint(appliedInSeconds)");
+    expect(setScript).toContain("seq.setOutPoint(appliedOutSeconds)");
+    expect(setScript).toContain("requestedOutTicks = __secondsToTicks(60)");
+    expect(setScript).toContain("Math.abs(observedOut - appliedOutSeconds)");
 
     const getScript = await scriptFor(playhead.get_sequence_in_out_points, {});
     expect(getScript).toContain("__sequencePointSeconds(seq.getOutPoint())");
@@ -182,7 +183,7 @@ describe("real-host social sequence regressions", () => {
 
     const setArea = await codeFor(playhead.set_work_area, { in_seconds: 4, out_seconds: 12 });
     expect(setArea).toContain("seq.setWorkAreaInPoint(requestedIn)");
-    expect(setArea).not.toContain("__secondsToTicks(4)");
+    expect(setArea).toContain("requestedInRaw = __secondsToTicks(4)");
     expect(setArea).toContain("Premiere did not apply the work area");
     expect(setArea).toContain("verified: true");
 
@@ -206,7 +207,7 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
   it("add_marker passes seconds straight to createMarker", async () => {
     const script = await scriptFor(markers.add_marker, { time_seconds: 2.0 });
 
-    expect(script).toContain("createMarker(2)");
+    expect(script).toContain("markers.createMarker(appliedMarkerSeconds)");
     // The old bug: __secondsToTicks(2) -> 508032000000 handed to createMarker(),
     // placing the marker ~508 billion seconds down the timeline.
     expect(script).not.toContain("__secondsToTicks(2).toString()");
@@ -216,7 +217,7 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
   it("add_marker sets marker.end in seconds when given a duration", async () => {
     const script = await scriptFor(markers.add_marker, { time_seconds: 2.0, duration_seconds: 3.0 });
 
-    expect(script).toContain("marker.end = 5");
+    expect(script).toContain("marker.end = __ticksToSeconds(appliedMarkerEndTicks)");
     expect(script).not.toMatch(/marker\.end = __secondsToTicks/);
   });
 
@@ -226,6 +227,15 @@ describe("issue #6 — markers must use seconds, not ticks", () => {
     expect(script).toContain("startSeconds: marker.start.seconds");
     expect(script).toContain("endSeconds: marker.end.seconds");
     expect(script).not.toContain("__ticksToSeconds(marker.start.ticks)");
+    expect(script).toContain("guid: __markerGuid(marker)");
+    expect(script).toContain("marker.getColorByIndex()");
+  });
+
+  it("keeps zero-based media track strings and adds 1-based track labels", async () => {
+    const script = await scriptFor(getInspectionTools(bridgeOptions).get_used_media_report, {});
+    expect(script).toContain('tracks.push(trackType + " " + t)');
+    expect(script).toContain('trackLabel: trackType + (t + 1)');
+    expect(script).toContain("mediaMap[key].trackDetails = trackDetails");
   });
 
   it("delete_marker still compares ticks against ticks", async () => {
@@ -850,12 +860,23 @@ describe("issue #37 — sequence frame rate uses ticks per frame", () => {
   it("converts fps to a Time duration and verifies the applied ticks", async () => {
     const script = await scriptFor(utility.set_sequence_frame_rate, { frame_rate: 30 });
 
-    expect(script).toContain("TICKS_PER_SECOND / requestedFps");
+    expect(script).toContain("var requestedTicks = 8467200000;");
     expect(script).toContain("var frameDuration = new Time()");
     expect(script).toContain("frameDuration.ticks = requestedTicks.toString()");
     expect(script).toContain("settings.videoFrameRate = frameDuration");
     expect(script).toContain("Math.abs(appliedTicks - requestedTicks) > 1");
     expect(script).not.toContain("settings.videoFrameRate = 30");
+  });
+
+  it("uses Premiere's exact NTSC timebases for 23.976, 29.97 and 59.94", async () => {
+    expect(sequenceFrameTicks(23.976)).toMatchObject({ ticks: 10594584000, ntsc: true });
+    expect(sequenceFrameTicks(29.97)).toMatchObject({ ticks: 8475667200, ntsc: true });
+    expect(sequenceFrameTicks(59.94)).toMatchObject({ ticks: 4237833600, ntsc: true });
+    expect(sequenceFrameTicks(29.97).exactFrameRate).toBeCloseTo(30000 / 1001, 9);
+    expect(sequenceFrameTicks(25)).toMatchObject({ ticks: 10160640000, ntsc: false });
+    expect(sequenceFrameTicks(29.9)).toMatchObject({ ntsc: false });
+    const script = await scriptFor(utility.set_sequence_frame_rate, { frame_rate: 29.97 });
+    expect(script).toContain("var requestedTicks = 8475667200;");
   });
 
   it("rejects invalid frame rates before sending a Premiere command", async () => {

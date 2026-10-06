@@ -1894,8 +1894,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { item_ids: string[]; target_bin: string }) => {
         const idsJson = JSON.stringify(args.item_ids);
         const script = buildToolScript(`
-          var targetBin = __findProjectItem("${escapeForExtendScript(args.target_bin)}");
-          if (!targetBin || targetBin.type !== 2) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
+          var targetIsRoot = "${escapeForExtendScript(args.target_bin)}" === "/" || "${escapeForExtendScript(args.target_bin)}".toLowerCase() === "root";
+          var targetBin = targetIsRoot ? app.project.rootItem : __findProjectItem("${escapeForExtendScript(args.target_bin)}");
+          if (!targetBin || (!targetIsRoot && targetBin.type !== 2)) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
 
           var ids = ${idsJson};
           var items = [];

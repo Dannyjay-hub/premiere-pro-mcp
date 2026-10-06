@@ -76,12 +76,14 @@
           if (guidString(context.project.guid) !== before.projectGuid || guidString(context.sequence.guid) !== before.sequenceId) {
             throw commandError("UXP_STALE_TRACK_ITEM", "The reviewed project or sequence changed before slide action creation");
           }
+          // Premiere 26.5 applies a timeline end/start action like a trim: the neighbour's
+          // source out/in point moves with it. Sending the source actions as well trimmed the
+          // neighbours twice, so the source points are only written afterwards when they did
+          // not follow the timeline edges.
           const actions = [
             createAction(context.target, "createMoveAction", offset, "center move"),
             createAction(context.previous, "createSetEndAction", desired.previous.endSeconds, "previous timeline end"),
-            createAction(context.previous, "createSetOutPointAction", desired.previous.outSeconds, "previous source out"),
-            createAction(context.following, "createSetStartAction", desired.following.startSeconds, "following timeline start"),
-            createAction(context.following, "createSetInPointAction", desired.following.inSeconds, "following source in")
+            createAction(context.following, "createSetStartAction", desired.following.startSeconds, "following timeline start")
           ];
           committed = context.project.executeTransaction(function (compoundAction) {
             for (const action of actions) {
@@ -93,7 +95,33 @@
         });
         if (!committed) throw commandError("UXP_TRANSACTION_FAILED", "Premiere did not commit the slide transaction");
 
+        let sourceTransaction = false;
         try {
+        const edgeContext = await activeTriplet(target, true);
+        const edges = await slideSnapshot(edgeContext);
+        const previousSource = !numbersEqual(edges.previous.outSeconds, desired.previous.outSeconds);
+        const followingSource = !numbersEqual(edges.following.inSeconds, desired.following.inSeconds);
+        const timelineMatches = numbersEqual(edges.previous.endSeconds, desired.previous.endSeconds) &&
+          numbersEqual(edges.target.startSeconds, desired.target.startSeconds) && numbersEqual(edges.target.endSeconds, desired.target.endSeconds) &&
+          numbersEqual(edges.following.startSeconds, desired.following.startSeconds);
+        if (!sameIdentity(before, edges) || !timelineMatches) throw commandError("UXP_VERIFICATION_FAILED", "The committed slide did not land on the reviewed timeline edges; no source correction was attempted");
+        if (previousSource || followingSource) {
+          let sourceCommitted = false;
+          edgeContext.project.lockedAccess(function () {
+            const sourceActions = [];
+            if (previousSource) sourceActions.push(createAction(edgeContext.previous, "createSetOutPointAction", desired.previous.outSeconds, "previous source out"));
+            if (followingSource) sourceActions.push(createAction(edgeContext.following, "createSetInPointAction", desired.following.inSeconds, "following source in"));
+            sourceCommitted = edgeContext.project.executeTransaction(function (compoundAction) {
+              for (const action of sourceActions) {
+                if (compoundAction.addAction(action) === false) {
+                  throw commandError("UXP_ACTION_REJECTED", "Premiere rejected a slide source action");
+                }
+              }
+            }, "Slide neighbour source points");
+          });
+          if (!sourceCommitted) throw commandError("UXP_TRANSACTION_FAILED", "Premiere did not commit the slide source-point transaction");
+          sourceTransaction = true;
+        }
         // Re-resolve all coordinates. A failed postcondition can follow a
         // committed host transaction, so callers must inspect before another
         // mutation if this verification throws.
@@ -112,11 +140,13 @@
           slideBySeconds: offset,
           outcome: "verified",
           verificationBoundary: "three_track_item_source_and_timeline_readback",
-          undoLabel: "Slide timeline item"
+          undoLabel: "Slide timeline item",
+          undoSteps: sourceTransaction ? 2 : 1
         };
         } catch (error) {
           return { slid: false, committed: true, verified: false, partial: true,
             outcome: "committed_unverified", before: before, after: null, timelineChanged: null, rollbackPerformed: false,
+            undoSteps: sourceTransaction ? 2 : 1,
             verificationBoundary: "committed_transaction_with_failed_readback",
             readbackError: error && error.message ? error.message : String(error),
             nextStep: "Inspect the affected track before any retry. The committed transaction was not rolled back; use Premiere Undo only after reviewing the change." };

@@ -320,6 +320,29 @@ describe("UXP command registry", () => {
     expect(value.exportedFrames).toEqual(["frame"]);
   });
 
+  it("retries with the extension when the host rejects a bare filename (Premiere 26.5.2)", async () => {
+    const value = host();
+    value.exportSequenceFrame.mockImplementation(async (_sequence: unknown, _position: unknown, filename: string) => {
+      if (!/\.png$/.test(filename)) throw new Error("Internal error : File Format is not supported");
+      value.exportedFrames.push(filename);
+      return true;
+    });
+    await expect(value.registry.dispatch("frame.export", {
+      outputDirectory: "C:/approved", filename: "frame.png",
+    })).resolves.toMatchObject({ path: "C:/approved/frame.png", exporterResult: true });
+    expect(value.exportSequenceFrame).toHaveBeenNthCalledWith(1, value.sequence, { seconds: 3 }, "frame", "C:/approved", 1920, 1080);
+    expect(value.exportSequenceFrame).toHaveBeenNthCalledWith(2, value.sequence, { seconds: 3 }, "frame.png", "C:/approved", 1920, 1080);
+    expect(value.exportedFrames).toEqual(["frame.png"]);
+  });
+
+  it("does not retry other export errors", async () => {
+    const value = host();
+    value.exportSequenceFrame.mockImplementation(async () => { throw new Error("disk full"); });
+    await expect(value.registry.dispatch("frame.export", { outputDirectory: "C:/approved", filename: "frame.png" }))
+      .rejects.toThrow("disk full");
+    expect(value.exportSequenceFrame).toHaveBeenCalledTimes(1);
+  });
+
   describe("frame export output check (#642)", () => {
     function withFiles(initial: string[], written: (filename: string) => string[]) {
       const value = host();
@@ -329,9 +352,20 @@ describe("UXP command registry", () => {
         return true;
       });
       const fileExists = vi.fn(async (path: string) => files.has(path));
-      const registry = Commands.createCommandRegistry({ ppro: value.ppro, Protocol, fileExists });
-      return { registry, fileExists };
+      const frameWait = vi.fn(async () => undefined);
+      const registry = Commands.createCommandRegistry({ ppro: value.ppro, Protocol, fileExists, frameWait });
+      return { registry, fileExists, frameWait, files };
     }
+
+    it("waits for a PNG the host writes after returning (Premiere 26.5.2)", async () => {
+      const { registry, frameWait, files } = withFiles([], () => []);
+      frameWait.mockImplementation(async () => {
+        if (frameWait.mock.calls.length === 3) files.add("C:/approved/frame.png");
+      });
+      await expect(registry.dispatch("frame.export", { outputDirectory: "C:/approved", filename: "frame.png" }))
+        .resolves.toMatchObject({ path: "C:/approved/frame.png", outcome: "verified" });
+      expect(frameWait).toHaveBeenCalledTimes(3);
+    });
 
     it("verifies the PNG exists after the export", async () => {
       const { registry } = withFiles([], (stem) => [`C:/approved/${stem}.png`]);
@@ -343,9 +377,11 @@ describe("UXP command registry", () => {
     });
 
     it("fails when Premiere returns true but writes no file", async () => {
-      const { registry } = withFiles([], () => []);
+      const { registry, frameWait } = withFiles([], () => []);
       await expect(registry.dispatch("frame.export", { outputDirectory: "C:/approved", filename: "frame.png" }))
         .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED", message: expect.stringMatching(/no file was written at C:\/approved\/frame\.png/) });
+      // It polls for the whole bounded wait (15 s at 250 ms) before giving up.
+      expect(frameWait).toHaveBeenCalledTimes(60);
     });
 
     it("reports the real path when the host does not append the extension", async () => {

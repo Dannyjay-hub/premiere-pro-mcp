@@ -139,19 +139,33 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           ${markerTarget}
           ${MARKER_UNDO_RECEIPT}
-          
+          var markerSeq = app.project.activeSequence;
+          var requestedMarkerTicks = __secondsToTicks(${args.time_seconds});
+          var requestedMarkerEndTicks = NaN;
+          var appliedMarkerEndTicks = NaN;
+          var markerFrameTicks = ${args.node_id ? "TICKS_PER_SECOND / 24" : "markerSeq ? __sequenceFrameTicks(markerSeq) : NaN"};
+          if (!isFinite(markerFrameTicks)) return __error("The active sequence frame grid could not be read; no marker was created.");
+          var appliedMarkerTicks = ${args.node_id ? "requestedMarkerTicks" : "__snapSequenceTicks(markerSeq, requestedMarkerTicks)"};
+          var appliedMarkerSeconds = __ticksToSeconds(appliedMarkerTicks);
           // createMarker() and the marker.end setter both take seconds, not ticks.
           var markerUndoBefore = __readUndoIndex();
           var markerBarrier = __rememberMarkerUndoBarrier(markerUndoBefore);
           if (!markerBarrier.ok) return __error(markerBarrier.error);
-          var marker = markers.createMarker(${args.time_seconds});
+          var marker = markers.createMarker(appliedMarkerSeconds);
+          var observedMarkerTicks = NaN;
+          try { observedMarkerTicks = parseFloat(marker.start.ticks); } catch (markerStartReadError) {}
+          if (!isFinite(observedMarkerTicks) || Math.abs(observedMarkerTicks - appliedMarkerTicks) > markerFrameTicks / 1000 ||
+              ${args.node_id ? "false" : "Math.abs(observedMarkerTicks / markerFrameTicks - Math.round(observedMarkerTicks / markerFrameTicks)) > 0.001"}) {
+            return __jsonStringify({ success: false, error: "Premiere created the marker but its stored time is not verified on the active sequence frame grid.", data: __markerUndoReceipt(markerUndoBefore, { timelineChanged: true, outcome: "committed_unverified", verified: false, requestedSeconds: __ticksToSeconds(requestedMarkerTicks), appliedSeconds: appliedMarkerSeconds }) });
+          }
 
           ${args.name ? `marker.name = "${escapeForExtendScript(args.name)}";` : ""}
           ${args.comments ? `marker.comments = "${escapeForExtendScript(args.comments)}";` : ""}
           ${args.color !== undefined ? `marker.setColorByIndex(${args.color});` : ""}
-          ${args.duration_seconds ? `marker.end = ${args.time_seconds + args.duration_seconds};` : ""}
+          ${args.duration_seconds ? `requestedMarkerEndTicks = __secondsToTicks(${args.time_seconds + args.duration_seconds}); appliedMarkerEndTicks = ${args.node_id ? "requestedMarkerEndTicks" : "__snapSequenceTicks(markerSeq, requestedMarkerEndTicks)"}; marker.end = __ticksToSeconds(appliedMarkerEndTicks);` : ""}
           ${MARKER_READBACK}
-          var problems = __markerMismatches(marker, ${wanted});
+          var problems = __markerMismatches(marker, ${args.duration_seconds ? `{ ${args.name ? `name: "${escapeForExtendScript(args.name)}",` : ""} ${args.comments ? `comments: "${escapeForExtendScript(args.comments)}",` : ""} ${args.color !== undefined ? `color: ${args.color},` : ""} end: __ticksToSeconds(appliedMarkerEndTicks) }` : wanted});
+          ${args.duration_seconds ? `if (Math.abs(parseFloat(marker.end.seconds) - __ticksToSeconds(appliedMarkerEndTicks)) > __ticksToSeconds(markerFrameTicks) / 1000) problems.push("end is off the active sequence frame grid");` : ""}
           if (problems.length) {
             return __jsonStringify({ success: false, error: "The marker was created at ${args.time_seconds}s, but " + problems.join("; ") + ".", data: __markerUndoReceipt(markerUndoBefore, { timelineChanged: true }) });
           }
@@ -161,10 +175,14 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
             verified: __markerUnverified.length === 0,
             unverifiedFields: __markerUnverified,
             guid: __markerGuid(marker),
-            timeSeconds: ${args.time_seconds},
+            timeSeconds: appliedMarkerSeconds,
             endSeconds: parseFloat(marker.end.seconds),
             name: marker.name,
-            comments: marker.comments
+            comments: marker.comments,
+            requestedSeconds: Math.abs(appliedMarkerTicks - requestedMarkerTicks) > markerFrameTicks / 1000 ? __ticksToSeconds(requestedMarkerTicks) : undefined,
+            appliedSeconds: Math.abs(appliedMarkerTicks - requestedMarkerTicks) > markerFrameTicks / 1000 ? appliedMarkerSeconds : undefined,
+            requestedEndSeconds: isFinite(requestedMarkerEndTicks) && Math.abs(appliedMarkerEndTicks - requestedMarkerEndTicks) > markerFrameTicks / 1000 ? __ticksToSeconds(requestedMarkerEndTicks) : undefined,
+            appliedEndSeconds: isFinite(appliedMarkerEndTicks) && Math.abs(appliedMarkerEndTicks - requestedMarkerEndTicks) > markerFrameTicks / 1000 ? __ticksToSeconds(appliedMarkerEndTicks) : undefined
           }));
         `);
         return sendCommand(script, bridgeOptions);
@@ -301,7 +319,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
     },
 
     list_markers: {
-      description: "List markers on the active sequence, or on a source project item that exposes a marker collection. A timeline-clip node_id returns a clean error instead of a raw TypeError.",
+      description: "List markers on the active sequence, or on a source project item that exposes a marker collection, including marker GUID and color when readable. A timeline-clip node_id returns a clean error instead of a raw TypeError.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -331,6 +349,7 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
 
         const script = buildToolScript(`
           ${markerTarget}
+          function __markerGuid(marker) { try { return marker.guid ? String(marker.guid) : null; } catch (guidError) { return null; } }
           
           var list = [];
           var marker = markers.getFirstMarker();
@@ -338,6 +357,8 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
             list.push({
               name: marker.name,
               comments: marker.comments,
+              guid: __markerGuid(marker),
+              color: (function () { try { return marker.getColorByIndex(); } catch (colorError) { return null; } })(),
               startSeconds: marker.start.seconds,
               endSeconds: marker.end.seconds,
               type: marker.type

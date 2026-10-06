@@ -94,6 +94,13 @@ function inOutHost(options: {
 }
 
 describe("lift_selection and extract_selection", () => {
+  it.each([utility.lift_selection, utility.extract_selection])("refuses off-grid stored marks before the selection edit", async (tool) => {
+    const host = inOutHost({ inSeconds: 30.01, outSeconds: 35 });
+    const before = host.spans(host.video[0]);
+    await expect(tool.handler()).resolves.toMatchObject({ success: false, error: expect.stringContaining("stored sequence in/out marks are off") });
+    expect(host.spans(host.video[0])).toEqual(before);
+  });
+
   it("lifts through QE's misspelled left() and verifies the gap (live 25.2)", async () => {
     const host = inOutHost({ inSeconds: 30, outSeconds: 35 });
     const result = await utility.lift_selection.handler() as Result;

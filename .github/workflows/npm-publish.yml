@@ -66,7 +66,15 @@ jobs:
             exit 1
           fi
       - name: Publish to npm
-        run: npm publish --provenance --access public --tag "${{ inputs.tag }}"
+        env:
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          if [[ ! "$NPM_DIST_TAG" =~ ^[a-z][a-z0-9_-]{0,63}$ ]]; then
+            echo "Invalid npm dist-tag: use a lowercase letter followed by up to 63 lowercase letters, digits, underscores or hyphens."
+            exit 1
+          fi
+          npm publish --provenance --access public --tag "$NPM_DIST_TAG"
       # The website (leancoderkavy/premiere-pro-mcp-site) syncs published facts
       # from npm every 6 hours. This dispatch only makes that sync start sooner.
       # The package is already published here, so a missing token or a failed

@@ -29,6 +29,7 @@
     '}',
     'if ($initialize) {',
     '  if ($unsafeAncestors.Count -ne 0) { throw ("Bridge directory ancestry is unsafe: " + (($unsafeAncestors | ForEach-Object { "{0} ({1}: {2})" -f $_.path, $_.reason, $_.sid }) -join "; ")) }',
+    '  $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($current)))',
     '  $acl.SetAccessRuleProtection($true, $false)',
     '  $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit',
     '  $propagation = [System.Security.AccessControl.PropagationFlags]::None',

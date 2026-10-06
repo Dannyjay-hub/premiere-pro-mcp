@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -14,12 +14,14 @@ vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 
 import { getAudioTools } from "../../src/tools/audio.js";
 
+afterAll(cleanupTempDirs);
+
 const tool = getAudioTools({ tempDir: "/tmp/test" }).normalize_loudness_file;
 
 beforeEach(() => vi.clearAllMocks());
 
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "premiere-normalize-"));
+  const directory = makeTempDir("premiere-normalize-");
   const inputPath = join(directory, "input.wav");
   const outputPath = join(directory, "normalized.wav");
   writeFileSync(inputPath, "input-audio");

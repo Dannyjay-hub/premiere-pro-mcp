@@ -369,7 +369,7 @@ describe("issue #243 — copy_effect_values refuses unsafe Blend Mode writes", (
 
     expect(script).toContain('srcProp.displayName === "Blend Mode"');
     expect(script).toContain("Legacy CEP enum writes can corrupt Blend Mode; no write was attempted.");
-    expect(script).toContain("var readback = tgtComp.properties[q].getValue(0, 0)");
+    expect(script).toContain("var readback = tgtProp.getValue(0, 0)");
     expect(script).toContain("Effect-value copy was not fully verified");
   });
 });
