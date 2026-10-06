@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Snapshots.** Slip, slide, ripple-delete and duplicate `inspect` results now include a snake_case `expected_snapshot` that `apply` accepts unchanged. Previously the camelCase inspect output was rejected by the apply schema.
   - **Capabilities.** The bridge re-reads the panel's live capabilities before refusing a command that the connect-time handshake marked unsupported, and `get_uxp_capabilities` reports the live list. A panel that connected before a project was open or a workspace was approved hid 25 of 192 commands for the session.
   - **Markers.** `manage_markers_uxp` `add` now forwards and applies `color_index` and verifies every requested field. Previously the colour was dropped while the add reported verified.
-  - **Frame export.** `export_frame_uxp` retries with the file extension when Premiere rejects an extension-less name ("File Format is not supported"). It also waits up to 15 s for the PNG, which 26.5.2 writes after the call returns.
+  - **Frame export.** `export_frame_uxp` retries with the file extension when Premiere rejects an extension-less name ("File Format is not supported"). It also waits up to 15 s for the PNG, which 26.5.2 writes after the call returns, and it checks for the file by walking the approved workspace folder: a plugin with request-only file access cannot open arbitrary `file:` URLs, so the old check reported a written frame as missing.
   - **Media health.** `maintain_media_health_uxp` treats a single `project_item_id` as a one-item list for inspect, refresh and set_offline.
 
 ## [1.19.1] - 2026-10-04

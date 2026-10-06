@@ -1279,7 +1279,10 @@
       return { found: false };
     }
     async function outputFileExists(path) {
-      if (typeof deps.fileExists === "function") return !!(await deps.fileExists(path));
+      if (typeof deps.fileExists === "function") {
+        const known = await deps.fileExists(path);
+        if (known !== null && known !== undefined) return !!known;
+      }
       let fs = null;
       try {
         const uxp = require("uxp");
