@@ -252,11 +252,56 @@ describe("duplicate_clip verification", () => {
   it("does not report success when a duplicate or linked partner is unverified", async () => {
     await timeline.duplicate_clip.handler({ node_id: "c1" });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain('var duplicateVerified = drift <= 2 * frameTicks && inDrift <= frameTicks');
+    expect(script).toContain('var duplicateVerified = drift < frameTicks / 2 && inDrift < frameTicks / 2 && linkedVerified');
     expect(script).toContain('if (!duplicateVerified) return __jsonStringify({ success: false');
     expect(script).toContain('outcome: "committed_unverified"');
-    expect(script).toContain('(!partner || !!(isVideo ? newAudio : newVideo))');
+    expect(script).toContain('var linkedVerified = !partner || (!!linkedCopy');
     expect(script).toContain('timelineChanged: true');
+  });
+
+  // 29.97 fps: Premiere places the copy one frame short of the original's end.
+  const frame = 8475667200;
+  function oneFrameShortHost(endSettable: boolean) {
+    const originalEnd = 677 * frame;
+    const item = {
+      getInPoint: () => ({ ticks: "0", seconds: 0 }),
+      getOutPoint: (type: number) => type === 2 ? { ticks: "0", seconds: 0 } : { ticks: String(678 * frame), seconds: (678 * frame) / 254016000000 },
+      setInPoint: vi.fn(), setOutPoint: vi.fn(),
+    };
+    const clip = { nodeId: "c1", projectItem: item, start: { ticks: "0" }, end: { ticks: String(originalEnd) }, inPoint: { ticks: "0" } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown> };
+    let copy: { end: { ticks: string } } | undefined;
+    const sequence = {
+      timebase: String(frame),
+      videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: target },
+      audioTracks: { numTracks: 0 },
+      overwriteClip: () => {
+        const placed = { nodeId: "copy", start: { ticks: "0" }, inPoint: { ticks: "0" }, endTicks: String(originalEnd - frame) };
+        Object.defineProperty(placed, "end", {
+          get: () => ({ ticks: placed.endTicks }),
+          set: (time: { ticks: string }) => { if (!endSettable) throw new Error("end is read-only"); placed.endTicks = time.ticks; },
+        });
+        copy = placed as unknown as { end: { ticks: string } };
+        target.clips = { numItems: 1, 0: copy };
+      },
+    };
+    class Time { ticks = "0"; }
+    return { context: { app: { project: { activeSequence: sequence } }, Time }, originalEnd, copy: () => copy };
+  }
+
+  it("trims a copy that lands one frame short back to the original's end", async () => {
+    const host = oneFrameShortHost(true);
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
+    const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
+    expect(result).toMatchObject({ success: true, data: { verified: true, outcome: "verified", endCorrected: true } });
+    expect(host.copy()?.end.ticks).toBe(String(host.originalEnd));
+  });
+
+  it("reports a one-frame-short copy as committed_unverified when its end cannot be corrected", async () => {
+    const host = oneFrameShortHost(false);
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
+    const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
+    expect(result).toMatchObject({ success: false, data: { verified: false, outcome: "committed_unverified", timelineChanged: true } });
   });
 });
 
