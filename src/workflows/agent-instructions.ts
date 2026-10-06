@@ -40,7 +40,7 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["inspect_project_panel_metadata_uxp"],
     "Read visible Project-panel columns as JSON (item_columns) or the panel layout XML (panel). Column JSON is the current view, not every XMP namespace.");
   route(["get_metadata", "get_xmp_metadata"],
-    "Read Premiere-private project metadata and the separate file/clip XMP packet. Prefer parse_fields for named properties. Disable unused XML payloads; packets are size-bounded and can include GPS, serials, or other sensitive EXIF.");
+    "Read Premiere-private project metadata and the separate file/clip XMP packet. CEP reads default to bounded parsed fields with personal data omitted. Raw XML requires explicit packet flags and include_sensitive true; full media paths require include_media_path true.");
   route(["inspect_project_panel_metadata_uxp", "manage_metadata_uxp"],
     "Inspect columns or named fields, then update one field with update_field or both packets with update in one locked UXP transaction with readback. Do not retry a failed UXP write through CEP.");
   route(["get_metadata", "set_metadata"],
@@ -68,10 +68,10 @@ PLAN AND EXECUTE:
 METADATA:
 - Premiere stores several distinct surfaces. Do not conflate them: visible Project-panel columns, Premiere-private project metadata XML, file/clip XMP, panel-layout/schema XML, color labels, footage interpretation, markers, and transcripts.
 - Prefer column JSON from inspect_project_panel_metadata_uxp action item_columns, or named fields from manage_metadata_uxp inspect_fields / get_metadata parse_fields, when the user wants Scene, Shot, Take, Log Note, Description, Tape Name, or other currently visible columns. Column JSON includes ColumnName, ColumnValue, ColumnID, and ColumnPath.
-- Request full project-metadata XML or XMP only when a named field is missing from the column or field view, or the user explicitly needs the packet. Omit either XML when identity/path is enough. Do not dump bounded packets into planning text.
+- Request full project-metadata XML or XMP only when the user explicitly needs the packet and its potential personal-data disclosure. CEP get_metadata requires include_project_metadata/include_xmp_metadata plus include_sensitive true; get_xmp_metadata requires include_raw plus include_sensitive true. Both default to bounded parsed fields. Full source paths require include_media_path true. Do not dump bounded packets into planning text.
 - premiere://project/metadata is a path-redacted project/timeline summary, not XMP or Project Metadata XML.
 - Writes: CEP set_metadata accepts field_name plus value (read-modify-write through AdobeXMPScript with field readback) or complete Project Metadata XML plus updated_fields. set_xmp_metadata merges a patch into the existing XMP packet. UXP manage_metadata_uxp update_field writes one property; update can still replace either packet together with readback. add_custom_metadata_field and create_project_metadata_field_uxp create schema columns only; they do not set per-item values. Adobe exposes no field-level schema enumerator.
-- Treat GPS, camera serials, and similar EXIF as sensitive. Report them only when the user asked. Never enable unsafe-script to parse or rewrite metadata.
+- Treat GPS, camera serials, author, owner, and contact data as sensitive. Report them only when the user asked. Never enable unsafe-script to parse or rewrite metadata.
 
 AVAILABLE WORKFLOW ROUTES:
 ${routes.length ? routes.join("\n") : "- Use task-keyword discovery to identify the operations enabled in this session."}

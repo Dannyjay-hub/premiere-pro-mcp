@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { open, readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { ensurePrivateContextDirectory, openPrivateContextFile } from "./context-storage-security.js";
 
 export const PROJECT_CONTEXT_SCHEMA_VERSION = 1;
 export const MAX_CONTEXT_RECORDS = 10_000;
@@ -153,19 +154,34 @@ class JsonContextBackend implements ContextBackend {
 
   async get(projectId: string): Promise<ProjectContextDocument | undefined> {
     try {
-      return validateDocument(JSON.parse(await readFile(this.filePath(projectId), "utf8")));
+      return await this.readDocument(this.filePath(projectId));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
   }
 
+  private async readDocument(file: string): Promise<ProjectContextDocument> {
+    const handle = await openPrivateContextFile(file);
+    try { return validateDocument(JSON.parse(await handle.readFile("utf8"))); }
+    finally { await handle.close(); }
+  }
+
   async put(document: ProjectContextDocument): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const target = this.filePath(document.projectId);
-    const temporary = `${target}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(document)}\n`, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, target);
+    try { await (await openPrivateContextFile(target)).close(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    // wx rejects even dangling symlinks, and each writer owns a distinct staging file.
+    const staging = await open(temporary, "wx", 0o600);
+    try {
+      await staging.writeFile(`${JSON.stringify(document)}\n`, "utf8");
+      await staging.close();
+      await rename(temporary, target);
+    } finally {
+      await staging.close();
+      await rm(temporary, { force: true });
+    }
   }
 
   async delete(projectId: string): Promise<boolean> {
@@ -184,7 +200,7 @@ class JsonContextBackend implements ContextBackend {
       const summaries: ProjectContextSummary[] = [];
       for (const name of names) {
         try {
-          summaries.push(toSummary(validateDocument(JSON.parse(await readFile(path.join(this.directory, name), "utf8")))));
+          summaries.push(toSummary(await this.readDocument(path.join(this.directory, name))));
         } catch {
           // One corrupt or incompatible file must not hide the remaining projects.
         }
@@ -307,29 +323,37 @@ export class ProjectContextRepository {
     if (requested === "memory") return new MemoryContextBackend();
 
     const directory = path.resolve(this.options.directory ?? defaultProjectContextDirectory());
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    ensurePrivateContextDirectory(directory);
     if (requested === "sqlite" || requested === "auto") {
+      // Only lack of runtime SQLite support may select the JSON fallback.
+      const moduleName = "node:sqlite";
+      let sqlite: { DatabaseSync: new (fileName: string) => SqliteDatabase };
       try {
-        // Keep Node 20 compatibility: node:sqlite exists on newer runtimes only.
-        const moduleName = "node:sqlite";
-        const sqlite = await import(moduleName) as unknown as {
-          DatabaseSync: new (fileName: string) => SqliteDatabase;
-        };
-        const databasePath = path.join(directory, "project-context.sqlite");
-        const database = new sqlite.DatabaseSync(databasePath);
-        return new SqliteContextBackend(database);
+        sqlite = await import(moduleName) as typeof sqlite;
       } catch (error) {
-        if (requested === "sqlite") {
-          throw new Error(`SQLite context storage is unavailable on this Node runtime: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        if (requested === "sqlite") throw new Error(`SQLite context storage is unavailable on this Node runtime: ${error instanceof Error ? error.message : String(error)}`);
+        return new JsonContextBackend(directory);
       }
+      const databasePath = path.join(directory, "project-context.sqlite");
+      for (const suffix of ["-journal", "-wal", "-shm"]) {
+        try { await (await openPrivateContextFile(`${databasePath}${suffix}`)).close(); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      await (await openPrivateContextFile(databasePath, true)).close();
+      const database = new sqlite.DatabaseSync(databasePath);
+      try { return new SqliteContextBackend(database); }
+      catch (error) { database.close(); throw error; }
     }
     return new JsonContextBackend(directory);
   }
 
-  private backend(): Promise<ContextBackend> {
+  private async backend(): Promise<ContextBackend> {
     this.backendPromise ??= this.createBackend();
-    return this.backendPromise;
+    const backend = await this.backendPromise;
+    if (backend.name !== "memory") {
+      ensurePrivateContextDirectory(path.resolve(this.options.directory ?? defaultProjectContextDirectory()));
+    }
+    return backend;
   }
 
   async backendName(): Promise<ContextBackendName> {

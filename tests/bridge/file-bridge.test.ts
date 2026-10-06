@@ -22,6 +22,7 @@ import {
   getDefaultBridgeTempDir,
   getBridgeLiveness,
   ensurePrivateBridgeDirectory,
+  inspectWindowsBridgeDirectoryAcl,
   isWindowsCapabilitySid,
   MAX_BRIDGE_RESPONSE_BYTES,
   sendCommand,
@@ -64,6 +65,20 @@ const mockedRealpathSync = vi.mocked(realpathSync);
 const mockedChmodSync = vi.mocked(chmodSync);
 const mockedWatch = vi.mocked(watch);
 const mockedExecFileSync = vi.mocked(execFileSync);
+
+describe("Windows context confidentiality inspection", () => {
+  it("checks read access and uses file ACL APIs for context databases", () => {
+    mockedExecFileSync.mockReturnValueOnce(JSON.stringify({
+      ownerSid: "owner", currentUserSid: "owner", unsafeWriteAces: [], unsafeAncestorEntries: [],
+    }));
+    inspectWindowsBridgeDirectoryAcl("C:\\Context\\project-context.sqlite", false, { readAccess: true, file: true });
+    const args = mockedExecFileSync.mock.calls.at(-1)![1] as string[];
+    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+    expect(script).toContain("$mutating = $mutating -bor [System.Security.AccessControl.FileSystemRights]::ReadData");
+    expect(script).toContain("[System.IO.File]::GetAccessControl($path)");
+    expect(script).not.toContain("[System.IO.Directory]::GetAccessControl($path)");
+  });
+});
 
 // ensureDir on an existing dir stat-checks ownership; default to a dir owned by us
 // with safe perms so the existing tests exercise the happy path.

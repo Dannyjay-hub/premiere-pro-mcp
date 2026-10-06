@@ -279,8 +279,14 @@ export const WINDOWS_BRIDGE_ACL_SCRIPT = [
 export function inspectWindowsBridgeDirectoryAcl(
   directory: string,
   initialize: boolean,
+  privacy: { readAccess?: boolean; file?: boolean } = {},
 ): WindowsBridgeDirectoryAcl {
-  const encodedCommand = Buffer.from(WINDOWS_BRIDGE_ACL_SCRIPT, "utf16le").toString("base64");
+  let script = WINDOWS_BRIDGE_ACL_SCRIPT;
+  if (privacy.readAccess) {
+    script = script.replace('\n$trusted = @(', '\n$mutating = $mutating -bor [System.Security.AccessControl.FileSystemRights]::ReadData -bor [System.Security.AccessControl.FileSystemRights]::ReadExtendedAttributes\n$trusted = @(');
+  }
+  if (privacy.file) script = script.replaceAll("[System.IO.Directory]::GetAccessControl($path)", "[System.IO.File]::GetAccessControl($path)");
+  const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
   const raw = execFileSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand],
