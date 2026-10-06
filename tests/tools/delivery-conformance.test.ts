@@ -1,7 +1,8 @@
-import { appendFileSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -18,6 +19,8 @@ import {
   parseRationalRate,
   validateDeliveryConformanceContract,
 } from "../../src/tools/export.js";
+
+afterAll(cleanupTempDirs);
 
 const probe = {
   format: { format_name: "mov,mp4,m4a", duration: "10.020", bit_rate: "12000000" },
@@ -157,7 +160,7 @@ describe("verify_delivery_conformance boundary", () => {
   });
 
   function mediaFile() {
-    const directory = mkdtempSync(join(tmpdir(), "premiere-delivery-conformance-"));
+    const directory = makeTempDir("premiere-delivery-conformance-");
     const mediaPath = join(directory, "delivery.mp4");
     writeFileSync(mediaPath, "delivery-fixture");
     return mediaPath;

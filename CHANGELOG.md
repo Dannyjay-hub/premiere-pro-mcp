@@ -21,6 +21,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Frame export.** `export_frame_uxp` retries with the file extension when Premiere rejects an extension-less name ("File Format is not supported"). It also waits up to 15 s for the PNG, which 26.5.2 writes after the call returns, and it checks for the file by walking the approved workspace folder: a plugin with request-only file access cannot open arbitrary `file:` URLs, so the old check reported a written frame as missing.
   - **Media health.** `maintain_media_health_uxp` treats a single `project_item_id` as a one-item list for inspect, refresh and set_offline.
 
+- `razor_all_tracks` and `split_clip` cut on the requested frame in drop-frame sequences. They built a non-drop `HH:MM:SS:FF` string, which Premiere reads as drop-frame timecode on 29.97/59.94 DF sequences, so cuts landed early by the dropped-frame count (2 frames after the first minute, 28 frames at 16 minutes, measured on 25.2.3) and `razor_all_tracks` still reported `verified: true`. Both now let Premiere format the timecode in the sequence's display format, snap the cut to a frame, and verify the new boundary within half a frame; `razor_all_tracks` reports a misplaced cut as `committed_unverified`.
+
+- `add_audio_keyframes` and `setup_ducking` can add the first keyframe to a clip again. On Premiere 25.2.3 a property with no keyframes returns `undefined` from `getKeys()` (with `isTimeVarying()` false), which the audio and shared keyframe readers treated as unreadable storage, so both tools refused every clip without existing Volume keys. That state now reads as an empty key list; `null`, malformed lists, and `undefined` on a time-varying property still refuse.
+
+- `detect_beats` no longer snaps tempo to a coarse grid or lets the beat grid drift. It decoded audio at 200 Hz and built a 20 Hz onset envelope, so periods could only take 50 ms steps (73 BPM reported as 75, 146 as 150) and the returned beat times drifted by about 0.4 s after 30 beats. It now decodes at 4 kHz, uses a 100 Hz envelope, and refines the period to a fraction of a sample across the whole file. On 3-minute click tracks from 60 to 174 BPM, tempo is exact and every beat time is within 20 ms.
+
+- `detect_repeated_takes` no longer groups a short sentence with a much longer, different one because they share a few words. Similarity used bag-of-words containment, so on a real interview transcript "We have new city projects" (5 words) scored 0.8 against a 20-word sentence mentioning "different new city projects", and the default `keep: "last"` proposed removing 7.9 s of real content. When one sentence is under 60% of the other's length, containment now only counts a false start that matches the start of the longer sentence in order; similar-length retakes behave as before.
+
+- `map_source_ranges_to_timeline` now treats `getSpeed() === 100` as normal speed on older Premiere hosts while continuing to refuse retimed or reversed clips.
+
+- `set_sequence_frame_rate` sets exact NTSC timebases. It divided by the rounded decimal (`TICKS_PER_SECOND / 29.97`), giving 8475675676 ticks per frame for 29.97 and 10594594595 for 23.976, which are near-NTSC rates that drift against camera media and differ from Premiere's own presets (8475667200 and 10594584000). Requests within 0.005 fps of 23.976, 29.97, 47.952, 59.94 or 119.88 now use the exact `nominal × 1000/1001` timebase, and the receipt reports `ntsc` and `exactFrameRate`.
+
+- Timeline edits for playhead, clip placement/duration/trim, sequence marks and sequence markers snap requested times to the active sequence frame grid, verify stored boundaries within 1/1000 frame, and report changed requested/applied values.
+
+- `navigate_playhead` now reports timecode using Premiere's sequence display format, including drop-frame punctuation.
+
+- Transition receipts distinguish verified placement from handle-limited duration, mark each deviating placement, and count duration deviations. Premiere-built title copies report their application-support location and are documented as user-managed files that must not be removed while any project references them.
+- Filler-removal guidance explains that hesitation sounds require transcripts that preserve disfluencies; Whisper's default output omits them.
+
+- FCP XML export receipts parse Premiere's BOM-prefixed Translation Report issue lines, bound effect details while reporting truncation, and wait for the XML size and modification time to stabilize before reporting its size.
+- CEP command timeouts cancel still-unclaimed work when another recent busy marker or connector heartbeat shows Premiere is blocked; mutating commands report `not_applied`, while claimed work with a fresh busy marker continues waiting.
+
+- `paste_clip_attributes` and `copy_effect_values` copy colour parameters (such as Lumetri White Balance) with `getColorValue()` / `setColorValue()`. `getValue()` returns these as one packed number above 2^53, so writing it back stored a different colour. On Premiere 25.2.3 a grey white balance came back as transparent blue. Keyframed colour parameters are reported as not copied instead of being written.
+- `copy_effect_values` matches properties by position, then by unique display name. Lumetri Color repeats names such as Saturation and Intensity across sections, and the first-name match wrote values into the wrong controls. On 25.2.3 this left a correctly graded clip with the wrong Saturation and Intensity. Values that already match and unreadable section headers are no longer rewritten, and a failed copy now names the properties it skipped or could not verify.
+
+- `copy_effects_between_clips` now copies and reads back effect parameter values and keyframes, updates an existing target effect instead of stacking a default instance, and refuses when the requested source effect is missing.
+
+- Corrected the still-capture guidance from #771. Premiere's QE PNG stills are not wrong about keyframes. They are RGBA with straight alpha, so a fading clip keeps its colours and carries the fade only in alpha. On Premiere 26.5.2 macOS, stills composited over black matched an actual H.264 export (58.0 against 58.4 YAVG at mid-fade), and linear, hold and bezier gave different alpha (168, 255 and 189) at the same instant. The earlier "QE stills hold opacity" note came from measuring stills without their alpha channel. `export_frame` and `capture_frame` now report `hasAlpha` from the PNG header with a compositing note, and the client instructions, skills, interpolation receipts and review-frame scopes say to composite stills over black before comparing them with a video export.
+
+### Changed
+
+- Long-host receipts detect FCP Translation Report modals and report written XML/OMF as committed_unverified after host timeout; export preflight reports composite black/dead-air intervals within sequence In/Out with optional paged per-track details; media, ripple, and marker readbacks include generated-no-file classification, 1-based track labels, marker GUID and color. Queued commands now cancel atomically behind a fresh busy operation when possible, distinguishing not_applied from unknown mutation outcomes.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed

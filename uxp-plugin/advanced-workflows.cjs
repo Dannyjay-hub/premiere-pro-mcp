@@ -1565,7 +1565,7 @@
       return mutationResult(verified, {
         updated: true, interpolation: modeName, interpolationValue: readback,
         renderVerified: false,
-        renderHonesty: "Verification covers the stored interpolation mode only. The 26.5.2 Windows curve-capture report remains unresolved. On 25.2.3 macOS QE stills showed identical modes while actual video exports honored them; verify using a short video export, not still capture alone."
+        renderHonesty: "Verification covers the stored interpolation mode only. Stored curves are not render proof. On Premiere 26.5.2 macOS, an actual H.264 export and QE PNG stills composited over black both distinguished linear, hold and bezier. Read without their alpha channel, those stills look identical across modes, which matches the earlier still-capture reports in #771. Verify curves with a short video export, or with PNG stills composited over black."
       }, "keyframe_interpolation_readback", "Set keyframe interpolation");
     }
 

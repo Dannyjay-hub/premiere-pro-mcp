@@ -21,6 +21,17 @@ const TRANSITION_FAILURE_RECEIPT = `
     }
     return placements;
   }
+  function __transitionDurationDeviations(placements, requestedSeconds, frameSeconds) {
+    var deviations = 0;
+    for (var i = 0; i < placements.length; i++) {
+      placements[i].requestedDurationSeconds = requestedSeconds;
+      if (Math.abs(placements[i].durationSeconds - requestedSeconds) > frameSeconds / 2) {
+        placements[i].deviation = "duration_mismatch";
+        deviations++;
+      }
+    }
+    return deviations;
+  }
   function __transitionAttemptFailure(track, before, message, extra) {
     var added = null;
     try { added = track.transitions.numItems - before; } catch (readError) {}
@@ -166,18 +177,21 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             return __jsonStringify({ success: false, error: "Premiere added a transition, but DOM readback did not find a new one at the requested cut point. Inspect the track or use Undo.", data: { outcome: "committed_unverified", verified: false, timelineChanged: true, transitionsAdded: domTrack.transitions.numItems - transitionCountBefore } });
           }
 
+          var placements = __transitionReadbacks(domTrack, transitionKeysBefore);
+          var deviations = __transitionDurationDeviations(placements, ${duration}, frameTicks / TICKS_PER_SECOND);
           return __result({
             added: true,
             verified: true,
-            outcome: "verified",
+            outcome: deviations > 0 ? "verified_with_deviation" : "verified",
+            deviations: deviations,
             transition: transitionName,
             trackIndex: ${args.track_index},
             atSeconds: ${args.cut_point_seconds},
             requestedDurationSeconds: ${duration},
-            durationMatched: Math.abs(__transitionReadbacks(domTrack, transitionKeysBefore)[0].durationSeconds - ${duration}) <= frameTicks / TICKS_PER_SECOND,
+            durationMatched: deviations === 0,
             verificationScope: "Placement and stored duration only; limited source handles may shorten or offset the transition. Rendered appearance is not verified.",
-            durationSeconds: __transitionReadbacks(domTrack, transitionKeysBefore)[0].durationSeconds,
-            placements: __transitionReadbacks(domTrack, transitionKeysBefore)
+            durationSeconds: placements[0].durationSeconds,
+            placements: placements
           });
           } catch (transitionReadbackError) {
             return __transitionAttemptFailure(domTrack, transitionCountBefore, "Transition readback failed: " + transitionReadbackError.toString());
@@ -312,6 +326,8 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           var endVerified = (position !== "end" && position !== "both") || __newTransitionCovers(domTrack, transitionKeysBefore, clipEndTicks, frameTicks);
           if (!startVerified || !endVerified) return __jsonStringify({ success: false, error: "Premiere added transitions, but DOM readback did not find each requested clip edge. Inspect the clip or use Undo.", data: { outcome: "committed_unverified", verified: false, timelineChanged: true, transitionsAdded: verifiedCount, requestedCount: requestedCount, startVerified: startVerified, endVerified: endVerified, requestedEdges: requestedEdges, completedEdges: completedEdges } });
           
+          var placements = __transitionReadbacks(domTrack, transitionKeysBefore);
+          var deviations = __transitionDurationDeviations(placements, ${duration}, frameTicks / TICKS_PER_SECOND);
           return __result({
             added: true,
             verified: true,
@@ -319,8 +335,9 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             clipName: clip.name,
             position: position,
             requestedDurationSeconds: ${duration},
-            placements: __transitionReadbacks(domTrack, transitionKeysBefore),
-            outcome: "verified",
+            placements: placements,
+            deviations: deviations,
+            outcome: deviations > 0 ? "verified_with_deviation" : "verified",
             transitionsAdded: verifiedCount,
             requestedEdges: requestedEdges,
             completedEdges: completedEdges
@@ -446,15 +463,18 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             }
           }
           
+          var placements = __transitionReadbacks(track, transitionKeysBefore);
+          var deviations = __transitionDurationDeviations(placements, ${duration}, frameTicks / TICKS_PER_SECOND);
           return __result({
             added: verifiedCount,
             alreadyPresent: alreadyPresent,
             verified: true,
-            outcome: "verified",
+            outcome: deviations > 0 ? "verified_with_deviation" : "verified",
+            deviations: deviations,
             transition: transitionName,
             trackIndex: ${trackIndex},
             requestedDurationSeconds: ${duration},
-            placements: __transitionReadbacks(track, transitionKeysBefore),
+            placements: placements,
             cutCount: requestedCuts.length
           });
           } catch (transitionReadbackError) {

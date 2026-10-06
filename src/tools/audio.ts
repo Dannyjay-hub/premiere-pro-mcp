@@ -28,7 +28,7 @@ export const AUDIO_KEYFRAME_READBACK = `
   }
   function audioKeys(prop) {
     var keys = prop.getKeys();
-    if (keys === 0) return [];
+    if (__isEmptyKeyList(prop, keys)) return [];
     if (!keys || typeof keys.length !== "number" || !isFinite(keys.length) || keys.length < 0 || Math.floor(keys.length) !== keys.length) throw new Error("Unreadable key storage");
     var ticks = [];
     for (var k = 0; k < keys.length; k++) ticks.push(audioTick(keys[k].ticks));
@@ -91,17 +91,21 @@ export function analyzeBeatPcm(samples: Int16Array, sampleRate: number): BeatMea
   if (!Number.isFinite(sampleRate) || sampleRate < 20 || samples.length < sampleRate * 2) {
     throw new NoBeatError("Beat analysis requires at least two seconds of finite-rate audio");
   }
-  const hop = Math.max(1, Math.round(sampleRate / 20));
+  // A 100 Hz onset envelope: at 20 Hz the period could only take 50 ms steps,
+  // so 73 BPM (0.822 s) snapped to 75 BPM (0.8 s) and the grid drifted.
+  const hop = Math.max(1, Math.round(sampleRate / 100));
   const envelope: number[] = [];
   for (let offset = 0; offset + hop <= samples.length; offset += hop) {
     let energy = 0;
     for (let index = offset; index < offset + hop; index++) energy += Math.abs(samples[index]);
     envelope.push(energy / hop);
   }
+  // Half-second moving baseline either side, whatever the envelope rate.
+  const baselineHalfWidth = Math.max(1, Math.round((sampleRate / hop) * 0.5));
   const onset = envelope.map((value, index) => {
     let baseline = 0;
     let count = 0;
-    for (let at = Math.max(0, index - 10); at <= Math.min(envelope.length - 1, index + 10); at++) {
+    for (let at = Math.max(0, index - baselineHalfWidth); at <= Math.min(envelope.length - 1, index + baselineHalfWidth); at++) {
       baseline += envelope[at]; count++;
     }
     return Math.max(0, value - baseline / count);
@@ -135,17 +139,39 @@ export function analyzeBeatPcm(samples: Int16Array, sampleRate: number): BeatMea
   if (!Number.isFinite(confidence) || confidence < 0.05) {
     throw new NoBeatError("No repeating beat evidence was detected in the decoded media");
   }
-  const bpm = 60 * envelopeRate / bestLag;
-  let bestOffset = 0;
-  let phaseScore = -1;
-  for (let offset = 0; offset < bestLag; offset++) {
-    let score = 0;
-    for (let index = offset; index < onset.length; index += bestLag) score += onset[index];
-    if (score > phaseScore) { phaseScore = score; bestOffset = offset; }
+  // Refine the whole-sample lag to a fractional period with a comb over the
+  // full file, so the beat grid does not drift on long material.
+  const onsetAt = (position: number) => {
+    const whole = Math.floor(position);
+    if (whole < 0 || whole + 1 >= onset.length) return 0;
+    const fraction = position - whole;
+    return onset[whole] * (1 - fraction) + onset[whole + 1] * fraction;
+  };
+  const comb = (period: number) => {
+    let bestScore = -1;
+    let bestPhase = 0;
+    for (let phase = 0; phase < period; phase += 0.5) {
+      let score = 0;
+      for (let position = phase; position < onset.length - 1; position += period) score += onsetAt(position);
+      if (score > bestScore) { bestScore = score; bestPhase = phase; }
+    }
+    return { score: bestScore, phase: bestPhase };
+  };
+  const candidates: Array<{ period: number; score: number }> = [];
+  for (let step = -100; step <= 100; step++) {
+    const candidate = bestLag + step / 100;
+    if (candidate <= 0 || candidate < minLag - 1) continue;
+    candidates.push({ period: candidate, score: comb(candidate).score });
   }
+  // Wide onsets give a plateau of equally scoring periods; take its centre.
+  const topScore = Math.max(...candidates.map((entry) => entry.score));
+  const tied = candidates.filter((entry) => entry.score >= topScore * 0.999).map((entry) => entry.period);
+  const period = (Math.min(...tied) + Math.max(...tied)) / 2;
+  const best = comb(period);
+  const bpm = 60 * envelopeRate / period;
   const beatTimesSeconds: number[] = [];
-  for (let index = bestOffset; index < onset.length; index += bestLag) {
-    beatTimesSeconds.push(Number((index / envelopeRate).toFixed(3)));
+  for (let position = best.phase; position < onset.length; position += period) {
+    beatTimesSeconds.push(Number((position / envelopeRate).toFixed(3)));
   }
   return {
     bpm: Number(bpm.toFixed(1)),
@@ -888,7 +914,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         try {
           const result = await execFileAsync("ffmpeg", [
             "-nostdin", "-hide_banner", "-loglevel", "error", "-i", mediaPath,
-            "-t", "1800", "-vn", "-sn", "-dn", "-ac", "1", "-ar", "200", "-f", "s16le", "pipe:1",
+            "-t", "1800", "-vn", "-sn", "-dn", "-ac", "1", "-ar", "4000", "-f", "s16le", "pipe:1",
           ], { encoding: "buffer", timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 }) as unknown as { stdout: Buffer };
           bytes = result.stdout;
         } catch (error) {
@@ -904,7 +930,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         try {
           const samples = new Int16Array(bytes.length >> 1);
           for (let index = 0; index < samples.length; index++) samples[index] = bytes.readInt16LE(index * 2);
-          measurement = analyzeBeatPcm(samples, 200);
+          measurement = analyzeBeatPcm(samples, 4000);
         } catch (error) {
           // Only the analysis' own "no beat" outcomes are a musical result; any
           // other exception is a real failure and is reported as one.

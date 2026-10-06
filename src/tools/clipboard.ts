@@ -295,6 +295,42 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
       return record(base);
     }
 
+    function copyColor(color, tgtProp, base) {
+      base.kind = "color";
+      var current = __readColorValue(tgtProp);
+      if (!current) {
+        base.reason = "Source is a colour parameter but the matching target parameter is not; the target was left unchanged.";
+        return skip(base);
+      }
+      var targetAnimated = readTimeVarying(tgtProp);
+      if (!targetAnimated && sameValue(current, color)) {
+        base.status = "verified";
+        base.action = "unchanged";
+        return record(base);
+      }
+      try {
+        if (targetAnimated) tgtProp.setTimeVarying(false);
+        tgtProp.setColorValue(color[0], color[1], color[2], color[3], true);
+      } catch (eSetColor) {
+        base.status = "failed";
+        base.action = "written";
+        base.reason = "Premiere rejected the colour write: " + eSetColor.toString();
+        return record(base);
+      }
+      base.action = "written";
+      var readback = __readColorValue(tgtProp);
+      if (!readback) {
+        base.status = "committed_unverified";
+        base.reason = "Premiere accepted the colour write but did not return a colour readback.";
+      } else if (sameValue(readback, color)) {
+        base.status = "verified";
+      } else {
+        base.status = "failed";
+        base.reason = "Target colour did not match the source colour after the write.";
+      }
+      return record(base);
+    }
+
     function copyStatic(componentName, srcProp, tgtProp, base) {
       var value;
       try { value = srcProp.getValue(); } catch (eGet) { value = undefined; }
@@ -417,7 +453,12 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
           skip(base);
           continue;
         }
-        if (readTimeVarying(srcProp)) copyKeyframed(componentName, srcProp, tgtProp, base);
+        var srcColor = __readColorValue(srcProp);
+        if (srcColor && readTimeVarying(srcProp)) {
+          base.reason = "Source colour parameter is keyframed; colour keyframes cannot be read without losing precision, so the target was left unchanged.";
+          skip(base);
+        } else if (srcColor) copyColor(srcColor, tgtProp, base);
+        else if (readTimeVarying(srcProp)) copyKeyframed(componentName, srcProp, tgtProp, base);
         else copyStatic(componentName, srcProp, tgtProp, base);
       }
     }
@@ -457,9 +498,9 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
 }
 
 export function getClipboardTools(bridgeOptions: BridgeOptions) {
-  return {
+  const tools = {
     copy_effects_between_clips: {
-      description: "Copy all effects (or a specific effect) from one clip to another. Does not copy intrinsic properties like Motion/Opacity unless specified.",
+      description: "Copy all effects (or a specific effect) from one clip to another, including parameter values and keyframes, and read every written value back. A missing effect is added through the experimental legacy QE DOM; when the target already has that effect, its values are updated instead of stacking a second default-valued instance. Intrinsic components such as Motion and Opacity are skipped unless named. Uses the same component matching and per-property receipts as paste_clip_attributes.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -479,119 +520,64 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
         required: ["source_node_id", "target_node_id"],
       },
       handler: async (args: { source_node_id: string; target_node_id: string; effect_name?: string }) => {
-        const script = buildToolScript(`
-          app.enableQE();
+        // Adding an effect through QE gives the target a default-valued
+        // instance. Copy the values and keyframes with the paste-attributes
+        // machinery, which matches components by match name and occurrence
+        // and reads every written value back.
+        const listing = await sendCommand(buildToolScript(`
           var srcResult = __findClip("${escapeForExtendScript(args.source_node_id)}");
           if (!srcResult) return __error("Source clip not found");
           var tgtResult = __findClip("${escapeForExtendScript(args.target_node_id)}");
           if (!tgtResult) return __error("Target clip not found");
-
-          var src = srcResult.clip;
-          var tgt = tgtResult.clip;
-          var copied = [];
-          var unverified = [];
-          var failed = [];
           var effectFilter = ${args.effect_name ? `"${escapeForExtendScript(args.effect_name)}"` : "null"};
           var intrinsic = ["Motion", "Opacity", "Time Remapping", "Volume", "Channel Volume", "Panner"];
-
-          // Use QE to copy effects by name
-          var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active sequence (QE); nothing was changed.");
-          var tgtTrackType = tgtResult.trackType;
-          var tgtTrack = tgtTrackType === "video"
-            ? qeSeq.getVideoTrackAt(tgtResult.trackIndex)
-            : qeSeq.getAudioTrackAt(tgtResult.trackIndex);
-          if (!tgtTrack) return __error("QE target track not found; nothing was changed.");
-          // QE track items include gaps, so the DOM clip index is not a QE index.
-          var qeTgtClip = __findQeClipByDomClip(tgtTrack, tgt);
-          if (!qeTgtClip) return __error("Could not match the QE clip for target " + tgt.name + " by timeline start; nothing was changed.");
-
-          function countTargetComponents(wanted) {
-            var n = 0;
-            for (var ci = 0; ci < tgt.components.numItems; ci++) {
-              if (tgt.components[ci].displayName === wanted) n++;
-            }
-            return n;
-          }
-
-          function listNames(entries) {
-            var out = [];
-            for (var li = 0; li < entries.length; li++) {
-              out.push(typeof entries[li] === "string" ? entries[li] : entries[li].effect + " (" + entries[li].reason + ")");
-            }
-            return out.join(", ");
-          }
-
-          for (var i = 0; i < src.components.numItems; i++) {
-            var comp = src.components[i];
-            var name = comp.displayName;
-
+          var intrinsicMatches = ["AE.ADBE Motion", "AE.ADBE Opacity", "AE.ADBE Time Remapping", "ADBE Motion", "ADBE Opacity", "ADBE Time Remapping", "AE.ADBE Volume", "AE.ADBE Channel Volume", "AE.ADBE Panner", "audioVolume", "audioChannelVolume", "audioPanner"];
+          var names = [], seen = {};
+          for (var i = 0; i < srcResult.clip.components.numItems; i++) {
+            var name = srcResult.clip.components[i].displayName;
             if (effectFilter && name !== effectFilter) continue;
             if (!effectFilter) {
               var skip = false;
-              for (var k = 0; k < intrinsic.length; k++) {
-                if (name === intrinsic[k]) { skip = true; break; }
-              }
+              for (var k = 0; k < intrinsic.length; k++) if (name === intrinsic[k]) { skip = true; break; }
+              for (var im = 0; im < intrinsicMatches.length; im++) if (srcResult.clip.components[i].matchName === intrinsicMatches[im]) skip = true;
               if (skip) continue;
             }
-
-            // Apply effect via QE, then read the target component list back.
-            var beforeCount = null;
-            try { beforeCount = countTargetComponents(name); } catch (beforeErr) {}
-            var qeEffect = null;
-            try {
-              qeEffect = tgtTrackType === "video"
-                ? qe.project.getVideoEffectByName(name)
-                : qe.project.getAudioEffectByName(name);
-            } catch (lookupErr) {
-              failed.push({ effect: name, reason: "QE effect lookup failed: " + lookupErr.toString() });
-              continue;
-            }
-            if (!qeEffect) {
-              failed.push({ effect: name, reason: "QE did not resolve a " + tgtTrackType + " effect with this name" });
-              continue;
-            }
-            try {
-              if (tgtTrackType === "video") {
-                qeTgtClip.addVideoEffect(qeEffect);
-              } else {
-                qeTgtClip.addAudioEffect(qeEffect);
-              }
-            } catch (addErr) {
-              failed.push({ effect: name, reason: "Premiere rejected the effect: " + addErr.toString() });
-              continue;
-            }
-            var afterCount = null;
-            try { afterCount = countTargetComponents(name); } catch (afterErr) {}
-            if (beforeCount !== null && afterCount !== null && afterCount > beforeCount) {
-              copied.push(name);
-            } else {
-              unverified.push({ effect: name, reason: "Premiere accepted the call but the target component list did not show a new " + name + " component" });
-            }
+            if (!seen["$" + name]) { seen["$" + name] = true; names.push(name); }
           }
-
-          if (failed.length > 0) {
-            var partial = copied.length + unverified.length > 0;
-            return __error((partial ? "copy_effects_between_clips was only partially applied" : "No effects were copied") +
-              " to " + tgt.name + ". Verified: [" + listNames(copied) + "]; committed_unverified: [" + listNames(unverified) +
-              "]; failed: [" + listNames(failed) + "]. Check Effect Controls before retrying.");
-          }
-
-          var status = copied.length + unverified.length === 0
-            ? "unchanged"
-            : (unverified.length > 0 ? "committed_unverified" : "verified");
-          return __result({
-            status: status,
-            verified: status === "verified",
-            copiedEffects: copied.length,
-            copied: copied,
-            committedUnverified: unverified,
-            failed: failed,
-            source: src.name,
-            target: tgt.name
-          });
-        `);
-        return sendCommand(script, bridgeOptions);
+          return __result({ names: names, source: srcResult.clip.name, target: tgtResult.clip.name });
+        `), bridgeOptions);
+        if (!listing.success) return listing;
+        const found = listing.data as { names: string[]; source: string; target: string };
+        if (!found || !Array.isArray(found.names)) {
+          return { success: false, error: "Premiere returned an invalid source effect list; no effects were copied." };
+        }
+        if (!found.names.length) {
+          return { success: false, error: args.effect_name ? `The source clip has no ${args.effect_name} effect; nothing was changed.` : "The source clip has no non-intrinsic effects to copy; nothing was changed." };
+        }
+        const pasted = await tools.paste_clip_attributes.handler({
+          source_node_id: args.source_node_id,
+          target_node_id: args.target_node_id,
+          components: found.names,
+          copy_keyframes: true,
+          apply_missing_effects: true,
+        });
+        if (!pasted.success) return pasted;
+        const data = pasted.data as { status?: string; summary?: Record<string, number>; components?: unknown[] };
+        return {
+          success: true,
+          data: {
+            status: data.status,
+            verified: data.status === "verified",
+            requestedEffects: found.names.length,
+            copiedEffects: data.status === "verified" ? found.names.length : 0,
+            copied: data.status === "verified" ? found.names : [],
+            valuesCopied: data.status === "verified",
+            source: found.source,
+            target: found.target,
+            summary: data.summary,
+            components: data.components,
+          },
+        };
       },
     },
 
@@ -659,7 +645,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
 
     copy_effect_values: {
       description:
-        "Copy verified scalar effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
+        "Copy verified scalar and colour effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Properties are matched by position, then by unique display name, because effects such as Lumetri Color repeat names across sections. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -710,28 +696,87 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           var copied = 0;
           var skipped = [];
           var failures = [];
-          for (var p = 0; p < srcComp.properties.numItems; p++) {
-            var srcProp = srcComp.properties[p];
+          // Lumetri and other effects repeat display names across sections (two
+          // "Saturation", two "Intensity"), so a first-name match writes values
+          // into the wrong control. Use the same index when its name agrees,
+          // otherwise only a unique name.
+          function targetPropertyFor(srcProp, index) {
+            if (index < tgtComp.properties.numItems && tgtComp.properties[index].displayName === srcProp.displayName) {
+              return tgtComp.properties[index];
+            }
+            var match = null;
             for (var q = 0; q < tgtComp.properties.numItems; q++) {
               if (tgtComp.properties[q].displayName === srcProp.displayName) {
-                if (srcProp.displayName === "Blend Mode") {
-                  skipped.push({ property: srcProp.displayName, reason: "Legacy CEP enum writes can corrupt Blend Mode; no write was attempted." });
-                  break;
-                }
-                try {
-                  var val = srcProp.getValue(0, 0);
-                  tgtComp.properties[q].setValue(val, true);
-                  var readback = tgtComp.properties[q].getValue(0, 0);
-                  if (!valuesMatch(readback, val)) {
-                    failures.push(srcProp.displayName + " did not match its source value after the write");
-                  } else {
-                    copied++;
-                  }
-                } catch(e) {
-                  failures.push(srcProp.displayName + " could not be copied and read back: " + e.toString());
-                }
-                break;
+                if (match) return null;
+                match = tgtComp.properties[q];
               }
+            }
+            return match;
+          }
+          function isCopyable(value) {
+            if (typeof value === "number") return isFinite(value);
+            if (typeof value === "boolean" || typeof value === "string") return true;
+            if (value instanceof Array) {
+              for (var vi = 0; vi < value.length; vi++) {
+                if (typeof value[vi] !== "number" || !isFinite(value[vi])) return false;
+              }
+              return value.length > 0;
+            }
+            return false;
+          }
+          for (var p = 0; p < srcComp.properties.numItems; p++) {
+            var srcProp = srcComp.properties[p];
+            var tgtProp = targetPropertyFor(srcProp, p);
+            if (!tgtProp) {
+              skipped.push({ property: srcProp.displayName, reason: "No unambiguous matching property on the target effect; no write was attempted." });
+              continue;
+            }
+            if (srcProp.displayName === "Blend Mode") {
+              skipped.push({ property: srcProp.displayName, reason: "Legacy CEP enum writes can corrupt Blend Mode; no write was attempted." });
+              continue;
+            }
+            try {
+              var srcColor = __readColorValue(srcProp);
+              if (srcColor) {
+                var sourceAnimated, targetAnimated;
+                try { sourceAnimated = srcProp.isTimeVarying(); targetAnimated = tgtProp.isTimeVarying(); }
+                catch (animationError) { skipped.push({ property: srcProp.displayName, reason: "Colour animation state is unreadable; no write was attempted." }); continue; }
+                if ((sourceAnimated !== false && sourceAnimated !== 0) || (targetAnimated !== false && targetAnimated !== 0)) {
+                  skipped.push({ property: srcProp.displayName, reason: "Colour animation cannot be copied by static effect-value copy; no write was attempted." });
+                  continue;
+                }
+                var currentColor = __readColorValue(tgtProp);
+                if (currentColor && currentColor.join(",") === srcColor.join(",")) {
+                  copied++;
+                  continue;
+                }
+                tgtProp.setColorValue(srcColor[0], srcColor[1], srcColor[2], srcColor[3], true);
+                var colorReadback = __readColorValue(tgtProp);
+                if (!colorReadback || colorReadback.join(",") !== srcColor.join(",")) {
+                  failures.push(srcProp.displayName + " did not match its source colour after the write");
+                } else {
+                  copied++;
+                }
+                continue;
+              }
+              var val = srcProp.getValue(0, 0);
+              if (!isCopyable(val)) {
+                // Section headers and opaque data (curves, blobs) are not readable values.
+                continue;
+              }
+              if (valuesMatch(tgtProp.getValue(0, 0), val)) {
+                copied++;
+                continue;
+              }
+              tgtProp.setValue(val, true);
+              var readback = tgtProp.getValue(0, 0);
+              if (!valuesMatch(readback, val)) {
+                failures.push(srcProp.displayName + " did not match its source value after the write");
+              } else {
+                copied++;
+              }
+            } catch(e) {
+              failures.push(srcProp.displayName + " could not be copied and read back: " + e.toString());
             }
           }
 
@@ -739,6 +784,8 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
             return __error(
               "Effect-value copy was not fully verified. Copied " + copied + " property value(s); " +
               "skipped: " + skipped.length + "; failures: " + failures.length + ". " +
+              (skipped.length ? "Skipped: " + (function () { var names = []; for (var si = 0; si < skipped.length && si < 5; si++) names.push(skipped[si].property + " (" + skipped[si].reason + ")"); return names.join("; "); })() + ". " : "") +
+              (failures.length ? "Failures: " + failures.slice(0, 5).join("; ") + ". " : "") +
               "Blend Mode is intentionally refused on legacy CEP because Premiere can write an unrelated enum value. Inspect Effect Controls before retrying."
             );
           }
@@ -1048,4 +1095,5 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
     },
 
   };
+  return tools;
 }

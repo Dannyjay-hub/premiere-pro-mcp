@@ -47,7 +47,7 @@ function host(options: { ignoreColor?: boolean; ignoreEnd?: boolean; colorUnread
   };
   const context = createContext({
     $: { global: {} },
-    app: { enableQE() {}, project: { documentID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", activeSequence: { markers } } },
+    app: { enableQE() {}, project: { documentID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", activeSequence: { markers, timebase: String(TICKS / 25) } } },
     qe: { project: { undoStackIndex: () => undoIndex } },
   });
   mockedSendCommand.mockImplementation(async (script: string) =>
@@ -59,7 +59,7 @@ describe("add_marker and update_marker read the marker back", () => {
   it("verifies name, comments, color and duration", async () => {
     const list = host();
     await expect(tools.add_marker.handler({ time_seconds: 3, name: 'Say "hi" ', comments: "c2", color: 1, duration_seconds: 1.5 }))
-      .resolves.toMatchObject({ success: true, data: { verified: true, endSeconds: 4.5, name: 'Say "hi" ' } });
+      .resolves.toMatchObject({ success: true, data: { verified: true, endSeconds: 4.52, requestedEndSeconds: 4.5, appliedEndSeconds: 4.52, name: 'Say "hi" ' } });
     expect(list[0]).toMatchObject({ comments: "c2", color: 1 });
   });
 
@@ -124,6 +124,19 @@ describe("add_marker and update_marker read the marker back", () => {
   it("returns the new marker's guid", async () => {
     host();
     await expect(tools.add_marker.handler({ time_seconds: 6, name: "G" })).resolves.toMatchObject({ success: true, data: { guid: "guid-6", outcome: "verified" } });
+  });
+
+  it.each([23.976, 29.97, 25])("snaps sequence marker times to the %s fps grid with requested/applied receipt", async (fps) => {
+    const frameTicks = TICKS * (fps === 23.976 ? 1001 / 24000 : fps === 29.97 ? 1001 / 30000 : 1 / 25);
+    const list: FakeMarker[] = [];
+    const make = (seconds: number) => ({ name: "", comments: "", color: 0, start: { ticks: String(Math.round(seconds * TICKS)), seconds }, end: { seconds }, guid: "snap", setColorByIndex() {}, getColorByIndex: () => 0 });
+    const markers = { createMarker(seconds: number) { const marker = make(seconds); list.push(marker); return marker; }, getFirstMarker: () => list[0] ?? null, getNextMarker: () => null };
+    const context = createContext({ $: { global: {} }, app: { enableQE() {}, project: { documentID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", activeSequence: { markers, timebase: String(frameTicks) } } }, qe: { project: { undoStackIndex: () => undefined } } });
+    mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInContext(`${getHelpersSource()}\n${script}`, context))));
+    const result = await tools.add_marker.handler({ time_seconds: 0.5 }) as Result;
+    expect(Number(list[0].start.ticks) / (TICKS * frameTicks / TICKS)).toBeCloseTo(Math.round(Number(list[0].start.ticks) / frameTicks), 6);
+    expect(result.data).toMatchObject({ requestedSeconds: 0.5 });
+    expect(result.data?.appliedSeconds as number).toBeCloseTo(list[0].start.seconds, 7);
   });
 
   it.each([false, true, "0", Number.NaN])("does not coerce invalid marker color %s", async (value) => {

@@ -20,8 +20,9 @@ const TICKS = 254016000000;
 async function scriptFor(args: Record<string, unknown>) {
   mockedSendCommand.mockClear();
   await getAdvancedTools(bridgeOptions).ripple_delete.handler(args as never);
-  expect(mockedSendCommand).toHaveBeenCalledTimes(2);
-  return String(mockedSendCommand.mock.calls[1][0]);
+  const dryRun = args.dry_run === true;
+  expect(mockedSendCommand).toHaveBeenCalledTimes(dryRun ? 1 : 2);
+  return String(mockedSendCommand.mock.calls[dryRun ? 0 : 1][0]);
 }
 
 function secondsOf(ticks: string | number) {
@@ -260,6 +261,12 @@ describe("ripple_delete removes the clip's own linked audio", () => {
 });
 
 describe("ripple_delete and the clip's linked partners", () => {
+  it("includes a Premiere-style 1-based trackLabel beside zero-based track coordinates", async () => {
+    const script = await scriptFor({ node_id: "clip-1", scope: "own_track", dry_run: true });
+    expect(script).toContain("trackLabel: (plan[pi].type === \"video\" ? \"V\" : \"A\") + (plan[pi].index + 1)");
+    expect(script).toContain("trackIndex: plan[pi].index");
+  });
+
   it("removes a partner on a track without sync lock and closes that track too", async () => {
     const script = await scriptFor({ node_id: "v1-target" });
     const { sandbox, v1, a1 } = rippleHost({ targetAudio: "linked", audioSyncLocked: false });

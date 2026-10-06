@@ -86,6 +86,7 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
       "inspect_edit_readiness",
       "inspect_sequence_review_report",
       "detect_silence",
+      "map_source_ranges_to_timeline",
       "plan_silence_review_markers",
       "get_offline_media",
       "get_used_media_report",
