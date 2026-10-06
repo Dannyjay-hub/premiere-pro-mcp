@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `detect_beats` no longer snaps tempo to a coarse grid or lets the beat grid drift. It decoded audio at 200 Hz and built a 20 Hz onset envelope, so periods could only take 50 ms steps (73 BPM reported as 75, 146 as 150) and the returned beat times drifted by about 0.4 s after 30 beats. It now decodes at 4 kHz, uses a 100 Hz envelope, and refines the period to a fraction of a sample across the whole file. On 3-minute click tracks from 60 to 174 BPM, tempo is exact and every beat time is within 20 ms.
 
+- `detect_repeated_takes` no longer groups a short sentence with a much longer, different one because they share a few words. Similarity used bag-of-words containment, so on a real interview transcript "We have new city projects" (5 words) scored 0.8 against a 20-word sentence mentioning "different new city projects", and the default `keep: "last"` proposed removing 7.9 s of real content. When one sentence is under 60% of the other's length, containment now only counts a false start that matches the start of the longer sentence in order; similar-length retakes behave as before.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
