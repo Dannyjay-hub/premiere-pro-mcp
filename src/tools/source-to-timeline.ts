@@ -71,6 +71,8 @@ export function getSourceToTimelineTools(bridgeOptions: BridgeOptions) {
           var sorted = [];
           for (var r = 0; r < inputRanges.length; r++) sorted.push({ index: r, start: inputRanges[r].start, end: inputRanges[r].end });
           sorted.sort(function(a, b) { return a.start - b.start || a.end - b.end || a.index - b.index; });
+          var prefixEnd = [];
+          for (var pe = 0; pe < sorted.length; pe++) prefixEnd[pe] = Math.max(pe ? prefixEnd[pe - 1] : 0, sorted[pe].end);
           var results = [];
           var coverage = [];
           var fragments = [];
@@ -112,9 +114,9 @@ export function getSourceToTimelineTools(bridgeOptions: BridgeOptions) {
             if (Math.abs(timelineDuration - sourceDuration) > 0.000001) return __error("Matching clip " + c + " has inconsistent source and timeline duration; mapping refused");
             var clipIn = inTicks / TICKS_PER_SECOND, clipOut = outTicks / TICKS_PER_SECOND;
             var lo = 0, hi = sorted.length;
-            while (lo < hi) { var mid = Math.floor((lo + hi) / 2); if (sorted[mid].end <= clipIn) lo = mid + 1; else hi = mid; }
+            while (lo < hi) { var mid = Math.floor((lo + hi) / 2); if (prefixEnd[mid] <= clipIn) lo = mid + 1; else hi = mid; }
             var nodeId = "";
-            try { nodeId = String(clip.nodeId); } catch (eNode) {}
+            try { var rawNodeId = clip.nodeId; if (rawNodeId !== undefined && rawNodeId !== null) nodeId = String(rawNodeId); } catch (eNode) {}
             if (!nodeId) return __error("Matching clip " + c + " has no readable nodeId");
             for (var si = lo; si < sorted.length && sorted[si].start < clipOut; si++) {
               var overlapStart = Math.max(sorted[si].start, clipIn);
@@ -122,6 +124,7 @@ export function getSourceToTimelineTools(bridgeOptions: BridgeOptions) {
               if (overlapEnd <= overlapStart) continue;
               var mappedStart = startTicks / TICKS_PER_SECOND + overlapStart - clipIn;
               var mappedEnd = startTicks / TICKS_PER_SECOND + overlapEnd - clipIn;
+              if (fragments.length >= 100000) return __error("Mapping exceeds 100000 placement fragments; reduce the input ranges or inspect a smaller track");
               fragments.push({ inputIndex: sorted[si].index, timelineStartSeconds: mappedStart, timelineEndSeconds: mappedEnd, clipNodeId: nodeId });
               coverage[sorted[si].index].push({ start: overlapStart, end: overlapEnd });
             }

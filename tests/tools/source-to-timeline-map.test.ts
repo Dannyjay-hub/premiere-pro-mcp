@@ -56,6 +56,15 @@ describe("map_source_ranges_to_timeline", () => {
     ].sort((a, b) => a.timelineStartSeconds - b.timelineStartSeconds));
   });
 
+  it("maps nested and overlapping ranges without searching non-monotonic end times", async () => {
+    fixture([{ id: "placed", start: 20, end: 22, input: 10, output: 12 }]);
+    const result = await tools.map_source_ranges_to_timeline.handler({ track_type: "video", track_index: 0, source_project_item_id: "source", ranges: [
+      { start_seconds: 0, end_seconds: 20 }, { start_seconds: 1, end_seconds: 2 }, { start_seconds: 3, end_seconds: 4 },
+    ] });
+    expect(result.data.ranges[0].fragments).toEqual([{ timelineStartSeconds: 20, timelineEndSeconds: 22, clipNodeId: "placed" }]);
+    expect(result.data.ranges[0].unplaced).toEqual([{ startSeconds: 0, endSeconds: 10 }, { startSeconds: 12, endSeconds: 20 }]);
+  });
+
   it("maps duplicate source use in timeline order and pages ranges by continuation offset", async () => {
     fixture([
       { id: "cold-open", start: 1, end: 3, input: 30, output: 32 },
