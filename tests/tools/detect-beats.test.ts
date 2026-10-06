@@ -19,11 +19,10 @@ const tools = getAudioTools({ tempDir: "/tmp/beat-tests" });
 
 beforeEach(() => vi.clearAllMocks());
 
-function pulsePcm(seconds = 12) {
-  const sampleRate = 200;
+function pulsePcm(seconds = 12, sampleRate = 200) {
   const samples = new Int16Array(sampleRate * seconds);
   for (let at = 0; at < samples.length; at += sampleRate / 2) {
-    for (let width = 0; width < 4; width++) samples[at + width] = 30_000;
+    for (let width = 0; width < Math.max(4, sampleRate / 50); width++) samples[at + width] = 30_000;
   }
   return { sampleRate, samples };
 }
@@ -67,14 +66,14 @@ describe("detect_beats analysis", () => {
 
   it("decodes a bounded stream and reports truncation without mutating Premiere", async () => {
     const mediaPath = createMediaFixture();
-    mockedExecFileAsync.mockResolvedValueOnce({ stdout: sampleBuffer(pulsePcm().samples), stderr: Buffer.alloc(0) });
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: sampleBuffer(pulsePcm(12, 4000).samples), stderr: Buffer.alloc(0) });
     await expect(tools.detect_beats.handler({ media_path: mediaPath, max_beats: 3 })).resolves.toMatchObject({
       success: true,
       data: { bpm: 120, beatTimesSeconds: [0, 0.5, 1], beatTimesTruncated: true, reliable: true },
     });
     expect(mockedExecFileAsync).toHaveBeenCalledTimes(1);
     const args = mockedExecFileAsync.mock.calls[0][1] as string[];
-    expect(args).toEqual(expect.arrayContaining(["-t", "1800", "-ar", "200", "pipe:1"]));
+    expect(args).toEqual(expect.arrayContaining(["-t", "1800", "-ar", "4000", "pipe:1"]));
   });
 
   it("distinguishes missing FFmpeg, timeout, and decode failures", async () => {
@@ -107,4 +106,18 @@ describe("detect_beats analysis", () => {
     const result = await tools.detect_beats.handler({ media_path: mediaPath }) as { success: boolean; error?: string };
     expect(result).toMatchObject({ success: false, error: "Beat analysis failed: offset out of range" });
   });
+
+  it.each([73, 87.3, 146])("recovers %s BPM without snapping to the envelope grid", (bpm) => {
+    const sampleRate = 4000, seconds = 120, period = 60 / bpm;
+    const samples = new Int16Array(sampleRate * seconds);
+    for (let beat = 0; beat * period < seconds - 0.05; beat++) {
+      const at = Math.round(beat * period * sampleRate);
+      for (let width = 0; width < 80; width++) samples[at + width] = 30_000;
+    }
+    const result = analyzeBeatPcm(samples, sampleRate);
+    expect(result.bpm).toBeCloseTo(bpm, 0);
+    const drift = Math.max(...result.beatTimesSeconds.map((time) => Math.abs(time - Math.round(time / period) * period)));
+    expect(drift).toBeLessThan(0.025);
+  });
 });
+

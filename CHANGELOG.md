@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `add_audio_keyframes` and `setup_ducking` can add the first keyframe to a clip again. On Premiere 25.2.3 a property with no keyframes returns `undefined` from `getKeys()` (with `isTimeVarying()` false), which the audio and shared keyframe readers treated as unreadable storage, so both tools refused every clip without existing Volume keys. That state now reads as an empty key list; `null`, malformed lists, and `undefined` on a time-varying property still refuse.
 
+- `detect_beats` no longer snaps tempo to a coarse grid or lets the beat grid drift. It decoded audio at 200 Hz and built a 20 Hz onset envelope, so periods could only take 50 ms steps (73 BPM reported as 75, 146 as 150) and the returned beat times drifted by about 0.4 s after 30 beats. It now decodes at 4 kHz, uses a 100 Hz envelope, and refines the period to a fraction of a sample across the whole file. On 3-minute click tracks from 60 to 174 BPM, tempo is exact and every beat time is within 20 ms.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
