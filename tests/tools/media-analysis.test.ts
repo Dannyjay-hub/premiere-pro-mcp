@@ -1,7 +1,7 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
   const mockedExecFileAsync = vi.fn();
@@ -23,12 +23,14 @@ import {
   parseTransientCandidates,
 } from "../../src/tools/media-analysis.js";
 
+afterAll(cleanupTempDirs);
+
 const tools = getMediaAnalysisTools({ tempDir: "/tmp/test" });
 
 beforeEach(() => vi.clearAllMocks());
 
 function fixture(extension = ".mov") {
-  const directory = mkdtempSync(join(tmpdir(), "premiere-media-analysis-"));
+  const directory = makeTempDir("premiere-media-analysis-");
   const path = join(directory, `fixture${extension}`);
   writeFileSync(path, "fixture");
   return path;
@@ -130,7 +132,7 @@ describe("media analysis parsers", () => {
 describe("media analysis tool contracts", () => {
   it("rejects missing files and unsafe output arguments before spawning", async () => {
     await expect(tools.inspect_media_streams.handler({ media_path: "" })).resolves.toMatchObject({ success: false });
-    const directory = mkdtempSync(join(tmpdir(), "premiere-media-directory-"));
+    const directory = makeTempDir("premiere-media-directory-");
     mkdirSync(join(directory, "nested"));
     await expect(tools.inspect_media_streams.handler({ media_path: join(directory, "nested") })).resolves.toMatchObject({ success: false });
     await expect(tools.inspect_media_streams.handler({ media_path: "missing.mov" })).resolves.toMatchObject({ success: false });
@@ -196,7 +198,7 @@ describe("media analysis tool contracts", () => {
 
   it("creates and verifies a new contact sheet without overwriting", async () => {
     const mediaPath = fixture();
-    const outputPath = join(mkdtempSync(join(tmpdir(), "premiere-contact-sheet-")), "sheet.png");
+    const outputPath = join(makeTempDir("premiere-contact-sheet-"), "sheet.png");
     mockedExecFileAsync.mockResolvedValueOnce({ stdout: "4", stderr: "" });
     mockedExecFileAsync.mockImplementationOnce(async (_command: string, args: string[]) => {
       writeFileSync(args.at(-1)!, "png-output");
@@ -208,7 +210,7 @@ describe("media analysis tool contracts", () => {
 
   it("fails closed when contact-sheet duration or output verification is unavailable", async () => {
     const mediaPath = fixture();
-    const directory = mkdtempSync(join(tmpdir(), "premiere-contact-sheet-failure-"));
+    const directory = makeTempDir("premiere-contact-sheet-failure-");
     mockedExecFileAsync.mockResolvedValueOnce({ stdout: "not-a-duration", stderr: "" });
     await expect(tools.generate_media_contact_sheet.handler({ media_path: mediaPath, output_path: join(directory, "duration.png") }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("positive media duration") });

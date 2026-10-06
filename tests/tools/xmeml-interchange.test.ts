@@ -1,10 +1,12 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 import { getInterchangeAnalysisTools } from "../../src/tools/interchange-analysis.js";
 import type { BridgeOptions } from "../../src/bridge/file-bridge.js";
+
+afterAll(cleanupTempDirs);
 
 const tools = getInterchangeAnalysisTools({ tempDir: "/tmp/xmeml" } as BridgeOptions);
 type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
@@ -25,7 +27,7 @@ function premiereXmeml(mediaPath: string) {
 }
 
 describe("FCP7 XML (xmeml) from Premiere's own export", () => {
-  const dir = mkdtempSync(join(tmpdir(), "xmeml-"));
+  const dir = makeTempDir("xmeml-");
   const media = join(dir, "Interview.mp4");
   writeFileSync(media, "x");
   const xml = join(dir, "cut.xml");
