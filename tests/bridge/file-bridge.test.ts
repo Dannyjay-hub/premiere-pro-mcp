@@ -77,6 +77,9 @@ describe("Windows context confidentiality inspection", () => {
     expect(script).toContain("$mutating = $mutating -bor [System.Security.AccessControl.FileSystemRights]::ReadData");
     expect(script).toContain("[System.IO.File]::GetAccessControl($path)");
     expect(script).not.toContain("[System.IO.Directory]::GetAccessControl($path)");
+    expect(script).toContain("[System.IO.File]::SetAccessControl($path, $acl)");
+    expect(script).toContain("$inheritance = [System.Security.AccessControl.InheritanceFlags]::None");
+    expect(script).toContain("$acl.SetOwner(");
   });
 });
 

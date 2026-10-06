@@ -20,7 +20,7 @@ afterEach(async () => {
 async function directory() {
   const result = await mkdtemp(path.join(tmpdir(), "ppmcp-private-context-"));
   directories.push(result);
-  return result;
+  return posix ? result : path.join(result, "private");
 }
 
 describe("private project context storage", () => {

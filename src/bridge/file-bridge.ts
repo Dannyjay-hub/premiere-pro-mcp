@@ -254,6 +254,7 @@ export const WINDOWS_BRIDGE_ACL_SCRIPT = [
   '}',
   'if ($initialize) {',
   '  if ($unsafeAncestors.Count -ne 0) { throw ("Bridge directory ancestry is unsafe: " + (($unsafeAncestors | ForEach-Object { "{0} ({1}: {2})" -f $_.path, $_.reason, $_.sid }) -join "; ")) }',
+  '  $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($current)))',
   '  $acl.SetAccessRuleProtection($true, $false)',
   '  $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit',
   '  $propagation = [System.Security.AccessControl.PropagationFlags]::None',
@@ -285,7 +286,11 @@ export function inspectWindowsBridgeDirectoryAcl(
   if (privacy.readAccess) {
     script = script.replace('\n$trusted = @(', '\n$mutating = $mutating -bor [System.Security.AccessControl.FileSystemRights]::ReadData -bor [System.Security.AccessControl.FileSystemRights]::ReadExtendedAttributes\n$trusted = @(');
   }
-  if (privacy.file) script = script.replaceAll("[System.IO.Directory]::GetAccessControl($path)", "[System.IO.File]::GetAccessControl($path)");
+  if (privacy.file) {
+    script = script.replaceAll("[System.IO.Directory]::GetAccessControl($path)", "[System.IO.File]::GetAccessControl($path)")
+      .replace("[System.IO.Directory]::SetAccessControl($path, $acl)", "[System.IO.File]::SetAccessControl($path, $acl)")
+      .replace("$inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit", "$inheritance = [System.Security.AccessControl.InheritanceFlags]::None");
+  }
   const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
   const raw = execFileSync(
     "powershell.exe",

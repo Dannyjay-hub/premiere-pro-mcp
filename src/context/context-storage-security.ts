@@ -34,7 +34,11 @@ export async function openPrivateContextFile(file: string, create = false) {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw error;
     // Exclusive creation prevents a pre-created file or link from being adopted.
-    return open(file, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+    const handle = await open(file, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+    try {
+      if (process.platform === "win32") inspectWindowsBridgeDirectoryAcl(file, true, { readAccess: true, file: true });
+      return handle;
+    } catch (error) { await handle.close(); throw error; }
   }
   const handle = await open(file, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
   try {

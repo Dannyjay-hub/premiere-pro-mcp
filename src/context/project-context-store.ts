@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, rename, rm } from "node:fs/promises";
+import { readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { ensurePrivateContextDirectory, openPrivateContextFile } from "./context-storage-security.js";
@@ -173,7 +173,7 @@ class JsonContextBackend implements ContextBackend {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const temporary = `${target}.${randomUUID()}.tmp`;
     // wx rejects even dangling symlinks, and each writer owns a distinct staging file.
-    const staging = await open(temporary, "wx", 0o600);
+    const staging = await openPrivateContextFile(temporary, true);
     try {
       await staging.writeFile(`${JSON.stringify(document)}\n`, "utf8");
       await staging.close();
