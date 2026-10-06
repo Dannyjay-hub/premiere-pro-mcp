@@ -303,13 +303,16 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
         return skip(base);
       }
       var targetAnimated = readTimeVarying(tgtProp);
+      if (targetAnimated) {
+        base.reason = "Target colour parameter is keyframed; CEP cannot update or verify colour keys losslessly, so the target was left unchanged.";
+        return skip(base);
+      }
       if (!targetAnimated && sameValue(current, color)) {
         base.status = "verified";
         base.action = "unchanged";
         return record(base);
       }
       try {
-        if (targetAnimated) tgtProp.setTimeVarying(false);
         tgtProp.setColorValue(color[0], color[1], color[2], color[3], true);
       } catch (eSetColor) {
         base.status = "failed";
@@ -793,6 +796,17 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
             try {
               var srcColor = __readColorValue(srcProp);
               if (srcColor) {
+                var srcColorAnimated = false;
+                var tgtColorAnimated = false;
+                try { srcColorAnimated = !!srcProp.isTimeVarying(); tgtColorAnimated = !!tgtProp.isTimeVarying(); }
+                catch (eColorAnimation) {
+                  skipped.push({ property: srcProp.displayName, reason: "Source or target colour animation state could not be read; no write was attempted." });
+                  continue;
+                }
+                if (srcColorAnimated || tgtColorAnimated) {
+                  skipped.push({ property: srcProp.displayName, reason: "Source or target colour parameter is keyframed; CEP cannot copy colour keys losslessly, so no write was attempted." });
+                  continue;
+                }
                 var currentColor = __readColorValue(tgtProp);
                 if (currentColor && currentColor.join(",") === srcColor.join(",")) {
                   copied++;

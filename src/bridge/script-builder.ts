@@ -303,6 +303,26 @@ function __propertyNameMatches(actual, wanted, component) {
   var aliased = (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
   return aliased && __isUniformScale(component);
 }
+function __resolveProperty(component, wanted, propertyIndex) {
+  var matches = [];
+  if (propertyIndex !== null && propertyIndex !== undefined) {
+    if (typeof propertyIndex !== "number" || !isFinite(propertyIndex) || Math.floor(propertyIndex) !== propertyIndex || propertyIndex < 0 || propertyIndex >= component.properties.numItems) {
+      return { property: null, index: null, candidates: [], error: "property_index is out of range." };
+    }
+    if (!__propertyNameMatches(component.properties[propertyIndex].displayName, wanted, component)) {
+      return { property: null, index: null, candidates: [], error: "property_index " + propertyIndex + " does not match property name '" + wanted + "'." };
+    }
+    return { property: component.properties[propertyIndex], index: propertyIndex, candidates: [propertyIndex], error: null };
+  }
+  for (var i = 0; i < component.properties.numItems; i++) {
+    if (__propertyNameMatches(component.properties[i].displayName, wanted, component)) matches.push(i);
+  }
+  if (matches.length > 1) {
+    return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index." };
+  }
+  if (!matches.length) return { property: null, index: null, candidates: [], error: null };
+  return { property: component.properties[matches[0]], index: matches[0], candidates: matches, error: null };
+}
 
 // Scale a clip's Motion component uniformly and read it back. With Uniform
 // Scale on, "Scale" (or its renamed "Scale Height") scales both axes. With it
@@ -313,11 +333,14 @@ function __setMotionScale(motion, value) {
   var uniform = __isUniformScale(motion);
   var height = null;
   var width = null;
+  var heightIndices = [];
+  var widthIndices = [];
   for (var i = 0; i < motion.properties.numItems; i++) {
-    var name = String(motion.properties[i].displayName);
-    if (__videoIntrinsicPropertyMatches(motion.properties[i], "Scale") || __videoIntrinsicPropertyMatches(motion.properties[i], "Scale Height")) height = motion.properties[i];
-    else if (__videoIntrinsicPropertyMatches(motion.properties[i], "Scale Width")) width = motion.properties[i];
+    if (__videoIntrinsicPropertyMatches(motion.properties[i], "Scale") || __videoIntrinsicPropertyMatches(motion.properties[i], "Scale Height")) { height = motion.properties[i]; heightIndices.push(i); }
+    else if (__videoIntrinsicPropertyMatches(motion.properties[i], "Scale Width")) { width = motion.properties[i]; widthIndices.push(i); }
   }
+  if (heightIndices.length > 1) return { ok: false, uniform: uniform, error: "Motion Scale is ambiguous at property indices [" + heightIndices.join(", ") + "]; nothing was changed." };
+  if (widthIndices.length > 1) return { ok: false, uniform: uniform, error: "Motion Scale Width is ambiguous at property indices [" + widthIndices.join(", ") + "]; nothing was changed." };
   if (!height) return { ok: false, uniform: uniform, error: "Motion has no Scale property; nothing was changed." };
   if (!uniform && !width) return { ok: false, uniform: uniform, error: "Uniform Scale is off but Motion has no Scale Width property, so the clip cannot be scaled evenly; nothing was changed." };
   height.setValue(value, true);

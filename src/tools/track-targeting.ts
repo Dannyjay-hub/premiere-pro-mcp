@@ -39,18 +39,25 @@ export function premiereLevelToDb(level: number): number | null {
 function clipParamScript(componentMatch: string, componentName: string, propertyName: string): string {
   return `
           function __clipParam(clip) {
+            __clipParam.error = "";
+            var lookupError = "";
             for (var ci = 0; ci < clip.components.numItems; ci++) {
               var component = clip.components[ci];
               var match = "";
               try { match = String(component.matchName || ""); } catch (eMatch) {}
               if (match.indexOf("${componentMatch}") !== 0 && String(component.displayName) !== "${componentName}" && !("${componentMatch}" === "Internal Volume" && String(component.displayName) === "Volumen")) continue;
+              var matches = [];
+              var indices = [];
               for (var pi = 0; pi < component.properties.numItems; pi++) {
                 var property = component.properties[pi];
                 if ("${componentMatch}" === "Internal Volume") {
-                  if (String(property.displayName) === "Level" || String(property.displayName) === "Nivel") return property;
-                } else if (__videoIntrinsicPropertyMatches(property, "${propertyName}")) return property;
+                  if (String(property.displayName) === "Level" || String(property.displayName) === "Nivel") { matches.push(property); indices.push(pi); }
+                } else if (__videoIntrinsicPropertyMatches(property, "${propertyName}")) { matches.push(property); indices.push(pi); }
               }
+              if (matches.length > 1) { lookupError = "${componentName} ${propertyName} is ambiguous at property indices [" + indices.join(", ") + "]"; __clipParam.error = lookupError; return null; }
+              if (matches.length === 1) return matches[0];
             }
+            __clipParam.error = lookupError;
             return null;
           }
           function __setParamVerified(prop, value, tolerance) {
@@ -968,7 +975,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
           var clip = result.clip;
           var prop = __clipParam(clip);
-          if (!prop) return __error("This clip has no Motion > Rotation property; nothing was changed.");
+          if (!prop) return __error(__clipParam.error || "This clip has no Motion > Rotation property; nothing was changed.");
           var write = __setParamVerified(prop, ${args.degrees}, 0.001);
           if (!write.ok) {
             return __jsonStringify({ success: false, error: "Premiere stored Rotation " + write.read + " instead of ${args.degrees}.", data: { degrees: write.read, requestedDegrees: ${args.degrees}, timelineChanged: write.changed, outcome: write.attemptedOnly ? "failed" : (write.changed === false ? "not_applied" : "committed_unverified"), mutationAttempted: true, mutationOutcome: write.attemptedOnly ? "unknown" : undefined, verified: false } });
@@ -1062,7 +1069,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
           var clip = result.clip;
           var prop = __clipParam(clip);
-          if (!prop) return __error("This clip has no Opacity property; nothing was changed.");
+          if (!prop) return __error(__clipParam.error || "This clip has no Opacity property; nothing was changed.");
           var write = __setParamVerified(prop, ${args.opacity}, 0.001);
           if (!write.ok) {
             return __jsonStringify({ success: false, error: "Premiere stored Opacity " + write.read + " instead of ${args.opacity}.", data: { opacity: write.read, requestedOpacity: ${args.opacity}, timelineChanged: write.changed, outcome: write.attemptedOnly ? "failed" : (write.changed === false ? "not_applied" : "committed_unverified"), mutationAttempted: true, mutationOutcome: write.attemptedOnly ? "unknown" : undefined, verified: false } });
@@ -1248,7 +1255,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             if (only && !wanted[c]) continue;
             var clip = track.clips[c];
             var prop = __clipParam(clip);
-            if (!prop) { skipped++; continue; }
+            if (!prop) { skipped++; if (__clipParam.error) mismatched.push({ clipIndex: c, clip: clip.name, error: __clipParam.error }); continue; }
             var write = __setParamVerified(prop, ${level}, ${level} * 0.0001 + 1e-9);
             if (write.ok) applied++; else mismatched.push({ clipIndex: c, clip: clip.name, level: write.read });
           }
@@ -1990,7 +1997,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
           var clip = result.clip;
           var prop = __clipParam(clip);
-          if (!prop) return __error("Uniform Scale property not found");
+          if (!prop) return __error(__clipParam.error || "Uniform Scale property not found");
           prop.setValue(${args.uniform}, true);
           var read = null;
           try { read = prop.getValue(); } catch (eRead) {}
@@ -2047,12 +2054,16 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           // With Uniform Scale off, Premiere keeps the height in "Scale" and the
           // width in "Scale Width"; there is no separate "Scale Height" (#642).
           var uniform = null, height = null, width = null;
+          var uniformIndices = [], heightIndices = [], widthIndices = [];
           for (var p = 0; p < motion.properties.numItems; p++) {
             var prop = motion.properties[p];
-            if (prop.displayName === "Uniform Scale") uniform = prop;
-            else if (prop.displayName === "Scale Width") width = prop;
-            else if (prop.displayName === "Scale Height" || (prop.displayName === "Scale" && !height)) height = prop;
+            if (prop.displayName === "Uniform Scale") { uniform = prop; uniformIndices.push(p); }
+            else if (prop.displayName === "Scale Width") { width = prop; widthIndices.push(p); }
+            else if (prop.displayName === "Scale Height" || prop.displayName === "Scale") { height = prop; heightIndices.push(p); }
           }
+          if (uniformIndices.length > 1) return __error("Motion Uniform Scale is ambiguous at property indices [" + uniformIndices.join(", ") + "]; nothing was changed.");
+          if (widthIndices.length > 1) return __error("Motion Scale Width is ambiguous at property indices [" + widthIndices.join(", ") + "]; nothing was changed.");
+          if (heightIndices.length > 1) return __error("Motion Scale is ambiguous at property indices [" + heightIndices.join(", ") + "]; nothing was changed.");
           if (!uniform || !width || !height) {
             return __error("Motion is missing Uniform Scale, Scale Width, or Scale on this Premiere build. Nothing was changed.");
           }

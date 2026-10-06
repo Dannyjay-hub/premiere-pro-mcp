@@ -639,13 +639,16 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
               for (var ci = 0; ci < comps.numItems; ci++) {
                 var comp = comps[ci];
                 if (comp.displayName !== "Motion" && comp.matchName !== "AE.ADBE Motion") continue;
+                var matches = [];
                 for (var pi = 0; pi < comp.properties.numItems; pi++) {
                   var prop = comp.properties[pi];
-                  if (__propertyNameMatches(prop.displayName, "Scale", comp)) return prop.getValue();
+                  if (__propertyNameMatches(prop.displayName, "Scale", comp)) matches.push({ property: prop, index: pi });
                 }
+                if (matches.length > 1) return { ambiguousPropertyIndices: matches.map(function (match) { return match.index; }) };
+                if (matches.length === 1) return { value: matches[0].property.getValue() };
               }
             } catch (e) {}
-            return null;
+            return { value: null };
           }
           var target = "projectItem";
           var trackItem = null;
@@ -663,17 +666,21 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           }
           if (!item) return __error("Item not found: no timeline clip in the active sequence or project item matches " + requestedId);
           var scaleBefore = trackItem ? __motionScale(trackItem) : null;
+          if (scaleBefore && scaleBefore.ambiguousPropertyIndices) return __error("Motion Scale is ambiguous at property indices [" + scaleBefore.ambiguousPropertyIndices.join(", ") + "]; nothing was changed.");
+          var beforeValue = scaleBefore ? scaleBefore.value : null;
           item.setScaleToFrameSize();
           var scaleAfter = trackItem ? __motionScale(trackItem) : null;
-          var changed = scaleBefore !== null && scaleAfter !== null && scaleBefore !== scaleAfter;
+          if (scaleAfter && scaleAfter.ambiguousPropertyIndices) return __error("Motion Scale became ambiguous at property indices [" + scaleAfter.ambiguousPropertyIndices.join(", ") + "] after the operation.");
+          var afterValue = scaleAfter ? scaleAfter.value : null;
+          var changed = beforeValue !== null && afterValue !== null && beforeValue !== afterValue;
           var out = {
             set: true,
             target: target,
             item: item.name,
             projectItemNodeId: __nodeIdOf(item),
             status: changed ? "verified" : "committed_unverified",
-            motionScaleBefore: scaleBefore,
-            motionScaleAfter: scaleAfter
+            motionScaleBefore: beforeValue,
+            motionScaleAfter: afterValue
           };
           if (trackItem) {
             out.clipNodeId = String(trackItem.nodeId);

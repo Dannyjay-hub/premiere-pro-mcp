@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Effect parameter reads and writes use Premiere's lossless colour API for static colour controls, returning `[alpha, red, green, blue]` instead of a packed number. CEP refuses keyframed colour operations that cannot be read or written losslessly. Effect tools now refuse repeated property names with candidate indices or accept `property_index`; this applies to parameter reads, writes, keyframe operations, colour correction and built-in property workflows that resolve names.
 - `paste_clip_attributes` and `copy_effect_values` copy colour parameters (such as Lumetri White Balance) with `getColorValue()` / `setColorValue()`. `getValue()` returns these as one packed number above 2^53, so writing it back stored a different colour. On Premiere 25.2.3 a grey white balance came back as transparent blue. Keyframed colour parameters are reported as not copied instead of being written.
 - `copy_effect_values` matches properties by position, then by unique display name. Lumetri Color repeats names such as Saturation and Intensity across sections, and the first-name match wrote values into the wrong controls. On 25.2.3 this left a correctly graded clip with the wrong Saturation and Intensity. Values that already match and unreadable section headers are no longer rewritten, and a failed copy now names the properties it skipped or could not verify.
 

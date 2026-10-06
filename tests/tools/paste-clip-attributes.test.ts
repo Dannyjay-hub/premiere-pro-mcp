@@ -325,6 +325,24 @@ describe("paste_clip_attributes", () => {
     expect(whiteBalance.getColorValue()).toEqual([255, 192, 192, 192]);
   });
 
+  it("copy_effect_values refuses animated colour targets without disabling animation", async () => {
+    const host = makeHost(() => ({
+      source: makeClip("src", "Source", 0, 0, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 1, { color: [255, 192, 192, 192] })])]),
+      target: makeClip("tgt", "Target", 0, 10, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 2, { color: [255, 200, 180, 160], keys: [[0, 1], [TICKS_PER_SECOND, 2]] })])]),
+    }));
+    mockedSendCommand.mockImplementationOnce(async (script: string) =>
+      JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string) as never);
+
+    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({
+      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
+    }) as any;
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("White Balance (Source or target colour parameter is keyframed") });
+    const targetColor = host.target.components[0].properties[0];
+    expect(targetColor.setColorValue).not.toHaveBeenCalled();
+    expect(targetColor.setTimeVarying).not.toHaveBeenCalled();
+  });
+
   it("copy_effect_values matches repeated display names by position and skips section headers", async () => {
     const host = makeHost(() => {
       const source = makeClip("src", "Source", 0, 0, [

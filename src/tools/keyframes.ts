@@ -17,8 +17,14 @@ function keyframeArgumentError(args: Record<string, unknown>, timeNames: string[
   return null;
 }
 
-// Find the clip, its component (display or match name) and the property.
-function propertyLookupScript(args: { node_id: string; effect_name: string; property_name: string }): string {
+function propertyIndexError(propertyIndex: number | undefined): string | null {
+  return propertyIndex !== undefined && (!Number.isInteger(propertyIndex) || propertyIndex < 0)
+    ? "property_index must be a non-negative integer."
+    : null;
+}
+
+// Find clip, component and one unambiguous property. get_effect_properties returns indices.
+function propertyLookupScript(args: { node_id: string; effect_name: string; property_name: string; property_index?: number }): string {
   return `
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -31,14 +37,14 @@ function propertyLookupScript(args: { node_id: string; effect_name: string; prop
             }
           }
           if (!comp) return __error("Effect not found");
-          var prop = null;
-          for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
-              prop = comp.properties[p];
-              break;
-            }
-          }
-          if (!prop) return __error("Property not found");`;
+          var resolvedProperty = __resolveProperty(comp, "${escapeForExtendScript(args.property_name)}", ${args.property_index === undefined ? "null" : args.property_index});
+          if (resolvedProperty.error) return __error(resolvedProperty.error);
+          var prop = resolvedProperty.property;
+          if (!prop) return __error("Property not found: ${escapeForExtendScript(args.property_name)}");`;
+}
+
+function propertyIndexParameter() {
+  return { type: "integer" as const, minimum: 0, description: "Optional property index from get_effect_properties; required when property_name is duplicated." };
 }
 
 // Resolve the clip's key time base and refuse a time past the clip's end.
@@ -101,11 +107,18 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             };
             try { info.isTimeVarying = prop.isTimeVarying(); } catch(e) {}
             try { info.keyframesSupported = prop.areKeyframesSupported(); } catch(e) {}
-            try {
-              var readable = __readableParamValue(prop, prop.getValue(0, 0));
-              info.value = readable.value;
-              if (readable.valueType) info.valueType = readable.valueType;
-            } catch(e) {}
+            var color = __readColorValue(prop);
+            if (color) {
+              info.value = color;
+              info.valueType = "color_argb";
+              try { if (prop.isTimeVarying()) info.note = "Animated colour: getColorValue() reports the current value, not each keyframe value."; } catch (eColorAnimation) {}
+            } else {
+              try {
+                var readable = __readableParamValue(prop, prop.getValue(0, 0));
+                info.value = readable.value;
+                if (readable.valueType) info.valueType = readable.valueType;
+              } catch(e) {}
+            }
             props.push(info);
           }
           
@@ -121,7 +134,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
 
     set_effect_property: {
       description:
-        "Set the value of a specific effect property on a clip. Accepts scalar, boolean, string, array-shaped vector values (for example Motion > Position as [x, y]), and MOGRT JSON objects or strings, and verifies the readback component by component.",
+        "Set one effect property. Duplicate names require property_index from get_effect_properties. Colour values use [alpha, red, green, blue] and the lossless colour API; keyframed colour writes are refused.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -135,8 +148,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           },
           property_name: {
             type: "string",
-            description: "Display name of the property (e.g., 'Scale', 'Position', 'Opacity')",
+            description: "Display name of the property; duplicate names require property_index.",
           },
+          property_index: propertyIndexParameter(),
           value: {
             type: ["number", "string", "boolean", "array", "object"],
             maxLength: 8192,
@@ -150,7 +164,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         },
         required: ["node_id", "effect_name", "property_name", "value"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; value: number | string | boolean | number[] | Record<string, unknown> }) => {
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; property_index?: number; value: number | string | boolean | number[] | Record<string, unknown> }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         if (Array.isArray(args.value)) {
           if (!args.value.length || args.value.length > 4) {
             return { success: false, error: "value must be an array of 1 to 4 numbers for a vector property" };
@@ -182,16 +198,29 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           }
           if (!comp) return __error("Effect not found: ${escapeForExtendScript(args.effect_name)}");
           
-          var prop = null;
-          for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
-              prop = comp.properties[p];
-              break;
-            }
-          }
+          var resolvedProperty = __resolveProperty(comp, "${escapeForExtendScript(args.property_name)}", ${args.property_index === undefined ? "null" : args.property_index});
+          if (resolvedProperty.error) return __error(resolvedProperty.error);
+          var prop = resolvedProperty.property;
           if (!prop) return __error("Property not found: ${escapeForExtendScript(args.property_name)}");
-          
+
           var requestedValue = ${requestedValue};
+          var currentColor = __readColorValue(prop);
+          if (currentColor) {
+            var colorVarying = false;
+            try { colorVarying = !!prop.isTimeVarying(); } catch (colorVaryingError) { return __error("Colour animation state could not be read; nothing was changed."); }
+            if (colorVarying) return __error("Keyframed colour parameters cannot be changed through set_effect_property because CEP has no lossless time-specific colour API; nothing was changed.");
+            if (!(requestedValue instanceof Array) || requestedValue.length !== 4) return __error("Colour values require [alpha, red, green, blue]; nothing was changed.");
+            for (var colorIndex = 0; colorIndex < 4; colorIndex++) {
+              if (typeof requestedValue[colorIndex] !== "number" || Math.floor(requestedValue[colorIndex]) !== requestedValue[colorIndex] || requestedValue[colorIndex] < 0 || requestedValue[colorIndex] > 255) return __error("Colour channels must be integers from 0 to 255; nothing was changed.");
+            }
+            try { prop.setColorValue(requestedValue[0], requestedValue[1], requestedValue[2], requestedValue[3], true); }
+            catch (colorWriteError) { return __error("Premiere could not set the requested colour property: " + colorWriteError.toString()); }
+            var colorReadback = __readColorValue(prop);
+            if (!colorReadback) return __error("Premiere accepted the colour write but did not provide a lossless colour readback.");
+            var colorVerified = true;
+            for (var colorReadIndex = 0; colorReadIndex < 4; colorReadIndex++) if (Math.abs(colorReadback[colorReadIndex] - requestedValue[colorReadIndex]) > 1) colorVerified = false;
+            return __result({ set: true, effect: "${escapeForExtendScript(args.effect_name)}", property: "${escapeForExtendScript(args.property_name)}", propertyIndex: resolvedProperty.index, value: colorReadback, valueType: "color_argb", readbackVerified: colorVerified, verification: "Premiere parameter readback only; verify rendered output before delivery." });
+          }
           try {
             prop.setValue(requestedValue, true);
           } catch (e) {
@@ -229,6 +258,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             set: true,
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
+            propertyIndex: resolvedProperty.index,
             value: readbackAvailable ? readbackValue : requestedValue,
             requestedValue: requestedValue,
             readbackVerified: readbackAvailable && __sameParameterValue(readbackValue, requestedValue),
@@ -258,10 +288,13 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
         },
         required: ["node_id", "effect_name", "property_name"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string }) => {
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; property_index?: number }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -276,13 +309,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           }
           if (!comp) return __error("Effect not found");
           
-          var prop = null;
-          for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
-              prop = comp.properties[p];
-              break;
-            }
-          }
+          var resolvedProperty = __resolveProperty(comp, "${escapeForExtendScript(args.property_name)}", ${args.property_index === undefined ? "null" : args.property_index});
+          if (resolvedProperty.error) return __error(resolvedProperty.error);
+          var prop = resolvedProperty.property;
           if (!prop) return __error("Property not found");
           
           var isTimeVarying = false;
@@ -291,6 +320,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!isTimeVarying) {
             return __result({ keyframes: [], isTimeVarying: false, message: "Property has no keyframes" });
           }
+          if (__readColorValue(prop)) return __error("Keyframed colour values cannot be read losslessly through CEP; key times may be inspected in Effect Controls, but no colour samples are returned.");
           
           // Without a usable time base (speed change, reverse) only media time is reported.
           var keyBase = __clipKeyframeBase(clip);
@@ -339,6 +369,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
           time_seconds: {
             type: "number",
             description: `${CLIP_TIME} where to add the keyframe`,
@@ -354,9 +385,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         node_id: string;
         effect_name: string;
         property_name: string;
+        property_index?: number;
         time_seconds: number;
         value: number;
       }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const invalid = keyframeArgumentError(args, ["time_seconds"], "value");
         if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
@@ -379,14 +413,11 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           }
           if (!comp) return __error("Effect not found");
           
-          var prop = null;
-          for (var p = 0; p < comp.properties.numItems; p++) {
-            if (__propertyNameMatches(comp.properties[p].displayName, "${escapeForExtendScript(args.property_name)}", comp)) {
-              prop = comp.properties[p];
-              break;
-            }
-          }
+          var resolvedProperty = __resolveProperty(comp, "${escapeForExtendScript(args.property_name)}", ${args.property_index === undefined ? "null" : args.property_index});
+          if (resolvedProperty.error) return __error(resolvedProperty.error);
+          var prop = resolvedProperty.property;
           if (!prop) return __error("Property not found");
+          if (__readColorValue(prop)) return __error("Keyframed colour writes are not supported by CEP because no lossless time-specific colour setter exists; nothing was changed.");
           try {
             if (!prop.areKeyframesSupported()) return __error("Property does not support keyframes");
           } catch(eSupports) {}
@@ -449,6 +480,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
           time_seconds: {
             type: "number",
             description: `${CLIP_TIME} of the keyframe to remove`,
@@ -456,7 +488,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; time_seconds: number }) => {
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; property_index?: number; time_seconds: number }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const invalid = keyframeArgumentError(args, ["time_seconds"]);
         if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
@@ -511,6 +545,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
           start_seconds: {
             type: "number",
             description: `Start of the range: ${CLIP_TIME.toLowerCase()}`,
@@ -526,9 +561,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         node_id: string;
         effect_name: string;
         property_name: string;
+        property_index?: number;
         start_seconds: number;
         end_seconds: number;
       }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const invalid = keyframeArgumentError(args, ["start_seconds", "end_seconds"]);
         if (invalid) return { success: false, error: invalid };
         if (args.end_seconds < args.start_seconds) return { success: false, error: "end_seconds must not be before start_seconds." };
@@ -598,6 +636,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
           time_seconds: {
             type: "number",
             description: `${CLIP_TIME} of the keyframe`,
@@ -614,9 +653,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         node_id: string;
         effect_name: string;
         property_name: string;
+        property_index?: number;
         time_seconds: number;
         interpolation: string;
       }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const invalid = keyframeArgumentError(args, ["time_seconds"]);
         if (invalid) return { success: false, error: invalid };
         // Live 25.2.3, two keys 20 -> 80 sampled at 25/50/75%: 0 gave 35/50/65
@@ -667,6 +709,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Display name of the property",
           },
+          property_index: propertyIndexParameter(),
           time_seconds: {
             type: "number",
             description: `${CLIP_TIME} to read the value at`,
@@ -674,7 +717,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; time_seconds: number }) => {
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; property_index?: number; time_seconds: number }) => {
+        const indexError = propertyIndexError(args.property_index);
+        if (indexError) return { success: false, error: indexError };
         const invalid = keyframeArgumentError(args, ["time_seconds"]);
         if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
@@ -682,7 +727,16 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           ${keyBaseScript([["time_seconds", args.time_seconds]])}
 
           var time = __clipKeyTime(keyBase, ${args.time_seconds});
-          var readableValue = __readableParamValue(prop, prop.getValueAtTime(time));
+          var readableValue;
+          var colorValue = __readColorValue(prop);
+          if (colorValue) {
+            var colorTimeVarying = false;
+            try { colorTimeVarying = !!prop.isTimeVarying(); } catch (colorTimeError) { return __error("Colour animation state could not be read, so no value is reported."); }
+            if (colorTimeVarying) return __error("Keyframed colour cannot be sampled losslessly through CEP; use Effect Controls to inspect that time.");
+            readableValue = { value: colorValue, valueType: "color_argb" };
+          } else {
+            readableValue = __readableParamValue(prop, prop.getValueAtTime(time));
+          }
           var value = readableValue.value;
 
           return __result({

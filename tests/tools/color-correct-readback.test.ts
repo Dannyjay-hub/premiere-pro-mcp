@@ -7,10 +7,11 @@ import { getEffectsTools } from "../../src/tools/effects.js";
 const send = vi.mocked(sendCommand);
 const tool = getEffectsTools({ tempDir: "/tmp/color-correct", timeoutMs: 5000 }).color_correct;
 function collection<T>(values: T[]) { return Object.assign(values, { numItems: values.length }); }
-function host(options: { missingCatalog?: boolean; ignoreAdd?: boolean; existing?: boolean; ignoredWrite?: boolean; localized?: boolean; throwAfterAdd?: boolean } = {}) {
+function host(options: { missingCatalog?: boolean; ignoreAdd?: boolean; existing?: boolean; ignoredWrite?: boolean; localized?: boolean; throwAfterAdd?: boolean; duplicateSaturation?: boolean } = {}) {
   let value = 0;
   const property = { displayName: options.localized ? "Exposición" : "Exposure", setValue: vi.fn((next: number) => { if (!options.ignoredWrite) value = next; }), getValue: () => value };
-  const lumetri = { displayName: "Lumetri Color", properties: collection([property]) };
+  const saturation = { displayName: "Saturation", setValue: vi.fn(), getValue: () => 100 };
+  const lumetri = { displayName: "Lumetri Color", properties: collection([property, ...(options.duplicateSaturation ? [saturation, { ...saturation, setValue: vi.fn() }] : [])]) };
   const components = collection(options.existing ? [lumetri] : []);
   const clip = { nodeId: "c1", name: "Video", start: { ticks: "0" }, components };
   const add = vi.fn(() => { if (!options.ignoreAdd) { components.push(lumetri); components.numItems = components.length; } if (options.throwAfterAdd) throw Error("partial add"); });
@@ -18,7 +19,7 @@ function host(options: { missingCatalog?: boolean; ignoreAdd?: boolean; existing
   const qeProject = { getActiveSequence: () => ({ getVideoTrackAt: () => ({ numItems: 1, getItemAt: () => qeClip }) }), getVideoEffectList: () => collection([{ name: options.missingCatalog ? "Other" : "Lumetri Color" }]), getVideoEffectByName: (name: string) => ({ name }) };
   const app = { enableQE: vi.fn(), project: { activeSequence: { videoTracks: { numTracks: 1, 0: { clips: collection([clip]) } }, audioTracks: { numTracks: 0 } } } };
   send.mockImplementation(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { app, qe: { project: qeProject } }))));
-  return { add, property };
+  return { add, property, saturation, lumetri };
 }
 beforeEach(() => vi.resetAllMocks());
 describe("color_correct verified receipts (#720)", () => {
@@ -45,6 +46,15 @@ describe("color_correct verified receipts (#720)", () => {
     await expect(tool.handler({ node_id: "c1", exposure: 0.5 })).resolves.toMatchObject({ success: false, data: { colorCorrected: false, timelineChanged: false, outcome: "not_applied" } });
     expect(state.add).not.toHaveBeenCalled();
     expect(state.property.setValue).not.toHaveBeenCalled();
+  });
+  it("refuses duplicate Lumetri display names with their indices before writing", async () => {
+    const state = host({ existing: true, duplicateSaturation: true });
+    await expect(tool.handler({ node_id: "c1", saturation: 80 })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("Saturation at property indices [1, 2]"),
+      data: { timelineChanged: false, outcome: "not_applied" },
+    });
+    expect(state.saturation.setValue).not.toHaveBeenCalled();
   });
   it("fails readback when a setter silently ignores a requested value", async () => {
     host({ existing: true, ignoredWrite: true });

@@ -323,9 +323,8 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
         tint?: number;
         saturation?: number;
       }) => {
-        // Lumetri repeats display names across sub-sections (Basic Correction, Creative,
-        // HSL Secondary, ...) and not every match is writable, so each setValue is
-        // guarded and the first writable match per control wins.
+        // Lumetri repeats names (notably Saturation). Refuse duplicate requested
+        // controls instead of choosing the first writable occurrence.
         const controls: Array<{ key: string; label: string; value: number }> = (
           [
             { key: "exposure", label: "Exposure", value: args.exposure },
@@ -415,6 +414,21 @@ export function getEffectsTools(bridgeOptions: BridgeOptions) {
                 data: { colorCorrected: false, verified: false, renderVerified: false,
                   timelineChanged: true, outcome: "committed_unverified", hostError: qeAddError } });
             }
+          }
+
+          var ambiguousControls = [];
+          for (var controlIndex = 0; controlIndex < ${controls.length}; controlIndex++) {
+            var control = [${controls.map((c) => `"${c.label}"`).join(",")}][controlIndex];
+            var candidateIndices = [];
+            for (var propertyIndex = 0; propertyIndex < lumetri.properties.numItems; propertyIndex++) {
+              if (String(lumetri.properties[propertyIndex].displayName) === control) candidateIndices.push(propertyIndex);
+            }
+            if (candidateIndices.length > 1) ambiguousControls.push(control + " at property indices [" + candidateIndices.join(", ") + "]");
+          }
+          if (ambiguousControls.length) {
+            return __jsonStringify({ success: false,
+              error: "Lumetri property names are ambiguous: " + ambiguousControls.join("; ") + ". Use set_effect_property with property_index from get_effect_properties.",
+              data: { colorCorrected: false, verified: false, renderVerified: false, timelineChanged: qeAttempted, outcome: qeAttempted ? "committed_unverified" : "not_applied", errors: {}, changes: {} } });
           }
 
           // A single unsettable property must not abort the script with "Invalid
