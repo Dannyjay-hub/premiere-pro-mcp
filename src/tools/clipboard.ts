@@ -295,6 +295,42 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
       return record(base);
     }
 
+    function copyColor(color, tgtProp, base) {
+      base.kind = "color";
+      var current = __readColorValue(tgtProp);
+      if (!current) {
+        base.reason = "Source is a colour parameter but the matching target parameter is not; the target was left unchanged.";
+        return skip(base);
+      }
+      var targetAnimated = readTimeVarying(tgtProp);
+      if (!targetAnimated && sameValue(current, color)) {
+        base.status = "verified";
+        base.action = "unchanged";
+        return record(base);
+      }
+      try {
+        if (targetAnimated) tgtProp.setTimeVarying(false);
+        tgtProp.setColorValue(color[0], color[1], color[2], color[3], true);
+      } catch (eSetColor) {
+        base.status = "failed";
+        base.action = "written";
+        base.reason = "Premiere rejected the colour write: " + eSetColor.toString();
+        return record(base);
+      }
+      base.action = "written";
+      var readback = __readColorValue(tgtProp);
+      if (!readback) {
+        base.status = "committed_unverified";
+        base.reason = "Premiere accepted the colour write but did not return a colour readback.";
+      } else if (sameValue(readback, color)) {
+        base.status = "verified";
+      } else {
+        base.status = "failed";
+        base.reason = "Target colour did not match the source colour after the write.";
+      }
+      return record(base);
+    }
+
     function copyStatic(componentName, srcProp, tgtProp, base) {
       var value;
       try { value = srcProp.getValue(); } catch (eGet) { value = undefined; }
@@ -417,7 +453,12 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
           skip(base);
           continue;
         }
-        if (readTimeVarying(srcProp)) copyKeyframed(componentName, srcProp, tgtProp, base);
+        var srcColor = __readColorValue(srcProp);
+        if (srcColor && readTimeVarying(srcProp)) {
+          base.reason = "Source colour parameter is keyframed; colour keyframes cannot be read without losing precision, so the target was left unchanged.";
+          skip(base);
+        } else if (srcColor) copyColor(srcColor, tgtProp, base);
+        else if (readTimeVarying(srcProp)) copyKeyframed(componentName, srcProp, tgtProp, base);
         else copyStatic(componentName, srcProp, tgtProp, base);
       }
     }
@@ -659,7 +700,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
 
     copy_effect_values: {
       description:
-        "Copy verified scalar effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
+        "Copy verified scalar and colour effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Properties are matched by position, then by unique display name, because effects such as Lumetri Color repeat names across sections. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -710,28 +751,80 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           var copied = 0;
           var skipped = [];
           var failures = [];
-          for (var p = 0; p < srcComp.properties.numItems; p++) {
-            var srcProp = srcComp.properties[p];
+          // Lumetri and other effects repeat display names across sections (two
+          // "Saturation", two "Intensity"), so a first-name match writes values
+          // into the wrong control. Use the same index when its name agrees,
+          // otherwise only a unique name.
+          function targetPropertyFor(srcProp, index) {
+            if (index < tgtComp.properties.numItems && tgtComp.properties[index].displayName === srcProp.displayName) {
+              return tgtComp.properties[index];
+            }
+            var match = null;
             for (var q = 0; q < tgtComp.properties.numItems; q++) {
               if (tgtComp.properties[q].displayName === srcProp.displayName) {
-                if (srcProp.displayName === "Blend Mode") {
-                  skipped.push({ property: srcProp.displayName, reason: "Legacy CEP enum writes can corrupt Blend Mode; no write was attempted." });
-                  break;
-                }
-                try {
-                  var val = srcProp.getValue(0, 0);
-                  tgtComp.properties[q].setValue(val, true);
-                  var readback = tgtComp.properties[q].getValue(0, 0);
-                  if (!valuesMatch(readback, val)) {
-                    failures.push(srcProp.displayName + " did not match its source value after the write");
-                  } else {
-                    copied++;
-                  }
-                } catch(e) {
-                  failures.push(srcProp.displayName + " could not be copied and read back: " + e.toString());
-                }
-                break;
+                if (match) return null;
+                match = tgtComp.properties[q];
               }
+            }
+            return match;
+          }
+          function isCopyable(value) {
+            if (typeof value === "number") return isFinite(value);
+            if (typeof value === "boolean" || typeof value === "string") return true;
+            if (value instanceof Array) {
+              for (var vi = 0; vi < value.length; vi++) {
+                if (typeof value[vi] !== "number" || !isFinite(value[vi])) return false;
+              }
+              return value.length > 0;
+            }
+            return false;
+          }
+          for (var p = 0; p < srcComp.properties.numItems; p++) {
+            var srcProp = srcComp.properties[p];
+            var tgtProp = targetPropertyFor(srcProp, p);
+            if (!tgtProp) {
+              skipped.push({ property: srcProp.displayName, reason: "No unambiguous matching property on the target effect; no write was attempted." });
+              continue;
+            }
+            if (srcProp.displayName === "Blend Mode") {
+              skipped.push({ property: srcProp.displayName, reason: "Legacy CEP enum writes can corrupt Blend Mode; no write was attempted." });
+              continue;
+            }
+            try {
+              var srcColor = __readColorValue(srcProp);
+              if (srcColor) {
+                var currentColor = __readColorValue(tgtProp);
+                if (currentColor && currentColor.join(",") === srcColor.join(",")) {
+                  copied++;
+                  continue;
+                }
+                tgtProp.setColorValue(srcColor[0], srcColor[1], srcColor[2], srcColor[3], true);
+                var colorReadback = __readColorValue(tgtProp);
+                if (!colorReadback || colorReadback.join(",") !== srcColor.join(",")) {
+                  failures.push(srcProp.displayName + " did not match its source colour after the write");
+                } else {
+                  copied++;
+                }
+                continue;
+              }
+              var val = srcProp.getValue(0, 0);
+              if (!isCopyable(val)) {
+                // Section headers and opaque data (curves, blobs) are not readable values.
+                continue;
+              }
+              if (valuesMatch(tgtProp.getValue(0, 0), val)) {
+                copied++;
+                continue;
+              }
+              tgtProp.setValue(val, true);
+              var readback = tgtProp.getValue(0, 0);
+              if (!valuesMatch(readback, val)) {
+                failures.push(srcProp.displayName + " did not match its source value after the write");
+              } else {
+                copied++;
+              }
+            } catch(e) {
+              failures.push(srcProp.displayName + " could not be copied and read back: " + e.toString());
             }
           }
 
@@ -739,6 +832,8 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
             return __error(
               "Effect-value copy was not fully verified. Copied " + copied + " property value(s); " +
               "skipped: " + skipped.length + "; failures: " + failures.length + ". " +
+              (skipped.length ? "Skipped: " + (function () { var names = []; for (var si = 0; si < skipped.length && si < 5; si++) names.push(skipped[si].property + " (" + skipped[si].reason + ")"); return names.join("; "); })() + ". " : "") +
+              (failures.length ? "Failures: " + failures.slice(0, 5).join("; ") + ". " : "") +
               "Blend Mode is intentionally refused on legacy CEP because Premiere can write an unrelated enum value. Inspect Effect Controls before retrying."
             );
           }

@@ -30,8 +30,11 @@ function makeProp(displayName: string, value: Value, options: {
   keys?: Array<[number, Value]>;
   ignoreWrites?: boolean;
   throwOnGet?: boolean;
+  /** [alpha, red, green, blue]: a colour parameter, measured on Premiere 25.2. */
+  color?: number[];
 } = {}) {
   let current = value;
+  let color = options.color ? [...options.color] : null;
   let timeVarying = Boolean(options.keys);
   const keys = new Map<string, Value>();
   for (const [ticks, keyValue] of options.keys ?? []) keys.set(String(ticks), keyValue);
@@ -41,7 +44,20 @@ function makeProp(displayName: string, value: Value, options: {
       if (options.throwOnGet) throw new Error("opaque");
       return current;
     }),
-    setValue: vi.fn((next: Value) => { if (!options.ignoreWrites) current = next; }),
+    setValue: vi.fn((next: Value) => {
+      if (options.ignoreWrites) return;
+      current = next;
+      // Premiere's packed colour number is above 2^53, so writing it back stores another colour.
+      if (color) color = [0, 0, 255, 255];
+    }),
+    getColorValue: vi.fn(() => {
+      if (!color) throw new Error("Unknown error exception");
+      return [...color];
+    }),
+    setColorValue: vi.fn((alpha: number, red: number, green: number, blue: number) => {
+      if (!color) throw new Error("Unknown error exception");
+      color = [alpha, red, green, blue];
+    }),
     isTimeVarying: () => timeVarying,
     setTimeVarying: vi.fn((next: boolean) => {
       if (!next) keys.clear();
@@ -223,6 +239,132 @@ describe("paste_clip_attributes", () => {
     ]));
     // Blend Mode is never written through the generic enum setter.
     expect(host.target.components[0].properties[1].setValue).not.toHaveBeenCalled();
+  });
+
+  it("copies colour parameters through setColorValue instead of the lossy packed number", async () => {
+    const host = makeHost(() => {
+      const source = makeClip("src", "Source", 0, 0, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("White Balance", 18374897589125431000, { color: [255, 192, 192, 192] }),
+          makeProp("Exposure", 0.5),
+        ]),
+      ]);
+      const target = makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("White Balance", 18374945405898452000, { color: [255, 200, 180, 160] }),
+          makeProp("Exposure", 0),
+        ]),
+      ]);
+      return { source, target };
+    });
+
+    const { result } = await run(host, { source_node_id: "src", target_node_id: "tgt", components: ["Lumetri Color"] });
+
+    expect(result.success).toBe(true);
+    expect(result.data.summary).toMatchObject({ verified: 2, failed: 0, written: 2 });
+    const whiteBalance = host.target.components[0].properties[0];
+    expect(whiteBalance.setValue).not.toHaveBeenCalled();
+    expect(whiteBalance.setColorValue).toHaveBeenCalledWith(255, 192, 192, 192, true);
+    expect(whiteBalance.getColorValue()).toEqual([255, 192, 192, 192]);
+    expect(result.data.properties).toEqual(expect.arrayContaining([
+      expect.objectContaining({ property: "White Balance", kind: "color", action: "written", status: "verified" }),
+    ]));
+  });
+
+  it("leaves a matching colour unchanged and refuses keyframed colours without writing", async () => {
+    const host = makeHost(() => {
+      const source = makeClip("src", "Source", 0, 0, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("White Balance", 1, { color: [255, 192, 192, 192] }),
+          makeProp("Fill", 1, { color: [255, 10, 20, 30], keys: [[0, 1], [TICKS_PER_SECOND, 2]] }),
+        ]),
+      ]);
+      const target = makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("White Balance", 1, { color: [255, 192, 192, 192] }),
+          makeProp("Fill", 1, { color: [255, 0, 0, 0] }),
+        ]),
+      ]);
+      return { source, target };
+    });
+
+    const { result } = await run(host, { source_node_id: "src", target_node_id: "tgt", components: ["Lumetri Color"] });
+
+    expect(result.success).toBe(false);
+    expect(result.data.summary).toMatchObject({ verified: 1, unchanged: 1, notCopied: 1 });
+    expect(result.data.notCopied).toEqual([
+      expect.objectContaining({ property: "Fill", reason: expect.stringContaining("colour parameter is keyframed") }),
+    ]);
+    const [whiteBalance, fill] = host.target.components[0].properties;
+    expect(whiteBalance.setColorValue).not.toHaveBeenCalled();
+    expect(fill.setColorValue).not.toHaveBeenCalled();
+    expect(fill.setValue).not.toHaveBeenCalled();
+    expect(fill.getColorValue()).toEqual([255, 0, 0, 0]);
+  });
+
+  it("copy_effect_values writes colour parameters through setColorValue", async () => {
+    const host = makeHost(() => {
+      const source = makeClip("src", "Source", 0, 0, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 1, { color: [255, 192, 192, 192] }), makeProp("Exposure", 0.5)]),
+      ]);
+      const target = makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 2, { color: [255, 200, 180, 160] }), makeProp("Exposure", 0)]),
+      ]);
+      return { source, target };
+    });
+    mockedSendCommand.mockImplementationOnce(async (script: string) =>
+      JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string) as never);
+
+    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({
+      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
+    }) as any;
+
+    expect(result).toMatchObject({ success: true, data: { copiedProperties: 2, verified: true } });
+    const whiteBalance = host.target.components[0].properties[0];
+    expect(whiteBalance.setValue).not.toHaveBeenCalled();
+    expect(whiteBalance.getColorValue()).toEqual([255, 192, 192, 192]);
+  });
+
+  it("copy_effect_values matches repeated display names by position and skips section headers", async () => {
+    const host = makeHost(() => {
+      const source = makeClip("src", "Source", 0, 0, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("Basic Correction", undefined),
+          makeProp("Saturation", 120),
+          makeProp("Creative", undefined),
+          makeProp("Intensity", 50),
+          makeProp("Saturation", 100),
+          makeProp("Vignette", undefined),
+          makeProp("Intensity", 100),
+        ]),
+      ]);
+      const target = makeClip("tgt", "Target", 0, 10, [
+        makeComponent("Lumetri Color", "AE.ADBE Lumetri", [
+          makeProp("Basic Correction", undefined),
+          makeProp("Saturation", 100),
+          makeProp("Creative", undefined),
+          makeProp("Intensity", 100),
+          makeProp("Saturation", 100),
+          makeProp("Vignette", undefined),
+          makeProp("Intensity", 100),
+        ]),
+      ]);
+      return { source, target };
+    });
+    mockedSendCommand.mockImplementationOnce(async (script: string) =>
+      JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string) as never);
+
+    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({
+      source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color",
+    }) as any;
+
+    expect(result).toMatchObject({ success: true, data: { copiedProperties: 4, verified: true } });
+    const props = host.target.components[0].properties;
+    expect(props.map((prop) => prop.getValue())).toEqual([undefined, 120, undefined, 50, 100, undefined, 100]);
+    // Already-equal values and section headers are never written.
+    expect(props[0].setValue).not.toHaveBeenCalled();
+    expect(props[4].setValue).not.toHaveBeenCalled();
+    expect(props[6].setValue).not.toHaveBeenCalled();
   });
 
   it("honors components, copy_keyframes=false, and apply_missing_effects=false without applying effects", async () => {
