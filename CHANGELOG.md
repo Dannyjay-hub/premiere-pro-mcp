@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `razor_all_tracks` and `split_clip` cut on the requested frame in drop-frame sequences. They built a non-drop `HH:MM:SS:FF` string, which Premiere reads as drop-frame timecode on 29.97/59.94 DF sequences, so cuts landed early by the dropped-frame count (2 frames after the first minute, 28 frames at 16 minutes, measured on 25.2.3) and `razor_all_tracks` still reported `verified: true`. Both now let Premiere format the timecode in the sequence's display format, snap the cut to a frame, and verify the new boundary within half a frame; `razor_all_tracks` reports a misplaced cut as `committed_unverified`.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed

@@ -486,19 +486,24 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var razored = 0;
           var eligible = 0;
           var failures = [];
+          var __snapFrameTicks = parseFloat(seq.timebase);
+          if (isFinite(__snapFrameTicks) && __snapFrameTicks > 0) ticks = String(Math.round(parseFloat(ticks) / __snapFrameTicks) * __snapFrameTicks);
           var linkGroups = __captureLinkGroupsAt(seq, ticks);
 
-          // QE razor() expects a timecode string, not ticks. See timeline.ts.
-          var __razorFrameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
-          if (!__razorFrameTicks || isNaN(__razorFrameTicks)) __razorFrameTicks = 254016000000 / 24;
-          var __razorFps = Math.round(254016000000 / __razorFrameTicks);
-          if (!__razorFps || !isFinite(__razorFps) || __razorFps < 1) __razorFps = 30;
-          var __razorFrames = Math.round(parseFloat(ticks) / __razorFrameTicks);
-          function __pad2(n) { return n < 10 ? "0" + n : "" + n; }
-          var __razorTc = __pad2(Math.floor(__razorFrames / (__razorFps * 3600))) + ":" +
-                          __pad2(Math.floor((__razorFrames % (__razorFps * 3600)) / (__razorFps * 60))) + ":" +
-                          __pad2(Math.floor((__razorFrames % (__razorFps * 60)) / __razorFps)) + ":" +
-                          __pad2(__razorFrames % __razorFps);
+          // QE razor() expects a timecode string in the sequence's display format.
+          // A non-drop string on a 29.97/59.94 drop-frame sequence is read as
+          // drop-frame and lands early (2 frames after one minute, 28 frames at
+          // 16 minutes on 25.2.3), so let Premiere format it.
+          var __razorFrameTicks = parseFloat(seq.timebase);
+          if (!isFinite(__razorFrameTicks) || __razorFrameTicks <= 0) return __error("Sequence frame timebase is unreadable; no razor was attempted.");
+          var __razorTc = __qeTimecodeForTicks(seq, ticks).timecode;
+          function __hasBoundaryAt(domTrack, tickValue) {
+            for (var b = 0; b < domTrack.clips.numItems; b++) {
+              if (Math.abs(parseFloat(domTrack.clips[b].start.ticks) - tickValue) <= __razorFrameTicks / 2) return true;
+            }
+            return false;
+          }
+          var misplaced = [];
 
           if ("${trackType}" !== "audio") {
             for (var t = 0; t < seq.videoTracks.numTracks; t++) {
@@ -512,7 +517,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
                 if (wasEligible) failures.push("V" + (t + 1) + ": " + e.toString());
                 continue;
               }
-              if (domTrack.clips.numItems > before) razored++;
+              if (domTrack.clips.numItems > before) {
+                razored++;
+                if (!__hasBoundaryAt(domTrack, parseFloat(ticks))) misplaced.push("V" + (t + 1));
+              }
             }
           }
           if ("${trackType}" !== "video") {
@@ -527,7 +535,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
                 if (wasEligible) failures.push("A" + (t + 1) + ": " + e.toString());
                 continue;
               }
-              if (domTrack.clips.numItems > before) razored++;
+              if (domTrack.clips.numItems > before) {
+                razored++;
+                if (!__hasBoundaryAt(domTrack, parseFloat(ticks))) misplaced.push("A" + (t + 1));
+              }
             }
           }
 
@@ -535,6 +546,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           // track even when every call silently did nothing.
           if (eligible > 0 && razored < eligible) {
             return __error("Premiere razored only " + razored + " of " + eligible + " eligible track(s)" + (failures.length ? " (" + failures.join("; ") + ")" : "") + ". The operation was only partially applied, so it is not reported as verified. Structural QE edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
+          }
+
+          if (misplaced.length) {
+            return __error("Premiere razored " + misplaced.join(", ") + " but not at the requested frame (" + __razorTc + "). The timeline changed; inspect the cut and use Undo before further edits.", { outcome: "committed_unverified", verified: false, timelineChanged: true, mutationOutcome: "changed", misplacedTracks: misplaced, timecode: __razorTc });
           }
 
           var relink = __relinkRazoredPieces(seq, ticks, linkGroups);
@@ -547,7 +562,8 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             verified: true,
             failures: failures,
             relinkedGroups: relink.relinked,
-            atSeconds: __ticksToSeconds(ticks)
+            atSeconds: __ticksToSeconds(ticks),
+            timecode: __razorTc
           });
         `);
         // Each eligible track cut is one structural mutation. Scale by the
