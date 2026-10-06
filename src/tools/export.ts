@@ -45,6 +45,7 @@ const VIDEO_QC_TIMEOUT_MS = 300_000;
 const MAX_FAILURE_DIAGNOSTIC_LENGTH = 4_096;
 export const MAX_CAPTURE_FRAME_BYTES = 8 * 1024 * 1024;
 
+const MAX_FCP_TRANSLATION_REPORT_BYTES = 1024 * 1024;
 const FCP_TRANSLATION_REPORT_LINE_LIMIT = 40;
 const FCP_TRANSLATION_REPORT_ISSUE_LIMIT = 100;
 const FCP_TRANSLATION_OUTPUT_STABLE_MS = 500;
@@ -72,7 +73,7 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
   parsedIssueCount: number;
   issuesTruncated: boolean;
 } {
-  const allLines = contents.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const allLines = contents.replace(/^\uFEFF/, "").split(/\r?\n/).map(line => line.slice(0, 512));
   const boundedLineLimit = Math.max(0, lineLimit);
   const lines = allLines.slice(0, Math.min(FCP_TRANSLATION_REPORT_LINE_LIMIT, boundedLineLimit));
   let sequence: string | null = null;
@@ -152,6 +153,16 @@ export function parseFcpTranslationReport(contents: string, lineLimit = Number.M
   return { lines, issues, totalIssueLines, issueCount: totalIssueLines, parsedIssueCount, issuesTruncated: totalIssueLines > issues.length };
 }
 
+function readFcpTranslationReport(file: string): ReturnType<typeof parseFcpTranslationReport> {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(MAX_FCP_TRANSLATION_REPORT_BYTES + 1);
+    const count = readSync(fd, buffer, 0, buffer.length, 0);
+    const parsed = parseFcpTranslationReport(buffer.subarray(0, Math.min(count, MAX_FCP_TRANSLATION_REPORT_BYTES)).toString("utf8"));
+    return { ...parsed, issuesTruncated: parsed.issuesTruncated || count > MAX_FCP_TRANSLATION_REPORT_BYTES };
+  } finally { closeSync(fd); }
+}
+
 // Windows file times come from a coarse clock (about 15.6 ms ticks) and FAT/exFAT
 // volumes store 2 s steps, so a report written just after startedAt can carry an
 // earlier mtime. Allow that much slack when deciding a report is from this export.
@@ -166,7 +177,7 @@ function freshFcpTranslationReport(outputPath: string, startedAt: number): { pat
       .filter((entry) => entry.snapshot.exists && entry.snapshot.mtimeMs >= startedAt - REPORT_MTIME_SLACK_MS)
       .sort((left, right) => right.snapshot.mtimeMs - left.snapshot.mtimeMs)[0];
     if (!reportName) return null;
-    return { path: reportName.path, parsed: parseFcpTranslationReport(readFileSync(reportName.path, "utf8")) };
+    return { path: reportName.path, parsed: readFcpTranslationReport(reportName.path) };
   } catch { return null; }
 }
 
@@ -232,9 +243,9 @@ async function waitForFcpTranslationDialog(
           lastStableSnapshot = null;
         } else if (lastStableSnapshot && current.size === lastStableSnapshot.size && current.mtimeMs === lastStableSnapshot.mtimeMs && reportPath === lastReportPath) {
           if (stableSince !== null && now - stableSince >= FCP_TRANSLATION_OUTPUT_STABLE_MS) {
-            let contents = "";
-            try { contents = readFileSync(reportPath, "utf8"); } catch { /* retain modal detection with empty bounded details */ }
-            return { output: current, reportPath, parsed: parseFcpTranslationReport(contents) };
+            let parsed = { ...parseFcpTranslationReport(""), issuesTruncated: true };
+            try { parsed = readFcpTranslationReport(reportPath); } catch { /* details unavailable; do not imply a complete empty report */ }
+            return { output: current, reportPath, parsed };
           }
         } else {
           stableSince = now;

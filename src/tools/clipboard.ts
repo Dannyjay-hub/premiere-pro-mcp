@@ -531,6 +531,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           if (!tgtResult) return __error("Target clip not found");
           var effectFilter = ${args.effect_name ? `"${escapeForExtendScript(args.effect_name)}"` : "null"};
           var intrinsic = ["Motion", "Opacity", "Time Remapping", "Volume", "Channel Volume", "Panner"];
+          var intrinsicMatches = ["AE.ADBE Motion", "AE.ADBE Opacity", "AE.ADBE Time Remapping", "ADBE Motion", "ADBE Opacity", "ADBE Time Remapping", "AE.ADBE Volume", "AE.ADBE Channel Volume", "AE.ADBE Panner", "audioVolume", "audioChannelVolume", "audioPanner"];
           var names = [], seen = {};
           for (var i = 0; i < srcResult.clip.components.numItems; i++) {
             var name = srcResult.clip.components[i].displayName;
@@ -538,6 +539,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
             if (!effectFilter) {
               var skip = false;
               for (var k = 0; k < intrinsic.length; k++) if (name === intrinsic[k]) { skip = true; break; }
+              for (var im = 0; im < intrinsicMatches.length; im++) if (srcResult.clip.components[i].matchName === intrinsicMatches[im]) skip = true;
               if (skip) continue;
             }
             if (!seen["$" + name]) { seen["$" + name] = true; names.push(name); }
@@ -566,9 +568,10 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
           data: {
             status: data.status,
             verified: data.status === "verified",
-            copiedEffects: found.names.length,
-            copied: found.names,
-            valuesCopied: true,
+            requestedEffects: found.names.length,
+            copiedEffects: data.status === "verified" ? found.names.length : 0,
+            copied: data.status === "verified" ? found.names : [],
+            valuesCopied: data.status === "verified",
             source: found.source,
             target: found.target,
             summary: data.summary,
@@ -735,6 +738,13 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
             try {
               var srcColor = __readColorValue(srcProp);
               if (srcColor) {
+                var sourceAnimated, targetAnimated;
+                try { sourceAnimated = srcProp.isTimeVarying(); targetAnimated = tgtProp.isTimeVarying(); }
+                catch (animationError) { skipped.push({ property: srcProp.displayName, reason: "Colour animation state is unreadable; no write was attempted." }); continue; }
+                if ((sourceAnimated !== false && sourceAnimated !== 0) || (targetAnimated !== false && targetAnimated !== 0)) {
+                  skipped.push({ property: srcProp.displayName, reason: "Colour animation cannot be copied by static effect-value copy; no write was attempted." });
+                  continue;
+                }
                 var currentColor = __readColorValue(tgtProp);
                 if (currentColor && currentColor.join(",") === srcColor.join(",")) {
                   copied++;

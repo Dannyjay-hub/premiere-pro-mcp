@@ -337,6 +337,18 @@ describe("paste_clip_attributes", () => {
     expect(whiteBalance.getColorValue()).toEqual([255, 192, 192, 192]);
   });
 
+  it("refuses animated colour values in static effect-value copying without changing target keys", async () => {
+    const host = makeHost(() => ({
+      source: makeClip("src", "Source", 0, 0, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 1, { color: [255, 192, 192, 192], keys: [[0, 1]] })])]),
+      target: makeClip("tgt", "Target", 0, 10, [makeComponent("Lumetri Color", "AE.ADBE Lumetri", [makeProp("White Balance", 2, { color: [255, 1, 2, 3], keys: [[0, 2]] })])]),
+    }));
+    mockedSendCommand.mockImplementationOnce(async script => JSON.parse(runInContext(getHelpersSource() + "\n" + script, host.context) as string));
+    const result = await getClipboardTools(bridgeOptions).copy_effect_values.handler({ source_node_id: "src", target_node_id: "tgt", effect_name: "Lumetri Color" });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Colour animation") });
+    expect(host.target.components[0].properties[0].setColorValue).not.toHaveBeenCalled();
+    expect(host.target.components[0].properties[0].setTimeVarying).not.toHaveBeenCalled();
+  });
+
   it("copy_effect_values matches repeated display names by position and skips section headers", async () => {
     const host = makeHost(() => {
       const source = makeClip("src", "Source", 0, 0, [

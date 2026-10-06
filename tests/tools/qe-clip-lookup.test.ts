@@ -254,7 +254,7 @@ describe("copy_effects_between_clips value-copy delegation", () => {
       .mockResolvedValueOnce(listing() as never)
       .mockResolvedValueOnce({ success: true, data: { status: "committed_unverified", summary: { failed: 1 }, components: [] } } as never);
     const result = await clipboard.copy_effects_between_clips.handler({ source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur" } as never) as any;
-    expect(result).toMatchObject({ success: true, data: { status: "committed_unverified", verified: false, valuesCopied: true } });
+    expect(result).toMatchObject({ success: true, data: { status: "committed_unverified", verified: false, valuesCopied: false, copiedEffects: 0 } });
   });
 
   it("surfaces an unknown effect and does not start a value copy", async () => {

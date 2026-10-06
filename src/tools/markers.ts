@@ -143,9 +143,9 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
           var requestedMarkerTicks = __secondsToTicks(${args.time_seconds});
           var requestedMarkerEndTicks = NaN;
           var appliedMarkerEndTicks = NaN;
-          var markerFrameTicks = markerSeq ? __sequenceFrameTicks(markerSeq) : NaN;
+          var markerFrameTicks = ${args.node_id ? "TICKS_PER_SECOND / 24" : "markerSeq ? __sequenceFrameTicks(markerSeq) : NaN"};
           if (!isFinite(markerFrameTicks)) return __error("The active sequence frame grid could not be read; no marker was created.");
-          var appliedMarkerTicks = __snapSequenceTicks(markerSeq, requestedMarkerTicks);
+          var appliedMarkerTicks = ${args.node_id ? "requestedMarkerTicks" : "__snapSequenceTicks(markerSeq, requestedMarkerTicks)"};
           var appliedMarkerSeconds = __ticksToSeconds(appliedMarkerTicks);
           // createMarker() and the marker.end setter both take seconds, not ticks.
           var markerUndoBefore = __readUndoIndex();
@@ -155,14 +155,14 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
           var observedMarkerTicks = NaN;
           try { observedMarkerTicks = parseFloat(marker.start.ticks); } catch (markerStartReadError) {}
           if (!isFinite(observedMarkerTicks) || Math.abs(observedMarkerTicks - appliedMarkerTicks) > markerFrameTicks / 1000 ||
-              Math.abs(observedMarkerTicks / markerFrameTicks - Math.round(observedMarkerTicks / markerFrameTicks)) > 0.001) {
+              ${args.node_id ? "false" : "Math.abs(observedMarkerTicks / markerFrameTicks - Math.round(observedMarkerTicks / markerFrameTicks)) > 0.001"}) {
             return __jsonStringify({ success: false, error: "Premiere created the marker but its stored time is not verified on the active sequence frame grid.", data: __markerUndoReceipt(markerUndoBefore, { timelineChanged: true, outcome: "committed_unverified", verified: false, requestedSeconds: __ticksToSeconds(requestedMarkerTicks), appliedSeconds: appliedMarkerSeconds }) });
           }
 
           ${args.name ? `marker.name = "${escapeForExtendScript(args.name)}";` : ""}
           ${args.comments ? `marker.comments = "${escapeForExtendScript(args.comments)}";` : ""}
           ${args.color !== undefined ? `marker.setColorByIndex(${args.color});` : ""}
-          ${args.duration_seconds ? `requestedMarkerEndTicks = __secondsToTicks(${args.time_seconds + args.duration_seconds}); appliedMarkerEndTicks = __snapSequenceTicks(markerSeq, requestedMarkerEndTicks); marker.end = __ticksToSeconds(appliedMarkerEndTicks);` : ""}
+          ${args.duration_seconds ? `requestedMarkerEndTicks = __secondsToTicks(${args.time_seconds + args.duration_seconds}); appliedMarkerEndTicks = ${args.node_id ? "requestedMarkerEndTicks" : "__snapSequenceTicks(markerSeq, requestedMarkerEndTicks)"}; marker.end = __ticksToSeconds(appliedMarkerEndTicks);` : ""}
           ${MARKER_READBACK}
           var problems = __markerMismatches(marker, ${args.duration_seconds ? `{ ${args.name ? `name: "${escapeForExtendScript(args.name)}",` : ""} ${args.comments ? `comments: "${escapeForExtendScript(args.comments)}",` : ""} ${args.color !== undefined ? `color: ${args.color},` : ""} end: __ticksToSeconds(appliedMarkerEndTicks) }` : wanted});
           ${args.duration_seconds ? `if (Math.abs(parseFloat(marker.end.seconds) - __ticksToSeconds(appliedMarkerEndTicks)) > __ticksToSeconds(markerFrameTicks) / 1000) problems.push("end is off the active sequence frame grid");` : ""}

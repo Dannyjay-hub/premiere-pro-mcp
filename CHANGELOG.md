@@ -37,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Corrected the still-capture guidance from #771. Premiere's QE PNG stills are not wrong about keyframes. They are RGBA with straight alpha, so a fading clip keeps its colours and carries the fade only in alpha. On Premiere 26.5.2 macOS, stills composited over black matched an actual H.264 export (58.0 against 58.4 YAVG at mid-fade), and linear, hold and bezier gave different alpha (168, 255 and 189) at the same instant. The earlier "QE stills hold opacity" note came from measuring stills without their alpha channel. `export_frame` and `capture_frame` now report `hasAlpha` from the PNG header with a compositing note, and the client instructions, skills, interpolation receipts and review-frame scopes say to composite stills over black before comparing them with a video export.
 
+### Changed
+
+- Long-host receipts detect FCP Translation Report modals and report written XML/OMF as committed_unverified after host timeout; export preflight reports composite black/dead-air intervals within sequence In/Out with optional paged per-track details; media, ripple, and marker readbacks include generated-no-file classification, 1-based track labels, marker GUID and color. Queued commands now cancel atomically behind a fresh busy operation when possible, distinguishing not_applied from unknown mutation outcomes.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
@@ -54,10 +58,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `encode_project_item`, `encode_file`, and `manage_proxies` `create` no longer call `app.encoder.startBatch()` after queueing. That API starts every ready Adobe Media Encoder job, including unrelated jobs already in the queue. Batch start is now opt-in with `start_batch: true`, matching `add_to_render_queue`. Use `start_batch_encode` to start the queue later.
 - `ripple_delete`, ripple removal in `remove_from_timeline`, and rippling `apply_edit_plan` removals shift clips with `TrackItem.move()` and single-pass per-track lookups. The contributor measured one pause cut on Premiere 25.2.3 macOS dropping from about 31 minutes to about 3 on a 2-hour, 1,490-clip podcast sequence. Ripples that would move more than 400 clips refuse before mutation with a count and time estimate unless `allow_large_ripple` is set, host waits scale with the work without shortening a longer configured timeout, and an edit that times out after Premiere accepted it reports an unknown timeline state instead of a plain failure.
 - `trim_clip`, `set_clip_duration`, `slip_edit`, `roll_edit`, and `slide_edit` no longer refuse every unlinked clip by default. On Premiere 25.2.3 `getLinkedItems()` returns `null` (without throwing) for a clip with no linked partner, which these tools treated as unreadable linkage; it now means "no partners", while throwing or malformed collections still refuse. `roll_edit` and `slide_edit` also accept the numeric `0` that `isSpeedReversed()` returns for a forward clip on that host (`1`/`true` still refuse), so they no longer refuse every clip there.
-
-### Changed
-
-- Long-host receipts detect FCP Translation Report modals and report written XML/OMF as committed_unverified after host timeout; export preflight reports composite black/dead-air intervals within sequence In/Out with optional paged per-track details; media, ripple, and marker readbacks include generated-no-file classification, 1-based track labels, marker GUID and color. Queued commands now cancel atomically behind a fresh busy operation when possible, distinguishing not_applied from unknown mutation outcomes.
 
 ## [1.19.0] - 2026-10-02
 

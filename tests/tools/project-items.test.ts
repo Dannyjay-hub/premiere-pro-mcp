@@ -78,14 +78,13 @@ describe("start time", () => {
     await expect(getMediaTools(bridgeOptions).set_start_time.handler({ item_id: "used", start_seconds: 3600 })).resolves.toMatchObject({ success: false });
   });
 
-  it.each([23.976, 29.97, 25])("snaps project-item start time to the %s fps active sequence grid", async (fps) => {
+  it.each([23.976, 29.97, 25])("keeps project-item source offset independent of the %s fps active sequence grid", async (fps) => {
     const frameTicks = 254016000000 * (fps === 23.976 ? 1001 / 24000 : fps === 29.97 ? 1001 / 30000 : 1 / 25);
     project({ frameTicks });
     const result = await getTrackTargetingTools(bridgeOptions).set_clip_start_time.handler({ item_id: "used", start_seconds: 0.5 }) as Result;
     expect(result.success).toBe(true);
-    expect(result.data).toHaveProperty("requestedSeconds", 0.5);
-    const applied = Number(result.data?.appliedSeconds);
-    expect(applied * 254016000000 / frameTicks).toBeCloseTo(Math.round(applied * 254016000000 / frameTicks), 6);
+    expect(result.data).toMatchObject({ startSeconds: 0.5, verified: true });
+    expect(result.data).not.toHaveProperty("appliedSeconds");
   });
 });
 

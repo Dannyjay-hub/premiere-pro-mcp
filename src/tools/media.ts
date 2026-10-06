@@ -303,7 +303,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
           
-          var targetIsRoot = ${JSON.stringify(args.target_bin)} === "/" || ${JSON.stringify(args.target_bin)}.toLowerCase() === "root";
+          var targetIsRoot = "${escapeForExtendScript(args.target_bin)}" === "/" || "${escapeForExtendScript(args.target_bin)}".toLowerCase() === "root";
           var targetBin = targetIsRoot ? app.project.rootItem : __findProjectItem("${escapeForExtendScript(args.target_bin)}");
           if (!targetBin) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
           if (!targetIsRoot && !__isBinItem(targetBin)) return __error(targetBin.name + " is not a bin; nothing was moved.");
