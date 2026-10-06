@@ -261,13 +261,10 @@ export function getTimelineTools(
           var clip = result.clip;
           var clipName = clip.name;
 
-          // Premiere snaps clip positions to frame boundaries, so verification
-          // allows one frame of drift. seq.timebase is ticks-per-frame; fall
-          // back to 24fps if it cannot be read so we never compare against NaN.
+          // Snap both visible edges to the active sequence frame grid.
           var seq = app.project.activeSequence;
           var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var tolerance = __ticksToSeconds(frameTicks);
+          if (!isFinite(frameTicks) || frameTicks <= 0) return __error("The active sequence frame grid could not be read; no move was attempted.");
 
           // Capture the visible span and source range as tick strings before any
           // write. Premiere can mutate the same Time instance on write, so never
@@ -279,6 +276,11 @@ export function getTimelineTools(
           var originalOutPointTicks = String(clip.outPoint.ticks);
           var spanTicks = parseFloat(originalEndTicks) - parseFloat(originalStartTicks);
           if (!(spanTicks > 0)) return __error("Clip has an empty or inverted timeline range; move was not attempted.");
+          if (Math.abs(parseFloat(originalStartTicks) / frameTicks - Math.round(parseFloat(originalStartTicks) / frameTicks)) > 0.001 ||
+              Math.abs(parseFloat(originalEndTicks) / frameTicks - Math.round(parseFloat(originalEndTicks) / frameTicks)) > 0.001 ||
+              Math.abs(spanTicks / frameTicks - Math.round(spanTicks / frameTicks)) > 0.001) {
+            return __error("The clip's existing start, end or duration is off the active sequence frame grid. Repair it in Premiere before moving; no change was attempted.");
+          }
 
           ${args.new_track_index !== undefined ? `
           // The track change is attempted before the start time is written, so
@@ -347,7 +349,8 @@ export function getTimelineTools(
           // Writing start alone leaves end in place on Premiere Pro 26.x, which
           // stretches (earlier move) or trims (later move) the clip instead of
           // moving it. Write both edges in the order that keeps start < end.
-          var newStartTicks = __secondsToTicks(${args.new_start_seconds});
+          var requestedStartTicks = __secondsToTicks(${args.new_start_seconds});
+          var newStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
           var newEndTicks = newStartTicks + spanTicks;
           try {
             __writeClipSpan(clip, newStartTicks, newEndTicks);
@@ -363,10 +366,13 @@ export function getTimelineTools(
           var actualStart = __ticksToSeconds(after.clip.start.ticks);
           var actualEnd = __ticksToSeconds(after.clip.end.ticks);
           var moveDrift = [];
-          if (Math.abs(actualStart - ${args.new_start_seconds}) > tolerance) {
+          var actualStartTicks = parseFloat(after.clip.start.ticks);
+          var actualEndTicks = parseFloat(after.clip.end.ticks);
+          if (Math.abs(actualStartTicks - newStartTicks) > frameTicks / 1000 || Math.abs(actualStartTicks / frameTicks - Math.round(actualStartTicks / frameTicks)) > 0.001) {
             moveDrift.push("requested start ${args.new_start_seconds}s, read back " + actualStart + "s");
           }
-          if (Math.abs((actualEnd - actualStart) - __ticksToSeconds(spanTicks)) > tolerance) {
+          if (Math.abs(actualEndTicks / frameTicks - Math.round(actualEndTicks / frameTicks)) > 0.001) moveDrift.push("the clip end read back off the active sequence frame grid");
+          if (Math.abs((actualEndTicks - actualStartTicks) - spanTicks) > frameTicks / 1000) {
             moveDrift.push("visible duration changed from " + __ticksToSeconds(spanTicks) + "s to " + (actualEnd - actualStart) + "s");
           }
           if (String(after.clip.inPoint.ticks) !== originalInPointTicks || String(after.clip.outPoint.ticks) !== originalOutPointTicks) {
@@ -395,7 +401,7 @@ export function getTimelineTools(
           }
           ` : ""}
 
-          return __result({
+          var movePayload = {
             moved: true,
             verified: true,
             clipName: clipName,
@@ -403,7 +409,10 @@ export function getTimelineTools(
             newEnd: actualEnd,
             durationSeconds: actualEnd - actualStart,
             trackIndex: after.trackIndex
-          });
+          };
+          var moveSnap = __frameSnapReceipt(requestedStartTicks, newStartTicks, frameTicks, "requestedStartSeconds", "appliedStartSeconds");
+          if (moveSnap.requestedStartSeconds !== undefined) { movePayload.requestedStartSeconds = moveSnap.requestedStartSeconds; movePayload.appliedStartSeconds = moveSnap.appliedStartSeconds; }
+          return __result(movePayload);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -539,7 +548,7 @@ export function getTimelineTools(
             // compare against NaN.
             var seq = app.project.activeSequence;
             var frameTicks = seq && seq.timebase ? parseFloat(seq.timebase) : NaN;
-            if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+            if (!isFinite(frameTicks) || frameTicks <= 0) return __editFail("The active sequence frame grid could not be read; no trim was attempted.");
             var tolerance = __ticksToSeconds(frameTicks);
 
   ${KEYFRAME_SCAN_HELPERS}
@@ -673,11 +682,11 @@ export function getTimelineTools(
 
             var drift = [];
             ${args.new_in_seconds !== undefined ? `
-            if (Math.abs(actualIn - requestedIn) > tolerance) {
+            if (Math.abs(actualIn - requestedIn) > tolerance / 1000) {
               drift.push("inPoint requested " + requestedIn + "s, read back " + actualIn + "s");
             }` : ""}
             ${args.new_out_seconds !== undefined ? `
-            if (Math.abs(actualOut - requestedOut) > tolerance) {
+            if (Math.abs(actualOut - requestedOut) > tolerance / 1000) {
               drift.push("outPoint requested " + requestedOut + "s, read back " + actualOut + "s");
             }` : ""}
 
@@ -687,16 +696,16 @@ export function getTimelineTools(
             var expectedEnd = ${args.new_in_seconds !== undefined
               ? "before.end"
               : "before.end + (actualOut - before.outPoint)"};
-            if (Math.abs(after.start - expectedStart) > tolerance) {
+            if (Math.abs(after.start - expectedStart) > tolerance / 1000) {
               drift.push("timeline start expected " + expectedStart + "s, read back " + after.start + "s");
             }
-            if (Math.abs(after.end - expectedEnd) > tolerance) {
+            if (Math.abs(after.end - expectedEnd) > tolerance / 1000) {
               drift.push("timeline end expected " + expectedEnd + "s, read back " + after.end + "s");
             }
-            if (Math.abs(after.duration - (after.end - after.start)) > tolerance) {
+            if (Math.abs(after.duration - (after.end - after.start)) > tolerance / 1000) {
               drift.push("timeline duration " + after.duration + "s does not match visible span " + (after.end - after.start) + "s");
             }
-            if (Math.abs((after.end - after.start) - (actualOut - actualIn)) > tolerance) {
+            if (Math.abs((after.end - after.start) - (actualOut - actualIn)) > tolerance / 1000) {
               drift.push("visible timeline duration does not match the applied source range");
             }
 
@@ -704,6 +713,10 @@ export function getTimelineTools(
             var afterOutTicks = String(afterResult.clip.outPoint.ticks);
             var afterStartTicks = String(afterResult.clip.start.ticks);
             var afterEndTicks = String(afterResult.clip.end.ticks);
+            if (Math.abs(parseFloat(afterStartTicks) / trimFrameTicks - Math.round(parseFloat(afterStartTicks) / trimFrameTicks)) > 0.001 ||
+                Math.abs(parseFloat(afterEndTicks) / trimFrameTicks - Math.round(parseFloat(afterEndTicks) / trimFrameTicks)) > 0.001) {
+              drift.push("timeline trim edges did not read back on the active sequence frame grid");
+            }
             var sourceMetadataChanged = afterInTicks !== originalInPointTicks || afterOutTicks !== originalOutPointTicks;
             var timelineMoved = afterStartTicks !== originalStartTicks || afterEndTicks !== originalEndTicks;
             if (!timelineMoved) {
@@ -755,7 +768,7 @@ export function getTimelineTools(
               return __editFail("The timeline trim may have applied, but " + afterKeyframes.outside.length + " effect keyframe(s) remain outside its visible range. It is not reported as verified; inspect the clip or use Undo.");
             }
 
-            return __editOk({
+            var trimPayload = {
               trimmed: true,
               verified: true,
               clipName: afterResult.clip.name,
@@ -767,13 +780,23 @@ export function getTimelineTools(
               keyframePolicy: "${keyframePolicy}",
               keyframesOutsideVisibleRange: afterKeyframes.outside.length,
               keyframesVerified: afterKeyframes.errors.length === 0 && afterKeyframes.outside.length === 0
-            });
+            };
+            if (Math.abs(__trimDeltaTicks - requestedTrimDeltaTicks) > trimFrameTicks / 1000) {
+              trimPayload[${args.new_in_seconds !== undefined ? '"requestedInSeconds"' : '"requestedOutSeconds"'}] = ${args.new_in_seconds ?? args.new_out_seconds};
+              trimPayload[${args.new_in_seconds !== undefined ? '"appliedInSeconds"' : '"appliedOutSeconds"'}] = ${args.new_in_seconds !== undefined ? 'actualIn' : 'actualOut'};
+            }
+            return __editOk(trimPayload);
           }
           var target = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!target) return __error("Clip not found: " + "${escapeForExtendScript(args.node_id)}");
-          var __trimDeltaTicks = ${args.new_in_seconds !== undefined
+          if (${args.new_out_seconds !== undefined ? `__secondsToTicks(${args.new_out_seconds}) > ${mediaDurationTicks}` : "false"}) return __error("The requested source out point exceeds this clip's real media duration (${mediaDurationSeconds.toFixed(3)}s, ffprobe); trim was not attempted.");
+          var trimFrameTicks = __sequenceFrameTicks(app.project.activeSequence);
+          if (!isFinite(trimFrameTicks)) return __error("The active sequence frame grid could not be read; no trim was attempted.");
+          var requestedTrimDeltaTicks = ${args.new_in_seconds !== undefined
             ? `__secondsToTicks(${args.new_in_seconds}) - parseFloat(target.clip.inPoint.ticks)`
             : `__secondsToTicks(${args.new_out_seconds}) - parseFloat(target.clip.outPoint.ticks)`};
+          var __trimDeltaTicks = __snapSequenceTicks(app.project.activeSequence, requestedTrimDeltaTicks);
+          if (requestedTrimDeltaTicks !== 0 && __trimDeltaTicks === 0) return __error("The requested trim offset is smaller than one frame after sequence-grid snapping; no trim was attempted.");
           return __runLinkedEdit(target, "${escapeForExtendScript(args.node_id)}", ${args.include_linked === false ? "false" : "true"}, __editOne, "trim");
         `);
         return sendCommand(script, bridgeOptions);
@@ -853,7 +876,7 @@ export function getTimelineTools(
 
             // Premiere snaps edits to frame boundaries; allow one frame of drift.
             var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
-            if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+            if (!isFinite(frameTicks) || frameTicks <= 0) return __editFail("The active sequence frame grid could not be read; no duration change was attempted.");
             var tolerance = __ticksToSeconds(frameTicks);
             ${KEYFRAME_SCAN_HELPERS}
 
@@ -869,7 +892,7 @@ export function getTimelineTools(
 
             // The clip gets the requested end; linked partners move their end by
             // the same amount, so partners that start or end elsewhere keep sync.
-            var targetEndTicks = endTicks + __durationDeltaTicks;
+            var targetEndTicks = __snapSequenceTicks(seq, endTicks + __durationDeltaTicks);
             if (targetEndTicks - startTicks < frameTicks) {
               return __editFail("The requested end must be at least one frame after the clip start (" + __ticksToSeconds(startTicks) + "s); no change was attempted.");
             }
@@ -962,8 +985,8 @@ export function getTimelineTools(
             var afterEnd = parseFloat(after.clip.end.ticks);
             var drift = [];
             if (!isFinite(afterStart) || !isFinite(afterEnd)) drift.push("start/end could not be read back");
-            if (Math.abs(afterStart - startTicks) > frameTicks) drift.push("start moved from " + __ticksToSeconds(startTicks) + "s to " + __ticksToSeconds(afterStart) + "s");
-            if (Math.abs(afterEnd - targetEndTicks) > frameTicks) drift.push("end requested " + __ticksToSeconds(targetEndTicks) + "s, read back " + __ticksToSeconds(afterEnd) + "s");
+            if (Math.abs(afterStart - startTicks) > frameTicks / 1000 || Math.abs(afterStart / frameTicks - Math.round(afterStart / frameTicks)) > 0.001) drift.push("start moved from " + __ticksToSeconds(startTicks) + "s to off-grid " + __ticksToSeconds(afterStart) + "s");
+            if (Math.abs(afterEnd - targetEndTicks) > frameTicks / 1000 || Math.abs(afterEnd / frameTicks - Math.round(afterEnd / frameTicks)) > 0.001) drift.push("end requested " + __ticksToSeconds(targetEndTicks) + "s, read back off-grid " + __ticksToSeconds(afterEnd) + "s");
             if (track.clips.numItems !== clipCountBefore) drift.push("track clip count changed from " + clipCountBefore + " to " + track.clips.numItems);
             if (nextClip) {
               var nextAfter = null;
@@ -1015,6 +1038,10 @@ export function getTimelineTools(
               reversed: reversed,
               keyframePolicy: "${keyframePolicy}"
             };
+            var durationRequestTicks = __secondsToTicks(${requested});
+            var durationAppliedTicks = ${mode === "duration" ? "targetEndTicks - startTicks" : "targetEndTicks"};
+            var durationSnap = __frameSnapReceipt(${mode === "duration" ? "durationRequestTicks" : "__secondsToTicks(" + requested + ")"}, ${mode === "duration" ? "durationAppliedTicks" : "targetEndTicks"}, frameTicks, "requestedSeconds", "appliedSeconds");
+            if (durationSnap.requestedSeconds !== undefined) { payload.requestedSeconds = durationSnap.requestedSeconds; payload.appliedSeconds = durationSnap.appliedSeconds; }
             if (shortening) {
               var afterKeys = __findOutOfRangeKeyframes(after.clip, __ticksToSeconds(afterEnd - afterStart));
               payload.keyframesOutsideVisibleRange = afterKeys.outside.length;
@@ -1028,9 +1055,13 @@ export function getTimelineTools(
           }
           var target = __findClip("${nodeId}");
           if (!target) return __error("Clip not found: " + "${nodeId}");
-          var __durationDeltaTicks = ${mode === "duration"
+          var __durationFrameTicks = __sequenceFrameTicks(app.project.activeSequence);
+          if (!isFinite(__durationFrameTicks)) return __error("The active sequence frame grid could not be read; no duration change was attempted.");
+          var __durationRequestedEndTicks = ${mode === "duration"
             ? `parseFloat(target.clip.start.ticks) + __secondsToTicks(${requested})`
-            : `__secondsToTicks(${requested})`} - parseFloat(target.clip.end.ticks);
+            : `__secondsToTicks(${requested})`};
+          var __durationAppliedEndTicks = __snapSequenceTicks(app.project.activeSequence, __durationRequestedEndTicks);
+          var __durationDeltaTicks = __durationAppliedEndTicks - parseFloat(target.clip.end.ticks);
           return __runLinkedEdit(target, "${nodeId}", ${args.include_linked === false ? "false" : "true"}, __editOne, "duration change");
         `);
         return sendCommand(script, bridgeOptions);

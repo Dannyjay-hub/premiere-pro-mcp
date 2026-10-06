@@ -19,11 +19,17 @@ const IN_OUT_EDIT_PREAMBLE = `
           var inSeconds = __sequencePointSeconds(seq.getInPoint());
           var outSeconds = __sequencePointSeconds(seq.getOutPoint());
           var seqEndTicks = parseFloat(seq.end);
-          var halfFrame = (seq.timebase ? parseFloat(seq.timebase) : TICKS_PER_SECOND / 24) / 2;
+          var frameTicks = __sequenceFrameTicks(seq);
+          if (!isFinite(frameTicks)) return __error("The active sequence frame grid could not be read. No clips were changed.");
+          var halfFrame = frameTicks / 2;
           if (inSeconds === null) inSeconds = 0;
           if (outSeconds === null) outSeconds = seqEndTicks / TICKS_PER_SECOND;
           var inTicks = inSeconds * TICKS_PER_SECOND;
           var outTicks = outSeconds * TICKS_PER_SECOND;
+          if (Math.abs(inTicks / frameTicks - Math.round(inTicks / frameTicks)) > 0.001 ||
+              Math.abs(outTicks / frameTicks - Math.round(outTicks / frameTicks)) > 0.001) {
+            return __error("The stored sequence in/out marks are off the active frame grid. Re-set them with set_sequence_in_out_points before lift or extract; no clips were changed.");
+          }
           if (outTicks - inTicks < halfFrame) return __error("Set sequence in/out points around the range first (set_sequence_in_out_points). No clips were changed.");
           if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
             return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");

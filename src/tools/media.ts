@@ -303,9 +303,10 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
           
-          var targetBin = __findProjectItem("${escapeForExtendScript(args.target_bin)}");
+          var targetIsRoot = ${JSON.stringify(args.target_bin)} === "/" || ${JSON.stringify(args.target_bin)}.toLowerCase() === "root";
+          var targetBin = targetIsRoot ? app.project.rootItem : __findProjectItem("${escapeForExtendScript(args.target_bin)}");
           if (!targetBin) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
-          if (!__isBinItem(targetBin)) return __error(targetBin.name + " is not a bin; nothing was moved.");
+          if (!targetIsRoot && !__isBinItem(targetBin)) return __error(targetBin.name + " is not a bin; nothing was moved.");
           
           item.moveBin(targetBin);
           // treePath names the containing bin (live 25.2.3).

@@ -52,14 +52,19 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           var requestedTicks = __secondsToTicks(${args.time_seconds});
           var endTicks = parseFloat(seq.end);
           if (!isFinite(endTicks) || endTicks < 0) return __error("Premiere did not expose a valid sequence end; the playhead was not moved.");
-          var targetTicks = Math.min(requestedTicks, endTicks);
+          var frameTicks = __sequenceFrameTicks(seq);
+          if (!isFinite(frameTicks)) return __error("The active sequence frame grid could not be read; the playhead was not moved.");
+          var snappedTicks = __snapSequenceTicks(seq, requestedTicks);
+          var targetTicks = Math.min(snappedTicks, __snapSequenceTicks(seq, endTicks));
           seq.setPlayerPosition(String(Math.round(targetTicks)));
           var observed = null;
           try { observed = parseFloat(seq.getPlayerPosition().ticks); } catch (readError) {}
           if (observed === null || !isFinite(observed)) return __result({ outcome: "committed_unverified", requestedSeconds: ${args.time_seconds}, positionSeconds: null, warning: "The playhead was moved but its position could not be read back." });
-          var frameTicks = parseFloat(seq.timebase);
-          var verified = Math.abs(observed - targetTicks) <= (isFinite(frameTicks) && frameTicks > 0 ? frameTicks : 1);
-          return __result({ requestedSeconds: ${args.time_seconds}, positionSeconds: __ticksToSeconds(observed), clamped: targetTicks !== requestedTicks, verified: verified, outcome: verified ? "verified" : "committed_unverified" });
+          var verified = Math.abs(observed - targetTicks) <= frameTicks / 1000 && Math.abs(observed / frameTicks - Math.round(observed / frameTicks)) <= 0.001;
+          var payload = { requestedSeconds: ${args.time_seconds}, positionSeconds: __ticksToSeconds(observed), clamped: targetTicks !== snappedTicks, verified: verified, outcome: verified ? "verified" : "committed_unverified" };
+          var snapReceipt = __frameSnapReceipt(requestedTicks, snappedTicks, frameTicks, "requestedSeconds", "appliedSeconds");
+          if (snapReceipt.requestedSeconds !== undefined) { payload.requestedSeconds = snapReceipt.requestedSeconds; payload.appliedSeconds = snapReceipt.appliedSeconds; }
+          return __result(payload);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -88,19 +93,30 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           
           // Live hosts (25.2, 26.5.1) read and write work-area points in seconds,
           // not ticks. Write seconds, then read back: some builds ignore the write.
-          var requestedIn = ${Number(args.in_seconds)};
-          var requestedOut = ${Number(args.out_seconds)};
+          var requestedInRaw = __secondsToTicks(${Number(args.in_seconds)});
+          var requestedOutRaw = __secondsToTicks(${Number(args.out_seconds)});
+          var frameTicks = __sequenceFrameTicks(seq);
+          if (!isFinite(frameTicks)) return __error("The active sequence frame grid could not be read; no work-area points were changed.");
+          var appliedInTicks = __snapSequenceTicks(seq, requestedInRaw);
+          var appliedOutTicks = __snapSequenceTicks(seq, requestedOutRaw);
+          var requestedIn = __ticksToSeconds(appliedInTicks);
+          var requestedOut = __ticksToSeconds(appliedOutTicks);
           if (!(requestedOut > requestedIn)) return __error("out_seconds must be greater than in_seconds.");
           seq.setWorkAreaInPoint(requestedIn);
           seq.setWorkAreaOutPoint(requestedOut);
           var observedIn = __workAreaSeconds(seq.getWorkAreaInPoint());
           var observedOut = __workAreaSeconds(seq.getWorkAreaOutPoint());
-          var frameSeconds = seq.timebase ? __ticksToSeconds(seq.timebase) : 1 / 24;
+          var frameSeconds = __ticksToSeconds(frameTicks);
           if (observedIn === null || observedOut === null ||
-              Math.abs(observedIn - requestedIn) > frameSeconds || Math.abs(observedOut - requestedOut) > frameSeconds) {
+              Math.abs(observedIn - requestedIn) > frameSeconds / 1000 || Math.abs(observedOut - requestedOut) > frameSeconds / 1000) {
             return __error("Premiere did not apply the work area (read back " + observedIn + " to " + observedOut + " s). Use set_sequence_in_out_points to mark an export range instead.");
           }
-          return __result({ workAreaIn: observedIn, workAreaOut: observedOut, verified: true });
+          var payload = { workAreaIn: observedIn, workAreaOut: observedOut, verified: true };
+          var inSnap = __frameSnapReceipt(requestedInRaw, appliedInTicks, frameTicks, "requestedInSeconds", "appliedInSeconds");
+          var outSnap = __frameSnapReceipt(requestedOutRaw, appliedOutTicks, frameTicks, "requestedOutSeconds", "appliedOutSeconds");
+          if (inSnap.requestedInSeconds !== undefined) { payload.requestedInSeconds = inSnap.requestedInSeconds; payload.appliedInSeconds = inSnap.appliedInSeconds; }
+          if (outSnap.requestedOutSeconds !== undefined) { payload.requestedOutSeconds = outSnap.requestedOutSeconds; payload.appliedOutSeconds = outSnap.appliedOutSeconds; }
+          return __result(payload);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -155,24 +171,38 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
           
-          var frameSeconds = seq.timebase ? __ticksToSeconds(seq.timebase) : 1 / 24;
+          var frameTicks = __sequenceFrameTicks(seq);
+          if (!isFinite(frameTicks)) return __error("The active sequence frame grid could not be read; no sequence in/out points were changed.");
+          var frameSeconds = __ticksToSeconds(frameTicks);
+          var requestedInTicks = __secondsToTicks(${args.in_seconds});
+          var requestedOutTicks = __secondsToTicks(${args.out_seconds});
+          var appliedInTicks = __snapSequenceTicks(seq, requestedInTicks);
+          var appliedOutTicks = __snapSequenceTicks(seq, requestedOutTicks);
+          var appliedInSeconds = __ticksToSeconds(appliedInTicks);
+          var appliedOutSeconds = __ticksToSeconds(appliedOutTicks);
+          if (!(appliedOutTicks > appliedInTicks)) return __error("The requested sequence marks collapse after frame-grid snapping; no points were changed.");
           var endSeconds = __ticksToSeconds(seq.end);
-          if (isFinite(endSeconds) && ${args.out_seconds} > endSeconds + frameSeconds / 2) {
+          if (isFinite(endSeconds) && appliedOutSeconds > endSeconds + frameSeconds / 2) {
             return __error("out_seconds ${args.out_seconds}s is past the sequence end at " + endSeconds + "s. Nothing was changed.");
           }
           var previousIn = __sequencePointSeconds(seq.getInPoint());
           var previousOut = __sequencePointSeconds(seq.getOutPoint());
-          seq.setInPoint(${args.in_seconds});
-          seq.setOutPoint(${args.out_seconds});
+          seq.setInPoint(appliedInSeconds);
+          seq.setOutPoint(appliedOutSeconds);
           var observedIn = __sequencePointSeconds(seq.getInPoint());
           var observedOut = __sequencePointSeconds(seq.getOutPoint());
           var tolerance = 0.001;
           if (observedIn === null || observedOut === null ||
-              Math.abs(observedIn - ${args.in_seconds}) > tolerance ||
-              Math.abs(observedOut - ${args.out_seconds}) > tolerance) {
+              Math.abs(observedIn - appliedInSeconds) > frameSeconds / 1000 ||
+              Math.abs(observedOut - appliedOutSeconds) > frameSeconds / 1000) {
             return __jsonStringify({ success: false, error: "Premiere did not apply the requested sequence in/out points; they now read " + observedIn + " to " + observedOut + " seconds (unset reads as null).", data: { inSeconds: observedIn, outSeconds: observedOut, previousInSeconds: previousIn, previousOutSeconds: previousOut } });
           }
-          return __result({ inSeconds: observedIn, outSeconds: observedOut, verified: true });
+          var payload = { inSeconds: observedIn, outSeconds: observedOut, verified: true };
+          var inSnap = __frameSnapReceipt(requestedInTicks, appliedInTicks, frameTicks, "requestedInSeconds", "appliedInSeconds");
+          var outSnap = __frameSnapReceipt(requestedOutTicks, appliedOutTicks, frameTicks, "requestedOutSeconds", "appliedOutSeconds");
+          if (inSnap.requestedInSeconds !== undefined) { payload.requestedInSeconds = inSnap.requestedInSeconds; payload.appliedInSeconds = inSnap.appliedInSeconds; }
+          if (outSnap.requestedOutSeconds !== undefined) { payload.requestedOutSeconds = outSnap.requestedOutSeconds; payload.appliedOutSeconds = outSnap.appliedOutSeconds; }
+          return __result(payload);
         `);
         return sendCommand(script, bridgeOptions);
       },

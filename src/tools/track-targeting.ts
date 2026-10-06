@@ -590,19 +590,25 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         required: ["item_id", "start_seconds"],
       },
       handler: async (args: { item_id: string; start_seconds: number }) => {
+        if (!Number.isFinite(args.start_seconds) || args.start_seconds < 0) return { success: false, error: "start_seconds must be finite and non-negative." };
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
-
-          var t = new Time();
-          t.seconds = ${args.start_seconds};
-          item.setStartTime(t.ticks);
+          var seq = app.project.activeSequence;
+          var frameTicks = __sequenceFrameTicks(seq);
+          if (!isFinite(frameTicks)) return __error("The active sequence frame grid could not be read; the project-item start time was not changed.");
+          var requestedStartTicks = __secondsToTicks(${args.start_seconds});
+          var appliedStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
+          item.setStartTime(String(appliedStartTicks));
           var observedStart = NaN;
           try { observedStart = Number(item.startTime().seconds); } catch (startReadError) {}
-          if (!isFinite(observedStart) || Math.abs(observedStart - ${args.start_seconds}) > 0.001) {
+          var observedTicks = __secondsToTicks(observedStart);
+          if (!isFinite(observedStart) || Math.abs(observedTicks - appliedStartTicks) > frameTicks / 1000 || Math.abs(observedTicks / frameTicks - Math.round(observedTicks / frameTicks)) > 0.001) {
             return __error("Premiere did not apply the start time; read back " + observedStart + " s.");
           }
-          return __result({ item: item.name, startSeconds: observedStart, verified: true });
+          var payload = { item: item.name, startSeconds: observedStart, verified: true };
+          if (Math.abs(appliedStartTicks - requestedStartTicks) > frameTicks / 1000) { payload.requestedSeconds = ${args.start_seconds}; payload.appliedSeconds = __ticksToSeconds(appliedStartTicks); }
+          return __result(payload);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1894,8 +1900,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { item_ids: string[]; target_bin: string }) => {
         const idsJson = JSON.stringify(args.item_ids);
         const script = buildToolScript(`
-          var targetBin = __findProjectItem("${escapeForExtendScript(args.target_bin)}");
-          if (!targetBin || targetBin.type !== 2) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
+          var targetIsRoot = ${JSON.stringify(args.target_bin)} === "/" || ${JSON.stringify(args.target_bin)}.toLowerCase() === "root";
+          var targetBin = targetIsRoot ? app.project.rootItem : __findProjectItem("${escapeForExtendScript(args.target_bin)}");
+          if (!targetBin || (!targetIsRoot && targetBin.type !== 2)) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
 
           var ids = ${idsJson};
           var items = [];
