@@ -10,11 +10,11 @@ source catalog may include unreleased actions.
 
 | Surface | Count | Availability |
 | --- | ---: | --- |
-| Registered core actions | 391 | CEP/local server catalog; host and authority checks still apply |
-| Default-profile core actions | 389 | Advertised with `inspect,edit,export,filesystem` |
+| Registered core actions | 392 | CEP/local server catalog; host and authority checks still apply |
+| Default-profile core actions | 390 | Advertised with `inspect,edit,export,filesystem` |
 | Restricted core actions | 2 | Require explicit `unsafe-script` authority |
 | Authenticated UXP additions | 96 | Advertised only while a compatible authenticated UXP panel is connected |
-| Default profile with UXP | 485 | 389 core plus 96 UXP tools |
+| Default profile with UXP | 486 | 390 core plus 96 UXP tools |
 
 ## How to read support
 
@@ -252,6 +252,7 @@ operation” when the tool has no enum-based mode.
 | `manage_media_watch` | Default profile | `start`, `status`, `scan`, `stop` | Start, inspect, rescan, or stop one session-scoped local media-folder monitor. It records bounded file-change signals and never imports media automatically. |
 | `manage_project_context` | Default profile | `capture`, `enrich`, `import_evidence`, `status`, `clear` | Capture, enrich, import revision-bound editorial evidence, inspect, or clear a durable local Premiere project-context index. Capture stores bounded active-sequence/source metadata; local enrichment and evidence import add caller-approved transcripts, speaker labels, shots, audio observations, notes, or opaque frame references without re-analyzing media. Never include secrets or unrelated customer data. |
 | `manage_proxies` | Default profile | `create`, `attach`, `toggle` | Create, attach, or toggle proxies for a project item. Note: 'create' only requests a proxy encode from Adobe Media Encoder and returns an unverified handoff. Independently verify the AME queue or output file before calling this tool again with action 'attach' and proxy_path set to the output_path you passed here. Optional start_batch requests processing of every ready AME queue job, including unrelated jobs. There is no single-call create-and-attach in Premiere's ExtendScript API. |
+| `map_source_ranges_to_timeline` | Default profile | `track_type`: `video`, `audio` | Read-only mapping from source-media time ranges to placements on one sequence track. Reads the selected track once, maps only normal-speed forward clips, reports source portions not present on the track as unplaced, and returns bounded pages. This inspects timeline placement; it does not prove rendered or audible content. |
 | `match_frame` | Default profile | `track_type`: `video`, `audio` | Get source media info for the frame at the current playhead on a specific track. Useful for match frame operations. |
 | `move_clip` | Default profile | Single operation | EXPERIMENTAL (undocumented QE DOM for track changes): Move a clip to a new position on the timeline; optional track moves use Premiere's QE API and may not work on every version. |
 | `move_clip_to_track` | Default profile | Single operation | Move a clip to a different track of the same type, keeping its start, duration, and source in/out. EXPERIMENTAL: uses the undocumented QE DOM moveToTrack. Refuses without changing anything when the origin or destination track is locked or the destination range is occupied. Reads the timeline back: verified only when the clip is on the destination track with the same span and source range and is gone from the origin track; committed_unverified when the source range cannot be read; otherwise failure with Undo guidance. |

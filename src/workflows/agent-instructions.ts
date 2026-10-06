@@ -17,6 +17,8 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     "For compound insert/remove edits, preview the exact plan, then apply only that unchanged plan with its issued confirmation token and required approval. Changed plans need a fresh preview.");
   route(["get_active_sequence", "get_sequence_structure", "get_full_sequence_info", "get_timeline_gaps"],
     "Sequence reads return bounded pages, default 50 clips or gaps. Keep track counts and pagination; follow nextOffset with the same filters until truncated is false before treating a snapshot as complete for QA or edit planning. Re-read after edits; offsets are not stable across timeline mutations. Inspect markers and transitions separately when their capped collections are truncated. Clip node IDs resolve in the active sequence; re-check sequence identity after switching sequences.");
+  route(["detect_silence", "map_source_ranges_to_timeline"],
+    "detect_silence returns source-media ranges. To place them against an edited source split across clips, map those ranges with map_source_ranges_to_timeline on the relevant track; follow its nextOffset pages, and confirm sequence identity and placement before planning edits. The mapper refuses speed-changed or reversed source clips.");
   route(["get_clip_transcript_uxp", "search_clip_transcript_uxp"],
     "Retrieve native transcript evidence when this UXP backend is connected. Preserve source timing and speaker evidence; do not infer speech from filenames.");
   route(["set_clip_duration"],
