@@ -186,10 +186,11 @@
           throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot list " + mediaType + " tracks to check the ripple range");
         }
         const count = Number(await sequence[countMethod]());
+        if (!Number.isInteger(count) || count < 0 || count > 512) throw commandError("UXP_VERIFICATION_FAILED", "Premiere returned unreadable track counts while checking the ripple range");
         for (let trackIndex = 0; trackIndex < count; trackIndex++) {
           if (mediaType === target.mediaType && trackIndex === target.trackIndex) continue;
           const track = await sequence[trackMethod](trackIndex);
-          if (!track || typeof track.getTrackItems !== "function") continue;
+          if (!track || typeof track.getTrackItems !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot inspect a track while checking the ripple range");
           const items = Array.from(await track.getTrackItems(itemType.CLIP, false) || []);
           for (let clipIndex = 0; clipIndex < items.length; clipIndex++) {
             if (++scanned > 4096) throw commandError("UXP_TARGET_UNSUPPORTED", "Too many timeline items to check the ripple range safely");

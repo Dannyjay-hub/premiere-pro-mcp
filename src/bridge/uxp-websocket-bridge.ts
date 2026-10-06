@@ -178,10 +178,11 @@ export class UxpWebSocketBridge extends EventEmitter {
    * workspace state change after the panel connects, and the handshake never updates.
    */
   async refreshCapabilities(): Promise<UxpHello | null> {
+    const socket = this.socket;
     const live = await this.request("capabilities.get") as Partial<UxpHello> | null;
     const current = this.hello;
     if (
-      !current || !live || live.backend !== "uxp" || live.protocolVersion !== current.protocolVersion ||
+      !current || socket !== this.socket || !live || live.backend !== "uxp" || live.protocolVersion !== current.protocolVersion ||
       !live.commands || typeof live.commands !== "object" || Array.isArray(live.commands)
     ) {
       return null;
@@ -209,6 +210,9 @@ export class UxpWebSocketBridge extends EventEmitter {
       } catch {
         // Keep the handshake capabilities; the refusal below still applies.
       }
+    }
+    if (socket !== this.socket || socket.readyState !== WebSocket.OPEN) {
+      throw new UxpBridgeError("UXP_NOT_CONNECTED", "Premiere UXP connection changed during capability refresh");
     }
     if (hello.commands[command]?.supported !== true) {
       throw new UxpBridgeError(

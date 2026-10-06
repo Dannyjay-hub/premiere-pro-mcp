@@ -101,7 +101,11 @@
         const edges = await slideSnapshot(edgeContext);
         const previousSource = !numbersEqual(edges.previous.outSeconds, desired.previous.outSeconds);
         const followingSource = !numbersEqual(edges.following.inSeconds, desired.following.inSeconds);
-        if (sameIdentity(before, edges) && (previousSource || followingSource)) {
+        const timelineMatches = numbersEqual(edges.previous.endSeconds, desired.previous.endSeconds) &&
+          numbersEqual(edges.target.startSeconds, desired.target.startSeconds) && numbersEqual(edges.target.endSeconds, desired.target.endSeconds) &&
+          numbersEqual(edges.following.startSeconds, desired.following.startSeconds);
+        if (!sameIdentity(before, edges) || !timelineMatches) throw commandError("UXP_VERIFICATION_FAILED", "The committed slide did not land on the reviewed timeline edges; no source correction was attempted");
+        if (previousSource || followingSource) {
           let sourceCommitted = false;
           edgeContext.project.lockedAccess(function () {
             const sourceActions = [];

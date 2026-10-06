@@ -577,6 +577,8 @@
         context.project.lockedAccess(() => {
           commitActions(context.project, "Add marker", [context.collection.createAddMarkerAction(name, markerType, start, duration, comments)]);
         });
+        let undoSteps = 1;
+        try {
         let after = await markerList(context.collection), added = after.filter((value) => !before.some((old) => old.guid === value.guid));
         // createAddMarkerAction takes no colour, so a requested colour is set on the new marker
         // afterwards; without this the colour was dropped while the add still reported verified.
@@ -584,6 +586,7 @@
           const created = await findMarker(context.collection, added[0].guid, null);
           context.project.lockedAccess(() => {
             commitActions(context.project, "Set marker color", [created.createSetColorByIndexAction(colorIndex)]);
+            undoSteps = 2;
           });
           after = await markerList(context.collection);
           added = after.filter((value) => !before.some((old) => old.guid === value.guid));
@@ -592,14 +595,20 @@
         if (marker) {
           if (marker.name !== name) mismatches.push("name");
           if (marker.comments !== comments) mismatches.push("comments");
+          if (marker.type !== markerType) mismatches.push("markerType");
           if (Math.abs(marker.startSeconds - tickSeconds(start)) > 0.0005) mismatches.push("startSeconds");
           if (Math.abs(marker.durationSeconds - tickSeconds(duration)) > 0.0005) mismatches.push("durationSeconds");
           if (colorIndex != null && marker.colorIndex !== colorIndex) mismatches.push("colorIndex");
         }
         return mutationResult(added.length === 1 && mismatches.length === 0, {
-          added: added.length === 1, marker, beforeCount: before.length, afterCount: after.length,
+          added: added.length === 1, marker, beforeCount: before.length, afterCount: after.length, undoSteps,
           ...(mismatches.length ? { mismatchedFields: mismatches } : {})
         }, "marker_field_readback", "Add marker");
+        } catch (error) {
+          return mutationResult(false, { added: true, committed: true, partial: true, beforeCount: before.length, undoSteps,
+            readbackError: error && error.message ? error.message : String(error),
+            nextStep: "Inspect markers before retrying. Marker creation committed; the requested fields could not all be verified." }, "marker_field_readback", "Add marker");
+        }
       });
     }
 

@@ -374,6 +374,22 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(capabilities.commands["sequences.createEmpty"]).toMatchObject({ supported: true, destructive: true, undoable: false, idempotent: true, minHostVersion: "26.3.0" });
   });
 
+  it("retains marker creation when a later color action fails", async () => {
+    const value = advancedHost();
+    const original = value.markers.createAddMarkerAction.getMockImplementation()!;
+    value.markers.createAddMarkerAction.mockImplementation((...args) => {
+      const action = original(...args);
+      return { apply: () => {
+        action.apply();
+        value.markerValues[value.markerValues.length - 1].createSetColorByIndexAction.mockImplementation(() => { throw new Error("color unavailable"); });
+      } };
+    });
+    await expect(value.registry.dispatch("markers.add", { name: "Partial", colorIndex: 4, operationId: "partial-color" })).resolves.toMatchObject({
+      added: true, committed: true, partial: true, verified: false, outcome: "committed_unverified", undoSteps: 1,
+    });
+    expect(value.markerValues).toHaveLength(2);
+  });
+
   it("uses Project-view selection and completes marker/bin actions with identity and field readback", async () => {
     const value = advancedHost();
     await expect(value.registry.dispatch("projectSelection.views", {})).resolves.toMatchObject({

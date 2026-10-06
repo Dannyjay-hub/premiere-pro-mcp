@@ -84,8 +84,8 @@ describe("guarded documented UXP track-item slide workflow", () => {
     const input = { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, confirmSlide: true, operationId: "partial-slide" };
     await expect(value.registry.dispatch("trackItem.slide", input)).resolves.toMatchObject({ outcome: "committed_unverified", committed: true, partial: true, rollbackPerformed: false });
     await expect(value.registry.dispatch("trackItem.slide", input)).resolves.toMatchObject({ replayed: true });
-    // The edge transaction plus the source-point transaction for the following item; replay adds none.
-    expect(value.project.executeTransaction).toHaveBeenCalledTimes(2);
+    // Failed timeline placement must not trigger source corrections; replay adds none.
+    expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
   });
   it("advertises bounded inspection and a replay-safe undoable transaction command", async () => {
     const value = slideHost();
