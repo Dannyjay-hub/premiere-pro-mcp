@@ -34,7 +34,6 @@ const FIXED_TOOLS: Array<[string, Handler, Record<string, unknown>]> = [
   ["apply_audio_effect", effects.apply_audio_effect, { node_id: "a", effect_name: "DeNoise" }],
   ["color_correct", effects.color_correct, { node_id: "a", exposure: 1 }],
   ["stabilize_clip", effects.stabilize_clip, { node_id: "a" }],
-  ["copy_effects_between_clips", clipboard.copy_effects_between_clips, { source_node_id: "b", target_node_id: "a" }],
   ["batch_rename_clips", trackTargeting.batch_rename_clips, { pattern: "Shot_{n}", track_type: "video", track_index: 0 }],
   ["get_qe_clip_info", trackTargeting.get_qe_clip_info, { track_type: "video", track_index: 0, clip_index: 0 }],
 ];
@@ -233,46 +232,43 @@ describe("QE clip lookup by DOM clip start (#642)", () => {
   });
 });
 
-describe("copy_effects_between_clips readback", () => {
-  it("reports copies verified by the target component list", async () => {
-    const host = makeHost();
-    const result = await run(host, clipboard.copy_effects_between_clips, {
-      source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur",
-    });
-    expect(result.success).toBe(true);
-    expect(result.data).toMatchObject({ status: "verified", verified: true, copiedEffects: 1, copied: ["Gaussian Blur"] });
-    expect(host.qeA.addVideoEffect).toHaveBeenCalledTimes(1);
-    expect(host.a.components.map((c) => c.displayName)).toEqual(["Gaussian Blur"]);
-    expectGapUntouched(host);
+describe("copy_effects_between_clips value-copy delegation", () => {
+  function listing(names = ["Gaussian Blur"]) {
+    return { success: true, data: { names, source: "Clip B", target: "Clip A" } };
+  }
+
+  it("delegates the deduplicated source effects to value and keyframe copying", async () => {
+    mockedSendCommand
+      .mockResolvedValueOnce(listing() as never)
+      .mockResolvedValueOnce({ success: true, data: { status: "verified", summary: { verified: 12 }, components: [{ component: "Gaussian Blur", status: "ok" }] } } as never);
+    const result = await clipboard.copy_effects_between_clips.handler({ source_node_id: "b", target_node_id: "a" } as never) as any;
+    expect(result).toMatchObject({ success: true, data: { status: "verified", verified: true, valuesCopied: true, copiedEffects: 1, copied: ["Gaussian Blur"], source: "Clip B", target: "Clip A", summary: { verified: 12 } } });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(2);
+    expect(String(mockedSendCommand.mock.calls[0][0])).toContain('if (!seen["$" + name])');
+    expect(String(mockedSendCommand.mock.calls[1][0])).toContain('__findQeClipByDomClip(');
+    expect(String(mockedSendCommand.mock.calls[1][0])).toContain('"Gaussian Blur"');
   });
 
-  it("uses committed_unverified when readback does not show the new component", async () => {
-    const host = makeHost({ ignoreEffects: true });
-    const result = await run(host, clipboard.copy_effects_between_clips, {
-      source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur",
-    });
-    expect(result.success).toBe(true);
-    expect(result.data).toMatchObject({ status: "committed_unverified", verified: false, copiedEffects: 0 });
-    expect(result.data.committedUnverified[0].effect).toBe("Gaussian Blur");
+  it("preserves a committed-unverified value readback without claiming verification", async () => {
+    mockedSendCommand
+      .mockResolvedValueOnce(listing() as never)
+      .mockResolvedValueOnce({ success: true, data: { status: "committed_unverified", summary: { failed: 1 }, components: [] } } as never);
+    const result = await clipboard.copy_effects_between_clips.handler({ source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur" } as never) as any;
+    expect(result).toMatchObject({ success: true, data: { status: "committed_unverified", verified: false, valuesCopied: true } });
   });
 
-  it("reports per-effect failures instead of swallowing them", async () => {
-    const host = makeHost();
-    const result = await run(host, clipboard.copy_effects_between_clips, { source_node_id: "b", target_node_id: "a" });
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("only partially applied");
-    expect(result.error).toContain("Verified: [Gaussian Blur]");
-    expect(result.error).toContain("Missing FX (QE did not resolve a video effect with this name)");
+  it("surfaces an unknown effect and does not start a value copy", async () => {
+    mockedSendCommand.mockResolvedValueOnce(listing([]) as never);
+    const result = await clipboard.copy_effects_between_clips.handler({ source_node_id: "b", target_node_id: "a", effect_name: "Missing FX" } as never) as any;
+    expect(result).toMatchObject({ success: false, error: "The source clip has no Missing FX effect; nothing was changed." });
+    expect(mockedSendCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces a Premiere rejection as a failure", async () => {
-    const host = makeHost();
-    host.qeA.addVideoEffect.mockImplementation(() => { throw new Error("Invalid parameter"); });
-    const result = await run(host, clipboard.copy_effects_between_clips, {
-      source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur",
-    });
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("No effects were copied");
-    expect(result.error).toContain("Premiere rejected the effect: Error: Invalid parameter");
+  it("surfaces a failed value copy such as a Premiere QE rejection", async () => {
+    mockedSendCommand
+      .mockResolvedValueOnce(listing() as never)
+      .mockResolvedValueOnce({ success: false, error: "Premiere rejected the effect: Invalid parameter" } as never);
+    const result = await clipboard.copy_effects_between_clips.handler({ source_node_id: "b", target_node_id: "a", effect_name: "Gaussian Blur" } as never) as any;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("Premiere rejected the effect") });
   });
 });

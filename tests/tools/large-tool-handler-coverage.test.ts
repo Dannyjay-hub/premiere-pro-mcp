@@ -107,7 +107,7 @@ const modules: Array<[string, () => Record<string, Tool>, Set<string>?]> = [
   ["advanced", () => getAdvancedTools(bridgeOptions) as Record<string, Tool>],
   ["audio", () => getAudioTools(bridgeOptions) as Record<string, Tool>, new Set(["detect_silence", "detect_beats", "analyze_loudness", "normalize_loudness_file"])],
   ["export", () => getExportTools(bridgeOptions) as Record<string, Tool>, new Set(["validate_export_preset", "verify_delivery_file", "analyze_video_qc", "detect_source_scene_changes"])],
-  ["clipboard", () => getClipboardTools(bridgeOptions) as Record<string, Tool>],
+  ["clipboard", () => getClipboardTools(bridgeOptions) as Record<string, Tool>, new Set(["copy_effects_between_clips"])],
   ["captions", () => getCaptionTools(bridgeOptions) as Record<string, Tool>],
   ["discovery", () => getDiscoveryTools(bridgeOptions) as Record<string, Tool>],
   ["effects", () => getEffectsTools(bridgeOptions) as Record<string, Tool>],

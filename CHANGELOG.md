@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `paste_clip_attributes` and `copy_effect_values` copy colour parameters (such as Lumetri White Balance) with `getColorValue()` / `setColorValue()`. `getValue()` returns these as one packed number above 2^53, so writing it back stored a different colour. On Premiere 25.2.3 a grey white balance came back as transparent blue. Keyframed colour parameters are reported as not copied instead of being written.
 - `copy_effect_values` matches properties by position, then by unique display name. Lumetri Color repeats names such as Saturation and Intensity across sections, and the first-name match wrote values into the wrong controls. On 25.2.3 this left a correctly graded clip with the wrong Saturation and Intensity. Values that already match and unreadable section headers are no longer rewritten, and a failed copy now names the properties it skipped or could not verify.
 
+- `copy_effects_between_clips` now copies and reads back effect parameter values and keyframes, updates an existing target effect instead of stacking a default instance, and refuses when the requested source effect is missing.
+
 ## [1.19.1] - 2026-10-04
 
 ### Fixed
