@@ -177,7 +177,16 @@ class JsonContextBackend implements ContextBackend {
     try {
       await staging.writeFile(`${JSON.stringify(document)}\n`, "utf8");
       await staging.close();
-      await rename(temporary, target);
+      // Windows ACL inspection and antivirus can briefly lock an otherwise safe
+      // destination. Keep replacement atomic; never unlink it to bypass a lock.
+      for (let attempt = 0; ; attempt++) {
+        try { await rename(temporary, target); break; }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (process.platform !== "win32" || attempt >= 5 || (code !== "EPERM" && code !== "EBUSY")) throw error;
+          await new Promise<void>((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+        }
+      }
     } finally {
       await staging.close();
       await rm(temporary, { force: true });
