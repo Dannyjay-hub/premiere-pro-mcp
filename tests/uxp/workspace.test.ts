@@ -139,6 +139,36 @@ describe("least-privilege UXP workspace broker", () => {
       .rejects.toMatchObject({ code: "UXP_PATH_OUTSIDE_WORKSPACE" });
   });
 
+  it("checks file existence by walking the granted folder (no file: URL access needed)", async () => {
+    // A "request"-access plugin cannot open arbitrary file: URLs on Premiere 26.5.2, so a
+    // frame Premiere had written still looked missing; walking the granted Entry sees it.
+    const fixture = storageFixture();
+    const written = new Set<string>();
+    const frames = {
+      isFolder: true, name: "frames", nativePath: "D:\\Projects\\Film\\frames",
+      getEntry: vi.fn(async (name: string) => {
+        if (!written.has(name)) throw new Error("missing");
+        return { isFolder: false, name, nativePath: "D:\\Projects\\Film\\frames\\" + name };
+      }),
+    };
+    const root = {
+      isFolder: true, name: "Approved Media", nativePath: "D:\\Projects\\Film",
+      getEntry: vi.fn(async (name: string) => {
+        if (name === "frames") return frames;
+        throw new Error("missing");
+      }),
+    };
+    fixture.fs.getFolder.mockResolvedValue(root);
+    const broker = Workspace.createWorkspaceBroker({ fs: fixture.fs });
+    await expect(broker.fileExists("D:\\Projects\\Film\\frames\\a.png")).resolves.toBeNull();
+    await broker.requestRoot();
+    await expect(broker.fileExists("D:\\Projects\\Film\\frames\\a.png")).resolves.toBe(false);
+    written.add("a.png");
+    await expect(broker.fileExists("D:\\Projects\\Film\\frames\\a.png")).resolves.toBe(true);
+    await expect(broker.fileExists("D:\\Projects\\Film\\frames")).resolves.toBe(false);
+    await expect(broker.fileExists("D:\\Secrets\\a.png")).resolves.toBeNull();
+  });
+
   it("uses localFileSystem.getEntryWithUrl when that host primitive is present", async () => {
     const fixture = storageFixture();
     fixture.fs.getEntryWithUrl = vi.fn(async (url: string) => {

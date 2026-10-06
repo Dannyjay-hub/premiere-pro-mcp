@@ -71,7 +71,18 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
     get_uxp_capabilities: {
       description: "Report the authenticated local UXP bridge connection and the capabilities advertised by the connected Premiere host.",
       parameters: {},
-      handler: async () => ({ success: true, data: bridge.getState() }),
+      handler: async () => {
+        // Report the panel's live capabilities, not the handshake taken when it connected.
+        let capabilitiesSource = "handshake";
+        if (bridge.getState().connected) {
+          try {
+            if (await bridge.refreshCapabilities()) capabilitiesSource = "live";
+          } catch {
+            // Fall back to the handshake report below.
+          }
+        }
+        return { success: true, data: { ...bridge.getState(), capabilitiesSource } };
+      },
     },
     get_uxp_state: {
       description: "Read the active project, sequence, and playhead state through the connected Premiere UXP bridge.",
