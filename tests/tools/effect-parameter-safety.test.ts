@@ -53,8 +53,8 @@ function parameter(displayName: string, options: { value?: unknown; color?: [num
   };
 }
 
-function host(properties: ReturnType<typeof parameter>[]) {
-  const comp = { displayName: "Lumetri Color", matchName: "AE.ADBE Lumetri", properties: collection(properties) };
+function host(properties: ReturnType<typeof parameter>[], effect = { displayName: "Lumetri Color", matchName: "AE.ADBE Lumetri" }) {
+  const comp = { ...effect, properties: collection(properties) };
   const clip = {
     nodeId: "clip", name: "Clip", start: { ticks: "0" }, end: { ticks: String(10 * TICKS) }, duration: { ticks: String(10 * TICKS) },
     inPoint: { ticks: "0" }, outPoint: { ticks: String(10 * TICKS) }, mediaType: 1, getSpeed: () => 1, isSpeedReversed: () => false,
@@ -104,7 +104,10 @@ describe("lossless colour and duplicate effect parameters", () => {
     const second = parameter("Saturation", { value: 100, color: [255, 10, 20, 30] });
     host([first, second]);
     const ambiguous = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: "Lumetri Color", property_name: "Saturation", value: 120 }) as any;
-    expect(ambiguous).toMatchObject({ success: false, error: expect.stringContaining("property indices [0, 1]") });
+    expect(ambiguous).toMatchObject({
+      success: false,
+      error: expect.stringContaining("property indices [0, 1]; pass property_index. Available properties: Saturation (property_index 0), Saturation (property_index 1)."),
+    });
     expect(first.setValue).not.toHaveBeenCalled();
     expect(second.setColorValue).not.toHaveBeenCalled();
 
@@ -140,5 +143,49 @@ describe("lossless colour and duplicate effect parameters", () => {
     expect(first.setColorValue).not.toHaveBeenCalled();
     await expect(setter.handler({ node_id: "clip", component_name: "Lumetri Color", property_name: "Fill", property_index: 1, alpha: 255, red: 10, green: 20, blue: 30 })).resolves.toMatchObject({ success: true, data: { verified: true, propertyIndex: 1, color: { alpha: 255, red: 10, green: 20, blue: 30 } } });
     expect(second.setColorValue).toHaveBeenCalledWith(255, 10, 20, 30, true);
+  });
+
+  it("suggests non-empty effect properties when a name is missing", async () => {
+    const amount = parameter("Amount", { value: 25 });
+    const duplicateA = parameter("Intensity", { value: 1 });
+    const duplicateB = parameter("Intensity", { value: 2 });
+    const unnamedHeader = parameter("");
+    host([unnamedHeader, amount, duplicateA, parameter(" "), duplicateB], {
+      displayName: "Gaussian Blur",
+      matchName: "AE.Impact_Blur_FX",
+    });
+
+    const missing = await keyframes.get_value_at_time.handler({
+      node_id: "clip", effect_name: "Gaussian Blur", property_name: "Blurriness", time_seconds: 1,
+    }) as any;
+    expect(missing).toMatchObject({
+      success: false,
+      error: expect.stringContaining("Property name 'Blurriness' not found. Available properties: Amount, Intensity (property_index 2), Intensity (property_index 4)."),
+    });
+
+    const setMissing = await keyframes.set_effect_property.handler({
+      node_id: "clip", effect_name: "Gaussian Blur", property_name: "Blurriness", value: 12,
+    }) as any;
+    expect(setMissing.error).toContain("Amount, Intensity (property_index 2), Intensity (property_index 4)");
+    expect(amount.setValue).not.toHaveBeenCalled();
+
+    const addMissing = await keyframes.add_keyframe.handler({
+      node_id: "clip", effect_name: "Gaussian Blur", property_name: "Blurriness", time_seconds: 1, value: 12,
+    }) as any;
+    expect(addMissing.error).toContain("Amount, Intensity (property_index 2), Intensity (property_index 4)");
+    expect(amount.addKey).not.toHaveBeenCalled();
+  });
+
+  it("caps suggestions and safely escapes missing names in generated scripts", async () => {
+    const many = Array.from({ length: 30 }, (_, index) => parameter(`Control ${index + 1}`));
+    host(many);
+    const missing = await keyframes.get_value_at_time.handler({
+      node_id: "clip", effect_name: "Lumetri Color", property_name: "Bad\"Name\\Line\n2", time_seconds: 1,
+    }) as any;
+    expect(missing.success).toBe(false);
+    expect(missing.error).toContain("Control 1");
+    expect(missing.error).toContain("Control 25");
+    expect(missing.error).not.toContain("Control 26");
+    expect(missing.error).toContain("first 25 of 30");
   });
 });

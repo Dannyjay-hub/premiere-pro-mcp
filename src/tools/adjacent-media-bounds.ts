@@ -98,7 +98,7 @@ export async function prepareAdjacentMediaBounds(options: BridgeOptions, nodeId:
     var expectedLinkedIds = [${data.linkedNodeIds.map((id) => '"' + escapeForExtendScript(id) + '"').join(",")}];
     if (validatedPartners.length !== expectedLinkedIds.length) return __error("Linked membership changed during media inspection; nothing was changed.");
     for (var pi = 0; pi < validatedPartners.length; pi++) if (String(validatedPartners[pi].clip.nodeId) !== expectedLinkedIds[pi]) return __error("Linked membership changed during media inspection; nothing was changed.");` : ''}
-    var sourceEnds = {};
+    var sourceEnds = {}, sourceDurationDrifts = [];
     for (var ei = 0; ei < sourceEvidence.length; ei++) {
       var evidence = sourceEvidence[ei], inspected = __findClip(evidence.nodeId);
       if (!inspected || __clipPositionKey(evidence.nodeId) !== evidence.position) return __error("Clip placement or source window changed during media inspection; nothing was changed.");
@@ -113,7 +113,13 @@ export async function prepareAdjacentMediaBounds(options: BridgeOptions, nodeId:
       var existingIn = parseFloat(inspected.clip.inPoint.ticks), existingOut = parseFloat(inspected.clip.outPoint.ticks);
       if (!isFinite(existingIn) || !isFinite(existingOut) || existingIn < 0 || existingOut <= existingIn || existingOut > evidence.endTicks) return __error("An existing source window is outside its physical media duration. Nothing was changed.");
       var recordDuration = parseFloat(inspected.clip.end.ticks) - parseFloat(inspected.clip.start.ticks);
-      if (!isFinite(recordDuration) || recordDuration <= 0 || Math.abs(recordDuration - (existingOut - existingIn)) > 1) return __error("An existing normal-speed clip has inconsistent timeline/source duration. Nothing was changed.");
+      var durationDriftTicks = recordDuration - (existingOut - existingIn);
+      var durationDriftAllowed = Math.abs(durationDriftTicks) <= 1;
+      ${slide ? `var durationFrameTicks = __sequenceFrameTicks(app.project.activeSequence);
+      if (!isFinite(durationFrameTicks)) return __error("The active sequence frame grid could not be read; no slide was attempted.");
+      durationDriftAllowed = Math.abs(durationDriftTicks) <= durationFrameTicks / 2 || Math.abs(Math.abs(durationDriftTicks) - durationFrameTicks) <= 1;
+      if (Math.abs(durationDriftTicks) > 1) sourceDurationDrifts.push({ nodeId: evidence.nodeId, timelineMinusSourceTicks: durationDriftTicks, timelineMinusSourceSeconds: __ticksToSeconds(durationDriftTicks), timelineMinusSourceFrames: durationDriftTicks / durationFrameTicks });` : ""}
+      if (!isFinite(recordDuration) || recordDuration <= 0 || !durationDriftAllowed) return __error("An existing normal-speed clip has inconsistent timeline/source duration. Nothing was changed.");
     }
   ` };
 }

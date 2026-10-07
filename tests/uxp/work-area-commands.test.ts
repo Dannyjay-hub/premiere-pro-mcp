@@ -9,6 +9,7 @@ function workAreaHost(options: { withWorkAreaUtils?: boolean; accept?: boolean; 
   const state = { inSeconds: 2, outSeconds: 30 };
   const sequence = {
     guid: "sequence-1",
+    getTimebase: vi.fn(async () => "10160640000"),
     getEndTime: vi.fn(async () => ({ seconds: 60 })),
   };
   const project = {

@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Effect-property lookup errors now list up to 25 non-empty display names; repeated names include their `property_index`, helping identify controls such as Gaussian Blur's `Amount` without guessing.
+
+- `add_to_render_queue` now asks Media Encoder to render the active sequence's In/Out range instead of the entire sequence.
+- `set_frame_blend` and `set_time_interpolation` report `committed_unverified` because Premiere exposes no readback for those QE writes; thrown writes warn that the mutation outcome is unknown.
+
+- UXP inspect snapshots now include every expected guard needed by their matching apply or update action, including sequence identity, selection, display-format, work-area, playhead, and parameter animation state. Sequence-range inspection treats Premiere's negative In/Out sentinels as unset and returns explicit set flags so an unset range can be reviewed and updated safely.
+
+- CEP `set_work_area` turns on a disabled work-area bar through the public Sequence API before writing, and checks the bar state and stored points afterwards. Premiere 26.5.2 ignores the CEP work-area point setters; when the points read back unchanged, the tool now fails, turns the bar back off if it turned it on, and points to the UXP `set_work_area`. Unreadable or partial writes still report `committed_unverified`. Work-area reads keep an unreadable bar state as unknown instead of treating it as disabled.
+- `slide_edit` accepts source/timeline duration drift up to half a sequence frame or exactly one frame of host rounding, reports the signed drift, and continues to refuse larger or intermediate mismatches. Neighbour source and cut readback checks remain exact.
+
+- `lift_selection` and `extract_selection` no longer cut one extra frame. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid, so at 29.97 an In on a frame was stored just before it: video lost the frame before the range and Extract rippled one frame short. Inexact marks are re-written on their exact frame through QE first (`marksRewritten`), and coverage and ripple checks now allow half a frame instead of a full frame, so a lost frame is reported instead of verified.
+- `set_sequence_in_out_points` writes each mark on the first audio sample at or after its frame start. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid and renders an In/Out export from the frame holding the In to the frame holding the Out, so at 29.97 an export of a marked range started and ended one frame early on four of every five frames.
+
+- `clear_sequence_in_out` now writes Premiere's unset value, so cleared points read back as unset like a new sequence, instead of writing 0 and the sequence end. On 26.5.2 the old method failed its own readback because the Out point is stored rounded to an audio sample. It reports each point after the change and leaves the point it was not asked to clear unchanged.
+
+- `replace_clip` checks, before removing the original clip, that the replacement accepts the source range, and refuses an item that also carries the other media type, because Premiere 26.5.2's `Track.overwriteClip` also places that media on the matching track and overwrites the clips there. A replacement at another frame rate now fills the span: item marks may land up to one media frame early, and the placed end is extended to the original end (`endCorrected`). `unnest_sequence` runs the same source-range check before removing the nested clip.
+
+- `link_selection` and `unlink_selection` read the clip links back instead of always reporting success. On Premiere 26.5.2 `unlinkSelection()` returns false and changes nothing unless every clip of the linked group is selected; `unlink_selection` now refuses such a selection before calling Premiere and names the partner clips to add. An already-unlinked selection is reported as `alreadyUnlinked`, and `link_selection` needs at least two selected clips.
+
+- `set_item_in_out` verifies a mark within one media frame and reports the requested and applied seconds. Premiere 26.5.2 snaps project-item video marks to the media's own frame grid, so 0.5 s on 23.976 media (applied 0.4588 s) used to fail with a partial-state error. `clear_item_in_out` now reads MediaDuration as nominal-rate timecode ("23.98 fps" is 24000/1001, and 29.97 media can use drop-frame `;` timecode), so clearing 23.976 and 29.97 media verifies instead of returning `committed_unverified`. `set_source_in_out` gets the same media-frame tolerance and reports applied seconds.
+
+- `add_transition` snaps `cut_point_seconds` to the sequence frame grid and uses the nearest clip edge within half a frame. It used to require the edge within one tick, so a cut point given to a few decimals (22.5892 s for the cut at 22.5892333 s at 29.97) was refused. The result reports the requested and applied cut seconds.
+
+- `set_zero_point` writes the frame-snapped zero point and reads it back instead of always returning `set: true`. It reports the requested, applied, and previous seconds, and refuses a negative or non-finite `start_seconds` before contacting Premiere.
+
+- Temporary project-item mark writes and failed source-mark updates preserve soft-subclip ranges using private metadata when the DOM reports the whole media. Restore reads support fractional and drop-frame video timecodes and audio sample timecodes; unreadable ranges refuse before a write.
+
+- `duplicate_clip` now copies clips whose media frame rate differs from the sequence's. Premiere floors project-item marks to the media's own frame grid, so on Premiere 26.5.2 a 23.976 fps clip in a 29.97 fps sequence was copied with its source in one sequence frame early (19.9533 s instead of 19.9866 s) and reported `committed_unverified`. The tool now writes each mark a quarter media frame late, slips a copy whose source in is still less than one media frame off back to the original's source in, and accepts a mixed-rate source in within half a media frame. Results add `sourceIn` with the requested and applied seconds, `corrected` and `snappedToMediaFrame`. Same-rate clips are unchanged. Covered by unit tests with a fake host.
+
 - The Claude Desktop extension starts when optional settings are left blank. Desktop can pass an unset `user_config` field through as the literal `${user_config.name}`; `PREMIERE_MCP_PROTOCOL_MODE` and `PREMIERE_UXP_TOKEN` now treat that, and blank values, as unset instead of failing startup with `PREMIERE_MCP_PROTOCOL_MODE must be either auto or legacy` (#828).
 
 - The UXP loopback port binds on the first request other than `server/discover`, so Desktop's disposable discover-only probe copy no longer takes port 7777 and pushes the real server to CEP-only tools. A busy port is retried every 3 seconds instead of abandoned, a non-port UXP startup failure is reported without taking the CEP tools down, and the server exits when the client closes stdin (#828).
@@ -29,6 +58,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- UXP tools on Premiere 26.5.2, found live on macOS:
+  - **Project-item IDs.** The project root and some folders return no `getId` until cast with `ProjectItem.cast`. `inspect_project_tree_uxp` and `inspect_unique_object_identity_uxp` failed, and bin listings reported empty IDs. The advanced-workflow and unique-identity helpers now cast, as the other helpers already did.
+  - **Slip, slide and split edits.** Premiere 26.5 applies TrackItem start/end and in/out actions like trims, so each edge action also moves its source point.
+    - `slip_track_item_uxp` landed as a move. It now restores the timeline position with a second, measured move (two undo steps).
+    - `slide_track_item_uxp` trimmed both neighbours twice. It now sends only the edge actions and writes source points afterwards only when they did not follow.
+    - `make_split_edit_uxp` extended the audio twice, and it never checked whether the extension was free. An L-cut into the next audio clip left two items over the same range, and Premiere crashed (heap corruption) while drawing them. It now refuses when the extension would overlap another item on the same track, and it applies the source point only when needed.
+  - **`ripple_delete_track_item_uxp`** deleted without rippling when another track had an item over the deleted range, such as a linked audio partner or a spanning adjustment layer. It now refuses before any change and names those items.
+  - **Capabilities.** The bridge re-reads the panel's live capabilities before refusing a command that the connect-time handshake marked unsupported, and `get_uxp_capabilities` reports the live list. A panel that connected before a project was open or a workspace was approved hid 25 of 192 commands for the session.
+  - **Markers.** `manage_markers_uxp` `add` now forwards and applies `color_index` and verifies every requested field. Previously the colour was dropped while the add reported verified.
+  - **Frame export.** `export_frame_uxp` retries with the file extension when Premiere rejects an extension-less name ("File Format is not supported"). It also waits up to 15 s for the PNG, which 26.5.2 writes after the call returns, and it checks for the file by walking the approved workspace folder: a plugin with request-only file access cannot open arbitrary `file:` URLs, so the old check reported a written frame as missing.
+  - **Media health.** `maintain_media_health_uxp` treats a single `project_item_id` as a one-item list for inspect, refresh and set_offline.
 - `import_media` no longer reports an error when an `.xml`, `.aaf`, `.edl` or `.prproj` file imports correctly. Interchange files create sequences and bins rather than an item with the file's path, so they now return `outcome: "committed_unverified"` with `interchange: true`, which stops retries from duplicating the sequence (#805).
 
 - `duplicate_clip` no longer places a copy one frame short. Premiere can snap the source out point a frame early, so on Premiere 26.5.2 a 677-frame clip was copied as 676 frames, and the tool still reported `verified` because it allowed two frames of drift. It now trims each placed copy, and its linked partner, back to the original end, reports `endCorrected`, and verifies start, end and source in-point to within half a frame.
@@ -51,6 +91,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Timeline edits for playhead, clip placement/duration/trim, sequence marks and sequence markers snap requested times to the active sequence frame grid, verify stored boundaries within 1/1000 frame, and report changed requested/applied values.
 
 - `navigate_playhead` now reports timecode using Premiere's sequence display format, including drop-frame punctuation.
+
+- Guarded UXP inspect results for slip, slide, ripple-delete, duplicate, sequence range, work area, preview frame, source label, marker removal, display formats, static effect values, keyframe times, media timing and overrides, selection, and video transitions now include schema-shaped expected objects accepted unchanged by apply. The converter maps panel camelCase values to the apply schema.
+- UXP playhead, work-area, sequence-range, timeline insert/overwrite, selected-item clone, track-item move, slip/slide, split-edit, sequence and beat markers, MOGRT, and frame-export time inputs snap to the active sequence timebase using exact ticks per frame. Results report requested and applied values, and timeline readback accepts at most half a frame.
 
 - Transition receipts distinguish verified placement from handle-limited duration, mark each deviating placement, and count duration deviations. Premiere-built title copies report their application-support location and are documented as user-managed files that must not be removed while any project references them.
 - Filler-removal guidance explains that hesitation sounds require transcripts that preserve disfluencies; Whisper's default output omits them.

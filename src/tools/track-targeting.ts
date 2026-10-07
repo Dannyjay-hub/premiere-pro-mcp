@@ -653,15 +653,38 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           try {
             var packet = item.getProjectMetadata();
             var durationMatch = typeof packet === "string" ? /<premierePrivateProjectMetaData:Column.Intrinsic.MediaDuration[^>]*>([^<]+)<\\/premierePrivateProjectMetaData:Column.Intrinsic.MediaDuration>/.exec(packet) : null;
-            var parts = durationMatch ? durationMatch[1].split(":") : [];
+            // MediaDuration is timecode at the nominal rate: 00:02:55:04 at "23.98 fps"
+            // is 4204 frames of 1001/24000 s, and 29.97 media can use drop-frame
+            // timecode (00;05;26;11). Audio uses samples at the Hz rate.
+            var timecode = durationMatch ? durationMatch[1] : "";
+            var dropFrame = timecode.indexOf(";") >= 0;
+            var parts = timecode ? timecode.split(/[:;]/) : [];
             if (parts.length === 4 && /^\\d{2}$/.test(parts[0]) && /^\\d{2}$/.test(parts[1]) && /^\\d{2}$/.test(parts[2]) && /^\\d+$/.test(parts[3]) && Number(parts[1]) < 60 && Number(parts[2]) < 60) {
-              var rate = NaN;
               var timebaseMatch = /<premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase[^>]*>([0-9]+(?:\\.[0-9]+)?)\\s+(Hz|fps)<\\/premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase>/.exec(packet);
-              if (timebaseMatch && ((parts[3].length === 2 && timebaseMatch[2] === "fps") || (parts[3].length >= 4 && timebaseMatch[2] === "Hz"))) {
-                rate = Number(timebaseMatch[1]);
-                if (isFinite(rate) && rate > 0) durationTolerance = 1 / rate;
+              var wholeSeconds = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+              if (timebaseMatch && parts[3].length >= 4 && timebaseMatch[2] === "Hz" && !dropFrame) {
+                var sampleRate = Number(timebaseMatch[1]);
+                if (isFinite(sampleRate) && sampleRate > 0 && Number(parts[3]) < sampleRate) {
+                  durationTolerance = 1 / sampleRate;
+                  mediaDuration = wholeSeconds + Number(parts[3]) / sampleRate;
+                }
+              } else if (timebaseMatch && parts[3].length === 2 && timebaseMatch[2] === "fps") {
+                var labelRate = Number(timebaseMatch[1]);
+                var nominal = Math.round(labelRate);
+                if (isFinite(labelRate) && nominal > 0 && Number(parts[3]) < nominal) {
+                  var fractional = Math.abs(labelRate - nominal) > 0.001;
+                  var exactRate = fractional ? nominal * 1000 / 1001 : nominal;
+                  var frames = wholeSeconds * nominal + Number(parts[3]);
+                  if (dropFrame) {
+                    var totalMinutes = Number(parts[0]) * 60 + Number(parts[1]);
+                    frames -= Math.round(nominal / 15) * (totalMinutes - Math.floor(totalMinutes / 10));
+                  }
+                  if (!dropFrame || (fractional && nominal % 30 === 0)) {
+                    durationTolerance = 1 / exactRate;
+                    mediaDuration = frames / exactRate;
+                  }
+                }
               }
-              if (isFinite(rate) && rate > 0 && Number(parts[3]) < rate) mediaDuration = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]) + Number(parts[3]) / rate;
             }
           } catch (durationReadError) {}
           var outBefore = __markSeconds(item.getOutPoint(4));
@@ -690,7 +713,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     set_item_in_out: {
       description:
-        "Set in and/or out points on a project item in the project panel (marks source range for editing).",
+        "Set in and/or out points on a project item in the project panel (marks source range for editing). Premiere snaps video marks to the media's own frame grid, so a mark is verified within one media frame and the result reports requested and applied seconds.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -731,14 +754,11 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
 
-          var originalIn = item.getInPoint(${mediaType});
-          var originalOut = item.getOutPoint(${mediaType});
-          var hadOriginalIn = !!originalIn;
-          var hadOriginalOut = !!originalOut;
-          var originalInSeconds = hadOriginalIn ? Number(originalIn.seconds) : 0;
-          var originalOutSeconds = hadOriginalOut ? Number(originalOut.seconds) : 0;
-          var originalInTicks = hadOriginalIn ? String(originalIn.ticks) : "";
-          var originalOutTicks = hadOriginalOut ? String(originalOut.ticks) : "";
+          var originalMarks = __itemMarksForRestore(item, ${mediaType});
+          if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
+          var hadOriginalIn = true, hadOriginalOut = true;
+          var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
+          var originalInTicks = originalMarks.inTicks, originalOutTicks = originalMarks.outTicks;
 
           function restoreOriginalMarks() {
             try {
@@ -754,6 +774,21 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
               && (!hadOriginalOut || (restoredOut && String(restoredOut.ticks) === originalOutTicks));
           }
 
+          // Live 26.5.2: Premiere floors video marks to the media's own frame grid
+          // (0.5 s on 23.976 media reads back as 11 frames, 0.4588 s) and audio
+          // marks to its samples, so accept a mark within one media frame.
+          var markToleranceSeconds = 0.000001;
+          if (${mediaType} !== 2) {
+            try {
+              var mediaFps = parseFloat(item.getFootageInterpretation().frameRate);
+              if (mediaFps > 0) markToleranceSeconds = 1 / mediaFps;
+            } catch (rateErr) {}
+          } else {
+            markToleranceSeconds = 0.0005;
+          }
+          function markMatches(observed, requestedSeconds) {
+            return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
+          }
           function failAfterMarkUpdate(message) {
             restoreOriginalMarks();
             if (marksRestored()) {
@@ -773,7 +808,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             return failAfterMarkUpdate("Premiere rejected the requested project-item in point (" + setInErr.toString() + ").");
           }
           var observedIn = item.getInPoint(${mediaType});
-          if (!observedIn || String(observedIn.ticks) !== String(inTime.ticks)) {
+          if (!markMatches(observedIn, ${args.in_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested project-item in point.");
           }
           `
@@ -791,19 +826,22 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             return failAfterMarkUpdate("Premiere rejected the requested project-item out point (" + setOutErr.toString() + ").");
           }
           var observedOut = item.getOutPoint(${mediaType});
-          if (!observedOut || String(observedOut.ticks) !== String(outTime.ticks)) {
+          if (!markMatches(observedOut, ${args.out_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested project-item out point.");
           }
           `
               : ""
           }
 
-          return __result({
+          var marksResult = {
             item: item.name,
             inSet: ${args.in_seconds !== undefined},
             outSet: ${args.out_seconds !== undefined},
             verified: true
-          });
+          };
+          ${args.in_seconds !== undefined ? `marksResult.requestedInSeconds = ${args.in_seconds}; marksResult.appliedInSeconds = Number(item.getInPoint(${mediaType}).seconds);` : ""}
+          ${args.out_seconds !== undefined ? `marksResult.requestedOutSeconds = ${args.out_seconds}; marksResult.appliedOutSeconds = Number(item.getOutPoint(${mediaType}).seconds);` : ""}
+          return __result(marksResult);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1571,7 +1609,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
     },
 
     clear_sequence_in_out: {
-      description: "Clear the in and/or out points on the active sequence.",
+      description: "Clear the in and/or out points on the active sequence so they read back as unset, and leave the other point unchanged.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1592,14 +1630,45 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
 
-          var zeroSeconds = __ticksToSeconds(seq.zeroPoint);
-          var endSeconds = __ticksToSeconds(seq.end);
-          ${clearIn ? `seq.setInPoint(zeroSeconds);` : ""}
-          ${clearOut ? `seq.setOutPoint(endSeconds);` : ""}
-          ${clearIn ? `if (Math.abs(Number(seq.getInPoint()) - zeroSeconds) > 0.000001) return __error("Premiere did not clear the sequence in point.");` : ""}
-          ${clearOut ? `if (Math.abs(Number(seq.getOutPoint()) - endSeconds) > 0.000001) return __error("Premiere did not clear the sequence out point.");` : ""}
-
-          return __result({ clearedIn: ${clearIn}, clearedOut: ${clearOut}, verified: true });
+          var frameTicks = __sequenceFrameTicks(seq);
+          var halfFrameSeconds = isFinite(frameTicks) ? __ticksToSeconds(String(frameTicks)) / 2 : 0.001;
+          var inBefore = __sequencePointSeconds(seq.getInPoint());
+          var outBefore = __sequencePointSeconds(seq.getOutPoint());
+          // Live 26.5.2: writing Premiere's unset value (-400000) clears a mark,
+          // the same state a new sequence has. Writing 0 and the sequence end
+          // instead leaves visible marks, and the out point reads back rounded.
+          // Sequence bounds are only a fallback for a host that rejects the unset value.
+          function clearPoint(isIn) {
+            var fallback = isIn ? __ticksToSeconds(seq.zeroPoint) : __ticksToSeconds(seq.end);
+            try { if (isIn) seq.setInPoint(-400000); else seq.setOutPoint(-400000); } catch (unsetError) {}
+            if (__sequencePointSeconds(isIn ? seq.getInPoint() : seq.getOutPoint()) === null) return "unset";
+            try { if (isIn) seq.setInPoint(fallback); else seq.setOutPoint(fallback); } catch (boundsError) { return null; }
+            var now = __sequencePointSeconds(isIn ? seq.getInPoint() : seq.getOutPoint());
+            return now !== null && Math.abs(now - fallback) <= halfFrameSeconds ? "sequence_bounds" : null;
+          }
+          var inMethod = ${clearIn} ? clearPoint(true) : null;
+          var outMethod = ${clearOut} ? clearPoint(false) : null;
+          var inAfter = __sequencePointSeconds(seq.getInPoint());
+          var outAfter = __sequencePointSeconds(seq.getOutPoint());
+          function same(a, b) { return a === null ? b === null : (b !== null && Math.abs(a - b) <= halfFrameSeconds); }
+          var problems = [];
+          if (${clearIn} && !inMethod) problems.push("Premiere did not clear the sequence in point");
+          if (${clearOut} && !outMethod) problems.push("Premiere did not clear the sequence out point");
+          if (!${clearIn} && !same(inBefore, inAfter)) problems.push("the in point changed although it was not cleared");
+          if (!${clearOut} && !same(outBefore, outAfter)) problems.push("the out point changed although it was not cleared");
+          var state = { inSeconds: inAfter, outSeconds: outAfter, inSet: inAfter !== null, outSet: outAfter !== null };
+          if (problems.length) {
+            state.outcome = "failed";
+            state.verified = false;
+            return __error(problems.join("; ") + ".", state);
+          }
+          state.clearedIn = ${clearIn};
+          state.clearedOut = ${clearOut};
+          if (inMethod) state.inMethod = inMethod;
+          if (outMethod) state.outMethod = outMethod;
+          state.outcome = "verified";
+          state.verified = true;
+          return __result(state);
         `);
         return sendCommand(script, bridgeOptions);
       },

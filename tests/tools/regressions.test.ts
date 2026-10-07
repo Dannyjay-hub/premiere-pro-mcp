@@ -162,8 +162,8 @@ describe("real-host social sequence regressions", () => {
 
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
-    expect(setScript).toContain("seq.setInPoint(appliedInSeconds)");
-    expect(setScript).toContain("seq.setOutPoint(appliedOutSeconds)");
+    expect(setScript).toContain("seq.setInPoint(inWriteSeconds)");
+    expect(setScript).toContain("seq.setOutPoint(outWriteSeconds)");
     expect(setScript).toContain("requestedOutTicks = __secondsToTicks(60)");
     expect(setScript).toContain("Math.abs(observedOut - appliedOutSeconds)");
 
@@ -185,10 +185,10 @@ describe("real-host social sequence regressions", () => {
     expect(setArea).toContain("seq.setWorkAreaInPoint(requestedIn)");
     expect(setArea).toContain("requestedInRaw = __secondsToTicks(4)");
     expect(setArea).toContain("Premiere did not apply the work area");
-    expect(setArea).toContain("verified: true");
+    expect(setArea).toContain('outcome: verified ? "verified" : "committed_unverified"');
 
     const enabled = await codeFor(sequence.is_work_area_enabled, {});
-    expect(enabled).toContain("seq.isWorkAreaEnabled()");
+    expect(enabled).toContain("__workAreaEnabled(seq)");
     expect(enabled).not.toContain("seq.isWorkAreaBarEnabled()");
   });
 
@@ -1130,13 +1130,13 @@ describe("issue #235 — CEP tool calls use the host's documented argument types
     expect(script).toContain("Premiere did not apply the requested sequence pixel aspect ratio");
   });
 
-  it("clears sequence points with seconds derived from their tick values", async () => {
+  it("clears sequence points with the unset value and keeps tick-derived bounds as the fallback", async () => {
     const script = await scriptFor(tracks.clear_sequence_in_out, {});
 
-    expect(script).toContain("var zeroSeconds = __ticksToSeconds(seq.zeroPoint)");
-    expect(script).toContain("var endSeconds = __ticksToSeconds(seq.end)");
-    expect(script).toContain("seq.setInPoint(zeroSeconds)");
-    expect(script).toContain("seq.setOutPoint(endSeconds)");
+    expect(script).toContain("seq.setInPoint(-400000)");
+    expect(script).toContain("seq.setOutPoint(-400000)");
+    expect(script).toContain("__ticksToSeconds(seq.zeroPoint)");
+    expect(script).toContain("__ticksToSeconds(seq.end)");
     expect(script).not.toContain("seq.zeroPoint.ticks");
   });
 
@@ -1341,6 +1341,8 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
 
     expect(queued).toContain("var outputFile = new File");
     expect(queued).toContain("var jobId = encoder.encodeSequence");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
+    expect(queued).not.toContain("0, // workAreaType");
     // Queueing remains an unverified handoff. Batch start is opt-in because it
     // affects every ready AME job, including jobs unrelated to this call.
     expect(queued).toContain("Batch startup and output-file creation are not verified by this tool");
@@ -1348,6 +1350,15 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
     expect(queued).toContain("app.encoder.startBatch()");
     expect(projectItem).toContain("outputFile.fsName");
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
+  });
+
+  it("escapes quoted output and preset paths before building the sequence handoff", async () => {
+    const queued = await scriptFor(exports.add_to_render_queue, {
+      output_path: '/tmp/render "quoted".mp4',
+      preset_path: temporaryPreset(),
+    });
+    expect(queued).toContain('render \\"quoted\\".mp4');
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
   });
 
   it("uses the documented encodeFile signature without a workArea argument (live: 'Illegal Parameter type')", async () => {
@@ -1432,6 +1443,7 @@ describe("issue #615 — encode_file passes natively typed arguments", () => {
     expect(proxy).toMatch(/ENCODE_ENTIRE,\s*true\s*\)/);
     expect(proxy).not.toMatch(/ENCODE_ENTIRE,\s*1\s*\)/);
     expect(queued).toContain("encoder.encodeSequence(");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
     expect(queued).toContain("true // removeUponCompletion");
     expect(queued).not.toMatch(/encodeSequence\([\s\S]*\b1\s*\/\/\s*removeOnCompletion/);
   });

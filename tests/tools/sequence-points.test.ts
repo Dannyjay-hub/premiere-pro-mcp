@@ -13,11 +13,13 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getPlayheadTools } from "../../src/tools/playhead.js";
 import { getEditorRequestTools } from "../../src/tools/editor-requests.js";
+import { getTrackTargetingTools } from "../../src/tools/track-targeting.js";
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const TICKS = 254016000000;
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/sequence-points", timeoutMs: 5000 };
 const playhead = getPlayheadTools(bridgeOptions);
+const targeting = getTrackTargetingTools(bridgeOptions);
 const editor = getEditorRequestTools(bridgeOptions);
 type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
 
@@ -27,10 +29,11 @@ beforeEach(() => vi.clearAllMocks());
  * Mirrors Premiere Pro 25.2: in/out and work-area getters return seconds as
  * strings, -400000 means unset, and scripted work-area writes are ignored.
  */
-function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWritable?: boolean; ignorePlayer?: boolean; frameTicks?: number } = {}) {
+function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWritable?: boolean; workAreaEnabled?: boolean; ignorePlayer?: boolean; frameTicks?: number } = {}) {
   let inPoint = options.inSeconds ?? -400000;
   let outPoint = options.outSeconds ?? -400000;
   let workIn = 0;
+  let enabled = options.workAreaEnabled ?? false;
   let workOut = 121.6;
   let player = 0;
   return {
@@ -45,12 +48,14 @@ function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWr
     getOutPoint: () => String(outPoint),
     setInPoint: (seconds: number) => { inPoint = seconds; },
     // Live 25.2.3: an out-point before the in-point clears the in-point.
-    setOutPoint: (seconds: number) => { outPoint = seconds; if (inPoint > -399999 && seconds < inPoint) inPoint = -400000; },
+    // Live 26.5.2: writing the unset value -400000 clears only that point.
+    setOutPoint: (seconds: number) => { outPoint = seconds; if (seconds > -399999 && inPoint > -399999 && seconds < inPoint) inPoint = -400000; },
     getWorkAreaInPoint: () => String(workIn),
     getWorkAreaOutPoint: () => String(workOut),
-    setWorkAreaInPoint: (seconds: number) => { if (options.workAreaWritable) workIn = Number(seconds); },
-    setWorkAreaOutPoint: (seconds: number) => { if (options.workAreaWritable) workOut = Number(seconds); },
-    isWorkAreaEnabled: () => false,
+    setWorkAreaInPoint: (seconds: number) => { if (enabled && options.workAreaWritable) workIn = Number(seconds); },
+    setWorkAreaOutPoint: (seconds: number) => { if (enabled && options.workAreaWritable) workOut = Number(seconds); },
+    isWorkAreaEnabled: () => enabled,
+    setWorkAreaEnabled: (value: boolean) => { enabled = value; },
     getPlayerPosition: () => ({ ticks: String(player) }),
     // Live 25.2.3 ignores a negative position.
     setPlayerPosition: (ticks: string) => { if (!options.ignorePlayer && parseFloat(ticks) >= 0) player = parseFloat(ticks); },
@@ -104,6 +109,56 @@ describe("get_sequence_in_out_points", () => {
   });
 });
 
+describe("clear_sequence_in_out", () => {
+  it("unsets both points instead of marking the whole sequence", async () => {
+    const seq = sequence({ inSeconds: 10, outSeconds: 20 });
+    host(seq);
+    await expect(targeting.clear_sequence_in_out.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "verified", verified: true, inSeconds: null, outSeconds: null, inSet: false, outSet: false, inMethod: "unset", outMethod: "unset" },
+    });
+    expect(seq.getInPoint()).toBe("-400000");
+    expect(seq.getOutPoint()).toBe("-400000");
+  });
+
+  it("clears one point and leaves the other unchanged", async () => {
+    host(sequence({ inSeconds: 10, outSeconds: 20 }));
+    await expect(targeting.clear_sequence_in_out.handler({ clear_in: false })).resolves.toMatchObject({
+      success: true,
+      data: { inSeconds: 10, outSeconds: null, clearedIn: false, clearedOut: true },
+    });
+    host(sequence({ inSeconds: 10, outSeconds: 20 }));
+    await expect(targeting.clear_sequence_in_out.handler({ clear_out: false })).resolves.toMatchObject({
+      success: true,
+      data: { inSeconds: null, outSeconds: 20 },
+    });
+  });
+
+  it("falls back to the sequence bounds within half a frame when the host rejects the unset value", async () => {
+    // Live 26.5.2 reads an out point at the sequence end back rounded (1083.01525 for 1083.0152667).
+    const seq = Object.assign(sequence({ inSeconds: 10, outSeconds: 20 }), { zeroPoint: "0" });
+    seq.setInPoint = (seconds: number) => { if (seconds >= 0) (seq as any).__in = seconds; };
+    seq.getInPoint = () => String((seq as any).__in ?? 10);
+    seq.setOutPoint = (seconds: number) => { if (seconds >= 0) (seq as any).__out = seconds - 0.0000167; };
+    seq.getOutPoint = () => String((seq as any).__out ?? 20);
+    host(seq);
+    await expect(targeting.clear_sequence_in_out.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "verified", inMethod: "sequence_bounds", outMethod: "sequence_bounds", inSeconds: 0 },
+    });
+  });
+
+  it("fails when Premiere keeps the mark", async () => {
+    const seq = sequence({ inSeconds: 10, outSeconds: 20 });
+    seq.setInPoint = () => {};
+    host(seq);
+    const result = await targeting.clear_sequence_in_out.handler({}) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("did not clear the sequence in point");
+    expect(result.data).toMatchObject({ outcome: "failed", verified: false, inSeconds: 10, outSeconds: null });
+  });
+});
+
 describe("work area", () => {
   it("get_work_area returns seconds, not seconds divided by ticks-per-second", async () => {
     host(sequence());
@@ -112,11 +167,38 @@ describe("work area", () => {
     expect(result.data?.outSeconds).toBeCloseTo(121.6);
   });
 
-  it("set_work_area refuses to report success when Premiere ignores the write", async () => {
-    host(sequence());
+  it("set_work_area fails and turns the bar back off when Premiere ignores the write", async () => {
+    // Live 26.5.2: the point setters return and change nothing, even with the bar enabled.
+    const seq = sequence();
+    host(seq);
     const result = await playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 }) as Result;
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/did not apply the work area.*set_sequence_in_out_points/);
+    expect(result.error).toMatch(/ignored the work-area point writes.*turned back off.*UXP/);
+    expect(result.data).toMatchObject({ outcome: "failed", verified: false, workAreaIn: 0, enabledByTool: false, workAreaEnabled: false, barRestored: true });
+    expect(seq.isWorkAreaEnabled()).toBe(false);
+  });
+
+  it("leaves an already enabled bar on when Premiere ignores the write", async () => {
+    const seq = sequence({ workAreaEnabled: true });
+    const disable = vi.spyOn(seq, "setWorkAreaEnabled");
+    host(seq);
+    const result = await playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 }) as Result;
+    expect(result.success).toBe(false);
+    expect(result.data).toMatchObject({ outcome: "failed", workAreaEnabled: true });
+    expect(result.data).not.toHaveProperty("barRestored");
+    expect(disable).not.toHaveBeenCalled();
+  });
+
+  it("reports when the bar it enabled cannot be turned back off", async () => {
+    const seq = sequence();
+    let enabled = false;
+    seq.isWorkAreaEnabled = () => enabled;
+    seq.setWorkAreaEnabled = (value: boolean) => { if (value) enabled = true; };
+    host(seq);
+    const result = await playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 }) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/could not be turned back off/);
+    expect(result.data).toMatchObject({ outcome: "failed", workAreaEnabled: true, barRestored: false });
   });
 
   it("set_work_area writes seconds and verifies them when Premiere accepts the write", async () => {
@@ -125,6 +207,67 @@ describe("work area", () => {
       success: true,
       data: { workAreaIn: 10, workAreaOut: 30, verified: true },
     });
+  });
+
+  it("enables a disabled bar before writing and verifies its state", async () => {
+    const seq = sequence({ workAreaWritable: true });
+    host(seq);
+    await expect(playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 })).resolves.toMatchObject({ data: { outcome: "verified", enabledByTool: true, workAreaEnabled: true } });
+    expect(seq.isWorkAreaEnabled()).toBe(true);
+  });
+
+  it("refuses a missing or ineffective enable API without writing points", async () => {
+    for (const missing of [true, false]) {
+      const seq = sequence({ workAreaWritable: true });
+      if (missing) delete (seq as any).setWorkAreaEnabled;
+      else seq.setWorkAreaEnabled = () => {};
+      const write = vi.spyOn(seq, "setWorkAreaInPoint");
+      host(seq);
+      const result = await playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 }) as Result;
+      expect(result.success).toBe(false);
+      expect(result.data).toMatchObject({ outcome: "failed", workAreaEnabled: false });
+      expect(result.error).toContain("Work Area Bar");
+      expect(write).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps unreadable enabled state distinct from false and catches disabled getters", async () => {
+    const seq = sequence();
+    seq.isWorkAreaEnabled = () => undefined as any;
+    seq.getWorkAreaInPoint = () => { throw new Error("disabled"); };
+    host(seq);
+    await expect(playhead.get_work_area.handler()).resolves.toMatchObject({ data: { enabled: null, inSeconds: null } });
+    const { getSequenceTools } = await import("../../src/tools/sequence.js");
+    await expect(getSequenceTools(bridgeOptions).is_work_area_enabled.handler()).resolves.toMatchObject({ success: false });
+    await expect(playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 })).resolves.toMatchObject({ success: false, data: { outcome: "failed" } });
+  });
+
+  it("does not claim verification for a throwing write or one-frame readback drift", async () => {
+    for (const throws of [true, false]) {
+      const seq = sequence({ workAreaWritable: true, workAreaEnabled: true });
+      if (throws) seq.setWorkAreaOutPoint = () => { throw new Error("write failed"); };
+      else seq.getWorkAreaOutPoint = () => "30.04";
+      host(seq);
+      await expect(playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 })).resolves.toMatchObject({ data: { outcome: "committed_unverified", verified: false } });
+    }
+  });
+
+  it("reports an uncertain enable attempt or unreadable point readback without claiming verification", async () => {
+    let seq = sequence({ workAreaWritable: true });
+    seq.setWorkAreaEnabled = () => { throw new Error("host enable failed"); };
+    host(seq);
+    await expect(playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 })).resolves.toMatchObject({ data: { outcome: "committed_unverified", verified: false } });
+    seq = sequence({ workAreaWritable: true, workAreaEnabled: true });
+    seq.getWorkAreaOutPoint = () => { throw new Error("read failed"); };
+    host(seq);
+    await expect(playhead.set_work_area.handler({ in_seconds: 10, out_seconds: 30 })).resolves.toMatchObject({ data: { outcome: "committed_unverified", verified: false, workAreaOut: null } });
+  });
+
+  it("rejects nonfinite and negative points without sending a script", async () => {
+    for (const in_seconds of [NaN, Infinity, -1]) {
+      await expect(playhead.set_work_area.handler({ in_seconds, out_seconds: 30 })).resolves.toMatchObject({ success: false });
+    }
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -239,6 +382,28 @@ describe("set_sequence_in_out_points", () => {
   it("sets and verifies the points", async () => {
     host(sequence());
     await expect(playhead.set_sequence_in_out_points.handler({ in_seconds: 25, out_seconds: 29 })).resolves.toMatchObject({ success: true, data: { inSeconds: 25, outSeconds: 29, verified: true } });
+  });
+
+  it.each([1582, 1750, 2752, 2997, 3401])("stores both marks at or after their frame starts (In frame %i) when Premiere floors marks to audio samples", async (frame) => {
+    // Live 26.5.2: marks are floored to the 48 kHz grid, and an In stored just
+    // before a frame start made an In/Out export begin one frame early.
+    const frameTicks = TICKS * 1001 / 30000;
+    const frameSeconds = 1001 / 30000;
+    const seq = sequence({ frameTicks });
+    const stored = { in: -400000, out: -400000 };
+    const floorToSample = (seconds: number) => Math.floor(seconds * 48000) / 48000;
+    seq.getSettings = () => ({ videoDisplayFormat: 100, audioSampleRate: { ticks: "5292000" } }) as any;
+    seq.setInPoint = (seconds: number) => { stored.in = floorToSample(seconds); };
+    seq.setOutPoint = (seconds: number) => { stored.out = floorToSample(seconds); };
+    seq.getInPoint = () => String(stored.in);
+    seq.getOutPoint = () => String(stored.out);
+    host(seq);
+    const result = await playhead.set_sequence_in_out_points.handler({ in_seconds: frame * frameSeconds, out_seconds: (frame + 10) * frameSeconds }) as Result;
+    expect(result).toMatchObject({ success: true, data: { verified: true } });
+    expect(Math.floor(stored.in / frameSeconds + 1e-9)).toBe(frame);
+    expect(stored.in - frame * frameSeconds).toBeLessThan(1 / 48000 + 1e-12);
+    expect(Math.floor(stored.out / frameSeconds + 1e-9)).toBe(frame + 10);
+    expect(stored.out - (frame + 10) * frameSeconds).toBeLessThan(1 / 48000 + 1e-12);
   });
 
   it("refuses an out-point before the in-point, keeping the existing points", async () => {
