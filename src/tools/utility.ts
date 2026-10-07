@@ -34,6 +34,39 @@ const IN_OUT_EDIT_PREAMBLE = `
           if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
             return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");
           }
+          // Live 26.5.2: the DOM stores sequence marks floored to the audio sample
+          // grid. At 29.97 most frame starts fall between samples, so an In on a
+          // frame was stored just before it; Lift/Extract then cut video from the
+          // previous frame, and Extract rippled one frame short. A QE mark written
+          // as timecode lands exactly on the frame, so re-write any inexact mark
+          // before editing. If that does not hold, the original marks are put back
+          // and the coverage checks below still catch a lost frame.
+          var inFrame = Math.round(inTicks / frameTicks);
+          var outFrame = Math.round(outTicks / frameTicks);
+          // A floored mark is 1e6+ ticks early; seconds read back with 15 digits stay within 1000 ticks.
+          var inExact = Math.abs(inTicks - inFrame * frameTicks) < 1000;
+          var outExact = Math.abs(outTicks - outFrame * frameTicks) < 1000;
+          var marksRewritten = false;
+          if ((!inExact || !outExact) && typeof qeSeq.setInPoint === "function" && typeof qeSeq.setOutPoint === "function") {
+            var storedIn = seq.getInPoint(), storedOut = seq.getOutPoint();
+            try {
+              if (!inExact) qeSeq.setInPoint(__qeTimecodeForTicks(seq, String(inFrame * frameTicks)).timecode);
+              if (!outExact) qeSeq.setOutPoint(__qeTimecodeForTicks(seq, String(outFrame * frameTicks)).timecode);
+            } catch (eMarks) {}
+            var exactIn = __sequencePointSeconds(seq.getInPoint());
+            var exactOut = __sequencePointSeconds(seq.getOutPoint());
+            if (exactIn !== null && exactOut !== null &&
+                Math.abs(exactIn * TICKS_PER_SECOND - inFrame * frameTicks) < 1000 &&
+                Math.abs(exactOut * TICKS_PER_SECOND - outFrame * frameTicks) < 1000) {
+              inSeconds = exactIn;
+              outSeconds = exactOut;
+              inTicks = inFrame * frameTicks;
+              outTicks = outFrame * frameTicks;
+              marksRewritten = true;
+            } else {
+              try { seq.setInPoint(Number(storedIn)); seq.setOutPoint(Number(storedOut)); } catch (eRestore) {}
+            }
+          }
           // Every clip's ID and span, to tell whether a failed edit changed anything.
           var timelineSignature = function () {
             var parts = [];
@@ -114,7 +147,10 @@ const IN_OUT_EDIT_PREAMBLE = `
             for (var p = 0; p < targeted.length; p++) {
               var now = measure(targeted[p].track).covered;
               var expectedCovered = targeted[p].covered - targeted[p].overlap;
-              if (Math.abs(now - expectedCovered) > halfFrame * 2) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
+              // Clip edges are whole ticks, so one lost frame is never rounding.
+              // Live 26.5.2: QE lift/extract can drop the frame before the in point
+              // when a video transition sits on that cut.
+              if (Math.abs(now - expectedCovered) > halfFrame) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
             }
             return problems;
           };
@@ -1094,7 +1130,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
+        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Marks that Premiere stored just off a frame are first re-written on that exact frame through QE (marksRewritten). Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1127,6 +1163,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             inSeconds: inSeconds,
             outSeconds: outSeconds,
             gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            marksRewritten: marksRewritten,
             tracksEdited: edited,
             otherTracksChanged: otherTracksChanged(),
             sequenceEndSeconds: __ticksToSeconds(seq.end),
@@ -1139,7 +1176,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
+        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Marks that Premiere stored just off a frame are first re-written on that exact frame through QE (marksRewritten). Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1160,7 +1197,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
               for (var c = 0; c < track.clips.numItems; c++) if (String(track.clips[c].nodeId) === want.nodeId) { found = track.clips[c]; break; }
               if (!found) { problems.push(targeted[p].label + ": a clip after the range is missing"); continue; }
               var moved = want.start - parseFloat(found.start.ticks);
-              if (Math.abs(moved - shift) > halfFrame * 2) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
+              if (Math.abs(moved - shift) > halfFrame) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
             }
           }
           if (problems.length) return failAfterEdit("Premiere's extract did not close the in/out range as expected: " + problems.join("; ") + ".", { problems: problems });
@@ -1172,6 +1209,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             inSeconds: inSeconds,
             outSeconds: outSeconds,
             removedSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            marksRewritten: marksRewritten,
             tracksEdited: edited,
             otherTracksChanged: otherTracksChanged(),
             sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)),

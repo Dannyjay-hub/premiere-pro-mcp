@@ -36,7 +36,9 @@ type FakeClip = { nodeId: string; name: string; start: { ticks: string }; end: {
 function inOutHost(options: {
   inSeconds: number; outSeconds: number; lift?: "left" | "lift" | "noop";
   lockedAudio?: boolean; untargetedAudio?: boolean; extractNoShift?: boolean; extractTouchesUntargeted?: boolean;
+  dropVideoFrameBeforeIn?: boolean; videoUsesMarkFrames?: boolean; qeMarks?: boolean;
 }) {
+  const marks = { in: options.inSeconds, out: options.outSeconds };
   const t = (seconds: number) => ({ ticks: String(Math.round(seconds * TICKS)) });
   let pieces = 0;
   const makeTrack = (kind: string, locked = false, targeted = true) => {
@@ -56,23 +58,35 @@ function inOutHost(options: {
   const seq = {
     timebase: String(TICKS / 25),
     end: String(60 * TICKS),
-    getInPoint: () => options.inSeconds,
-    getOutPoint: () => options.outSeconds,
+    getInPoint: () => marks.in,
+    getOutPoint: () => marks.out,
+    setInPoint: (seconds: number) => { marks.in = seconds; },
+    setOutPoint: (seconds: number) => { marks.out = seconds; },
     videoTracks: Object.assign({ numTracks: 1 }, video),
     audioTracks: Object.assign({ numTracks: 1 }, audio),
   };
   const secondsOf = (time: { ticks: string }) => parseFloat(time.ticks) / TICKS;
   const cut = (ripple: boolean) => {
-    const a = options.inSeconds, b = options.outSeconds;
-    const shift = ripple && !options.extractNoShift ? b - a : 0;
+    const frame = 1 / 25;
+    // Live 26.5.2: video is cut from the frame the In falls in through the frame
+    // the Out falls in, and Extract ripples by whole frames of Out minus In.
+    const videoIn = Math.floor(marks.in / frame + 1e-9) * frame;
+    const videoOut = Math.ceil(marks.out / frame - 1e-9) * frame;
+    const markShift = options.videoUsesMarkFrames ? Math.floor((marks.out - marks.in) / frame + 1e-9) * frame : marks.out - marks.in;
+    const shift = ripple && !options.extractNoShift ? markShift : 0;
     for (const track of all) {
       if (track.locked || (!track.targeted && !(ripple && options.extractTouchesUntargeted))) continue;
+      const a = options.videoUsesMarkFrames && video.includes(track) ? videoIn : marks.in;
+      const b = options.videoUsesMarkFrames && video.includes(track) ? videoOut : marks.out;
       const next: FakeClip[] = [];
       for (const clip of track.list) {
         const s = secondsOf(clip.start), e = secondsOf(clip.end);
         if (s >= b) { next.push({ ...clip, start: t(s - shift), end: t(e - shift) }); continue; }
         if (e <= a) { next.push(clip); continue; }
-        if (s < a) next.push({ ...clip, end: t(a) });
+        // Live 26.5.2: with a video transition on the cut before the in point,
+        // QE lift/extract also removed that one-frame piece of video.
+        const keepUntil = options.dropVideoFrameBeforeIn && video.includes(track) ? a - 1 / 25 : a;
+        if (s < a) next.push({ ...clip, end: t(keepUntil) });
         if (e > b) next.push({ nodeId: `piece${pieces++}`, name: clip.name, start: t(b - shift), end: t(e - shift) });
       }
       track.list.splice(0, track.list.length, ...next);
@@ -82,6 +96,14 @@ function inOutHost(options: {
     return true;
   };
   const qeSeq: Record<string, unknown> = { extract: () => cut(true) };
+  if (options.qeMarks) {
+    const parse = (timecode: string) => {
+      const [h, m, sec, f] = timecode.split(/[:;]/).map(Number);
+      return ((h * 60 + m) * 60 + sec) + f / 25;
+    };
+    qeSeq.setInPoint = (timecode: string) => { marks.in = parse(timecode); };
+    qeSeq.setOutPoint = (timecode: string) => { marks.out = parse(timecode); };
+  }
   if (options.lift === "lift") qeSeq.lift = () => cut(false);
   if (options.lift === "left" || options.lift === undefined) qeSeq.left = () => cut(false);
   if (options.lift === "noop") qeSeq.left = () => true;
@@ -90,7 +112,7 @@ function inOutHost(options: {
     qe: { project: { getActiveSequence: () => qeSeq } },
   });
   const spans = (track: { list: FakeClip[] }) => track.list.map((c) => [secondsOf(c.start), secondsOf(c.end)]);
-  return { video, audio, seq, spans };
+  return { video, audio, seq, spans, marks };
 }
 
 describe("lift_selection and extract_selection", () => {
@@ -106,6 +128,41 @@ describe("lift_selection and extract_selection", () => {
     const result = await utility.lift_selection.handler() as Result;
     expect(result).toMatchObject({ success: true, data: { lifted: true, gapSeconds: 5, tracksEdited: ["V1", "A1"], verified: true } });
     expect(host.spans(host.video[0])).toEqual([[0, 30], [35, 40], [40, 60]]);
+  });
+
+  it.each([
+    [utility.lift_selection, /lift removed more or less than the in\/out range: V1 holds/],
+    [utility.extract_selection, /extract did not close the in\/out range as expected: V1 holds/],
+  ])("reports a frame Premiere removed before the in point instead of verifying it", async (tool, message) => {
+    const host = inOutHost({ inSeconds: 30, outSeconds: 35, dropVideoFrameBeforeIn: true });
+    const result = await tool.handler() as Result;
+    expect(result).toMatchObject({ success: false, data: { timelineChanged: true } });
+    expect(result.error).toMatch(/^The timeline changed, but /);
+    expect(result.error).toMatch(message);
+    expect(host.spans(host.video[0])[0]).toEqual([0, 29.96]);
+  });
+
+  // Live 26.5.2 stores marks floored to 48 kHz samples, so a mark on a frame can read just before it.
+  const flooredIn = Math.floor(30 * 48000 - 1) / 48000;
+  const flooredOut = Math.floor(35 * 48000 - 1) / 48000;
+
+  it.each([
+    [utility.lift_selection, [[0, 30], [35, 40], [40, 60]]],
+    [utility.extract_selection, [[0, 30], [30, 35], [35, 55]]],
+  ])("re-writes marks stored just before a frame on the exact frame, then edits exactly", async (tool, expected) => {
+    const host = inOutHost({ inSeconds: flooredIn, outSeconds: flooredOut, videoUsesMarkFrames: true, qeMarks: true });
+    const result = await tool.handler() as Result;
+    expect(result).toMatchObject({ success: true, data: { marksRewritten: true, verified: true } });
+    expect(host.marks).toEqual({ in: 30, out: 35 });
+    expect(host.spans(host.video[0])).toEqual(expected);
+  });
+
+  it.each([utility.lift_selection, utility.extract_selection])("reports the lost frame when QE cannot re-write the marks", async (tool) => {
+    const host = inOutHost({ inSeconds: flooredIn, outSeconds: flooredOut, videoUsesMarkFrames: true });
+    const result = await tool.handler() as Result;
+    expect(result).toMatchObject({ success: false, data: { timelineChanged: true } });
+    expect(result.error).toMatch(/V1 holds/);
+    expect(host.spans(host.video[0])[0]).toEqual([0, 29.96]);
   });
 
   it("fails without claiming a change when Premiere's lift does nothing", async () => {
