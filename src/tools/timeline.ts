@@ -1250,6 +1250,19 @@ export function getTimelineTools(
           var audioSpan = mediaSpan(2);
           var hasVideo = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
           var hasAudio = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+          // Premiere floors project-item video marks to the media's own frame grid.
+          // When that grid differs from the sequence's, each mark is written a
+          // quarter media frame late so the floor lands on the intended media frame.
+          var mediaFrameTicks = NaN;
+          if (hasVideo) {
+            try {
+              var interpretation = item.getFootageInterpretation();
+              var mediaRate = interpretation ? parseFloat(interpretation.frameRate) : NaN;
+              if (isFinite(mediaRate) && mediaRate > 0) mediaFrameTicks = TICKS_PER_SECOND / mediaRate;
+            } catch (interpretationError) {}
+          }
+          var mixedRate = isFinite(mediaFrameTicks) && Math.abs(mediaFrameTicks - frameTicks) > frameTicks / 1000;
+          var markBias = mixedRate ? __ticksToSeconds(mediaFrameTicks / 4) : 0;
 
           function freeTrack(tracks, fromIndex) {
             for (var t = Math.max(0, fromIndex); t < tracks.numTracks; t++) {
@@ -1288,8 +1301,8 @@ export function getTimelineTools(
           var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
           var placeError = null;
           try {
-            item.setInPoint(copyIn, 4);
-            item.setOutPoint(copyOut, 4);
+            item.setInPoint(copyIn + markBias, 4);
+            item.setOutPoint(copyOut + markBias, 4);
             seq.overwriteClip(item, String(startTicks), Math.max(videoTarget, 0), Math.max(audioTarget, 0));
           } catch (overwriteError) {
             placeError = overwriteError.toString();
@@ -1322,14 +1335,39 @@ export function getTimelineTools(
           }
           correctEnd(newVideo);
           correctEnd(newAudio);
+          // A mixed-rate copy can still land its source in up to one media frame
+          // off, because the mark cannot sit between media frames. Slip it back to
+          // the original's source in when its timeline span already matches.
+          var inCorrected = false;
+          function correctIn(placed) {
+            if (!placed || !mixedRate) return;
+            var offset = inTicks - parseFloat(placed.inPoint.ticks);
+            if (!isFinite(offset) || Math.abs(offset) < frameTicks / 2 || Math.abs(offset) >= mediaFrameTicks) return;
+            if (Math.abs(parseFloat(placed.start.ticks) - startTicks) >= frameTicks / 2) return;
+            if (Math.abs(parseFloat(placed.end.ticks) - endTicks) >= frameTicks / 2) return;
+            try {
+              var slipIn = new Time();
+              slipIn.ticks = String(Math.round(inTicks));
+              var slipOut = new Time();
+              slipOut.ticks = String(Math.round(inTicks + (endTicks - startTicks)));
+              placed.inPoint = slipIn;
+              placed.outPoint = slipOut;
+              inCorrected = true;
+            } catch (inError) {}
+          }
+          correctIn(newVideo);
+          correctIn(newAudio);
           var linkedCopy = isVideo ? newAudio : newVideo;
           var drift = Math.max(Math.abs(parseFloat(primary.start.ticks) - startTicks), Math.abs(parseFloat(primary.end.ticks) - endTicks));
           var inDrift = Math.abs(parseFloat(primary.inPoint.ticks) - inTicks);
+          // A mixed-rate source in within half a media frame shows the same media frame.
+          var inTolerance = mixedRate ? Math.max(frameTicks, mediaFrameTicks) / 2 : frameTicks / 2;
+          var sourceIn = { requestedSeconds: __ticksToSeconds(inTicks), appliedSeconds: __ticksToSeconds(primary.inPoint.ticks), corrected: inCorrected, snappedToMediaFrame: inDrift >= frameTicks / 2 && inDrift < inTolerance };
           var linkedVerified = !partner || (!!linkedCopy && Math.abs(parseFloat(linkedCopy.end.ticks) - endTicks) < frameTicks / 2);
           function describe(c, type, index) {
             return c ? { nodeId: String(c.nodeId), trackType: type, trackIndex: index, startSeconds: __ticksToSeconds(c.start.ticks), endSeconds: __ticksToSeconds(c.end.ticks), inSeconds: __ticksToSeconds(c.inPoint.ticks) } : null;
           }
-          var duplicateVerified = drift < frameTicks / 2 && inDrift < frameTicks / 2 && linkedVerified;
+          var duplicateVerified = drift < frameTicks / 2 && inDrift < inTolerance && linkedVerified;
           if (!duplicateVerified) return __jsonStringify({ success: false, error: "Premiere placed a duplicate, but its timing, source in-point, or linked partner did not verify. Inspect the timeline or use Undo.", data: {
             duplicated: false,
             verified: false,
@@ -1337,7 +1375,8 @@ export function getTimelineTools(
             timelineChanged: true,
             clipName: clip.name,
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
-            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget)
+            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),
+            sourceIn: sourceIn
           } });
           return __result({
             duplicated: true,
@@ -1347,6 +1386,7 @@ export function getTimelineTools(
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
             linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),
             endCorrected: endCorrected,
+            sourceIn: sourceIn,
             timelineChanged: true
           });
         `);

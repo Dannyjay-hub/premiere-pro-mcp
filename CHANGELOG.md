@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Temporary project-item mark writes and failed source-mark updates preserve soft-subclip ranges using private metadata when the DOM reports the whole media. Restore reads support fractional and drop-frame video timecodes and audio sample timecodes; unreadable ranges refuse before a write.
 
+- `duplicate_clip` now copies clips whose media frame rate differs from the sequence's. Premiere floors project-item marks to the media's own frame grid, so on Premiere 26.5.2 a 23.976 fps clip in a 29.97 fps sequence was copied with its source in one sequence frame early (19.9533 s instead of 19.9866 s) and reported `committed_unverified`. The tool now writes each mark a quarter media frame late, slips a copy whose source in is still less than one media frame off back to the original's source in, and accepts a mixed-rate source in within half a media frame. Results add `sourceIn` with the requested and applied seconds, `corrected` and `snappedToMediaFrame`. Same-rate clips are unchanged. Covered by unit tests with a fake host.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
