@@ -1571,7 +1571,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
     },
 
     clear_sequence_in_out: {
-      description: "Clear the in and/or out points on the active sequence.",
+      description: "Clear the in and/or out points on the active sequence so they read back as unset, and leave the other point unchanged.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1592,14 +1592,45 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
 
-          var zeroSeconds = __ticksToSeconds(seq.zeroPoint);
-          var endSeconds = __ticksToSeconds(seq.end);
-          ${clearIn ? `seq.setInPoint(zeroSeconds);` : ""}
-          ${clearOut ? `seq.setOutPoint(endSeconds);` : ""}
-          ${clearIn ? `if (Math.abs(Number(seq.getInPoint()) - zeroSeconds) > 0.000001) return __error("Premiere did not clear the sequence in point.");` : ""}
-          ${clearOut ? `if (Math.abs(Number(seq.getOutPoint()) - endSeconds) > 0.000001) return __error("Premiere did not clear the sequence out point.");` : ""}
-
-          return __result({ clearedIn: ${clearIn}, clearedOut: ${clearOut}, verified: true });
+          var frameTicks = __sequenceFrameTicks(seq);
+          var halfFrameSeconds = isFinite(frameTicks) ? __ticksToSeconds(String(frameTicks)) / 2 : 0.001;
+          var inBefore = __sequencePointSeconds(seq.getInPoint());
+          var outBefore = __sequencePointSeconds(seq.getOutPoint());
+          // Live 26.5.2: writing Premiere's unset value (-400000) clears a mark,
+          // the same state a new sequence has. Writing 0 and the sequence end
+          // instead leaves visible marks, and the out point reads back rounded.
+          // Sequence bounds are only a fallback for a host that rejects the unset value.
+          function clearPoint(isIn) {
+            var fallback = isIn ? __ticksToSeconds(seq.zeroPoint) : __ticksToSeconds(seq.end);
+            try { if (isIn) seq.setInPoint(-400000); else seq.setOutPoint(-400000); } catch (unsetError) {}
+            if (__sequencePointSeconds(isIn ? seq.getInPoint() : seq.getOutPoint()) === null) return "unset";
+            try { if (isIn) seq.setInPoint(fallback); else seq.setOutPoint(fallback); } catch (boundsError) { return null; }
+            var now = __sequencePointSeconds(isIn ? seq.getInPoint() : seq.getOutPoint());
+            return now !== null && Math.abs(now - fallback) <= halfFrameSeconds ? "sequence_bounds" : null;
+          }
+          var inMethod = ${clearIn} ? clearPoint(true) : null;
+          var outMethod = ${clearOut} ? clearPoint(false) : null;
+          var inAfter = __sequencePointSeconds(seq.getInPoint());
+          var outAfter = __sequencePointSeconds(seq.getOutPoint());
+          function same(a, b) { return a === null ? b === null : (b !== null && Math.abs(a - b) <= halfFrameSeconds); }
+          var problems = [];
+          if (${clearIn} && !inMethod) problems.push("Premiere did not clear the sequence in point");
+          if (${clearOut} && !outMethod) problems.push("Premiere did not clear the sequence out point");
+          if (!${clearIn} && !same(inBefore, inAfter)) problems.push("the in point changed although it was not cleared");
+          if (!${clearOut} && !same(outBefore, outAfter)) problems.push("the out point changed although it was not cleared");
+          var state = { inSeconds: inAfter, outSeconds: outAfter, inSet: inAfter !== null, outSet: outAfter !== null };
+          if (problems.length) {
+            state.outcome = "failed";
+            state.verified = false;
+            return __error(problems.join("; ") + ".", state);
+          }
+          state.clearedIn = ${clearIn};
+          state.clearedOut = ${clearOut};
+          if (inMethod) state.inMethod = inMethod;
+          if (outMethod) state.outMethod = outMethod;
+          state.outcome = "verified";
+          state.verified = true;
+          return __result(state);
         `);
         return sendCommand(script, bridgeOptions);
       },

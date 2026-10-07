@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `clear_sequence_in_out` now writes Premiere's unset value, so cleared points read back as unset like a new sequence, instead of writing 0 and the sequence end. On 26.5.2 the old method failed its own readback because the Out point is stored rounded to an audio sample. It reports each point after the change and leaves the point it was not asked to clear unchanged.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
