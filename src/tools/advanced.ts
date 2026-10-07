@@ -742,7 +742,7 @@ export function getAdvancedTools(
     },
 
     set_frame_blend: {
-      description: "Enable or disable frame blending on a clip. Uses QE DOM.",
+      description: "Request frame blending on a clip through QE DOM. Premiere exposes no frame-blend readback, so the result is committed_unverified and must be checked in Effect Controls.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -774,8 +774,11 @@ export function getAdvancedTools(
           var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
           if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
 
-          qeClip.setFrameBlend(${args.enabled});
-          return __result({ frameBlend: ${args.enabled}, clipName: result.clip.name });
+          try { qeClip.setFrameBlend(${args.enabled}); }
+          catch (writeError) {
+            return __error("Premiere threw while requesting frame blending; the mutation outcome is unknown. Inspect Effect Controls before retrying: " + writeError.toString(), { outcome: "committed_unverified", mutationAttempted: true, mutationOutcome: "unknown", verified: false });
+          }
+          return __result({ frameBlend: ${args.enabled}, clipName: result.clip.name, outcome: "committed_unverified", verified: false, verificationScope: "Premiere exposes no frame-blend readback; check Effect Controls." });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -783,7 +786,7 @@ export function getAdvancedTools(
 
     set_time_interpolation: {
       description:
-        "Set time interpolation type for a clip (Frame Sampling, Frame Blending, Optical Flow). Uses QE DOM.",
+        "Request time interpolation for a clip (Frame Sampling, Frame Blending, Optical Flow) through QE DOM. Premiere exposes no interpolation readback, so the result is committed_unverified and must be checked in Effect Controls.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -819,12 +822,18 @@ export function getAdvancedTools(
           var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
           if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
 
-          qeClip.setTimeInterpolationType(${args.interpolation_type});
+          try { qeClip.setTimeInterpolationType(${args.interpolation_type}); }
+          catch (writeError) {
+            return __error("Premiere threw while requesting time interpolation; the mutation outcome is unknown. Inspect Effect Controls before retrying: " + writeError.toString(), { outcome: "committed_unverified", mutationAttempted: true, mutationOutcome: "unknown", verified: false });
+          }
           var typeNames = ["Frame Sampling", "Frame Blending", "Optical Flow"];
           return __result({
             set: true,
             clipName: result.clip.name,
-            interpolationType: typeNames[${args.interpolation_type}] || "Unknown"
+            interpolationType: typeNames[${args.interpolation_type}] || "Unknown",
+            outcome: "committed_unverified",
+            verified: false,
+            verificationScope: "Premiere exposes no time-interpolation readback; check Effect Controls."
           });
         `);
         return sendCommand(script, bridgeOptions);

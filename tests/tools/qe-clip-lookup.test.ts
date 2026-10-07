@@ -167,10 +167,40 @@ describe("QE clip lookup by DOM clip start (#642)", () => {
 
   it("set_frame_blend and set_time_interpolation address the matched clip", async () => {
     const host = makeHost();
-    expect((await run(host, advanced.set_frame_blend, { node_id: "b", enabled: true })).success).toBe(true);
-    expect((await run(host, advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 })).success).toBe(true);
+    expect(await run(host, advanced.set_frame_blend, { node_id: "b", enabled: true })).toMatchObject({
+      success: true, data: { frameBlend: true, outcome: "committed_unverified", verified: false },
+    });
+    expect(await run(host, advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 })).toMatchObject({
+      success: true, data: { set: true, interpolationType: "Optical Flow", outcome: "committed_unverified", verified: false },
+    });
     expect(host.qeB.setFrameBlend).toHaveBeenCalledWith(true);
     expect(host.qeB.setTimeInterpolationType).toHaveBeenCalledWith(2);
+    expectGapUntouched(host);
+  });
+
+  it.each([
+    ["set_frame_blend", advanced.set_frame_blend, { node_id: "b", enabled: true }, "setFrameBlend"],
+    ["set_time_interpolation", advanced.set_time_interpolation, { node_id: "b", interpolation_type: 2 }, "setTimeInterpolationType"],
+  ] as const)("%s reports a thrown QE write without claiming verification", async (_name, tool, args, method) => {
+    const host = makeHost();
+    (host.qeB[method] as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error("write rejected"); });
+    const result = await run(host, tool, args as unknown as Record<string, unknown>);
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("mutation outcome is unknown"),
+      data: { outcome: "committed_unverified", mutationAttempted: true, mutationOutcome: "unknown", verified: false },
+    });
+    expectGapUntouched(host);
+  });
+
+  it.each([
+    ["set_frame_blend", advanced.set_frame_blend, { enabled: true }, "setFrameBlend"],
+    ["set_time_interpolation", advanced.set_time_interpolation, { interpolation_type: 2 }, "setTimeInterpolationType"],
+  ] as const)("%s safely escapes an adversarial clip ID", async (_name, tool, args, method) => {
+    const host = makeHost();
+    const result = await run(host, tool, { ...args, node_id: 'b\"); qeClip.setFrameBlend(false); (' });
+    expect(result).toMatchObject({ success: false, error: "Clip not found" });
+    expect(host.qeB[method]).not.toHaveBeenCalled();
     expectGapUntouched(host);
   });
 

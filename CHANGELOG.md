@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Effect-property lookup errors now list up to 25 non-empty display names; repeated names include their `property_index`, helping identify controls such as Gaussian Blur's `Amount` without guessing.
 
+- `add_to_render_queue` now asks Media Encoder to render the active sequence's In/Out range instead of the entire sequence.
+- `set_frame_blend` and `set_time_interpolation` report `committed_unverified` because Premiere exposes no readback for those QE writes; thrown writes warn that the mutation outcome is unknown.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
