@@ -34,6 +34,39 @@ const IN_OUT_EDIT_PREAMBLE = `
           if (inTicks <= halfFrame && outTicks >= seqEndTicks - halfFrame) {
             return __error("The sequence in/out range spans the whole sequence (no marks set). Set in/out points around the range first; no clips were changed.");
           }
+          // Live 26.5.2: the DOM stores sequence marks floored to the audio sample
+          // grid. At 29.97 most frame starts fall between samples, so an In on a
+          // frame was stored just before it; Lift/Extract then cut video from the
+          // previous frame, and Extract rippled one frame short. A QE mark written
+          // as timecode lands exactly on the frame, so re-write any inexact mark
+          // before editing. If that does not hold, the original marks are put back
+          // and the coverage checks below still catch a lost frame.
+          var inFrame = Math.round(inTicks / frameTicks);
+          var outFrame = Math.round(outTicks / frameTicks);
+          // A floored mark is 1e6+ ticks early; seconds read back with 15 digits stay within 1000 ticks.
+          var inExact = Math.abs(inTicks - inFrame * frameTicks) < 1000;
+          var outExact = Math.abs(outTicks - outFrame * frameTicks) < 1000;
+          var marksRewritten = false;
+          if ((!inExact || !outExact) && typeof qeSeq.setInPoint === "function" && typeof qeSeq.setOutPoint === "function") {
+            var storedIn = seq.getInPoint(), storedOut = seq.getOutPoint();
+            try {
+              if (!inExact) qeSeq.setInPoint(__qeTimecodeForTicks(seq, String(inFrame * frameTicks)).timecode);
+              if (!outExact) qeSeq.setOutPoint(__qeTimecodeForTicks(seq, String(outFrame * frameTicks)).timecode);
+            } catch (eMarks) {}
+            var exactIn = __sequencePointSeconds(seq.getInPoint());
+            var exactOut = __sequencePointSeconds(seq.getOutPoint());
+            if (exactIn !== null && exactOut !== null &&
+                Math.abs(exactIn * TICKS_PER_SECOND - inFrame * frameTicks) < 1000 &&
+                Math.abs(exactOut * TICKS_PER_SECOND - outFrame * frameTicks) < 1000) {
+              inSeconds = exactIn;
+              outSeconds = exactOut;
+              inTicks = inFrame * frameTicks;
+              outTicks = outFrame * frameTicks;
+              marksRewritten = true;
+            } else {
+              try { seq.setInPoint(Number(storedIn)); seq.setOutPoint(Number(storedOut)); } catch (eRestore) {}
+            }
+          }
           // Every clip's ID and span, to tell whether a failed edit changed anything.
           var timelineSignature = function () {
             var parts = [];
@@ -114,7 +147,10 @@ const IN_OUT_EDIT_PREAMBLE = `
             for (var p = 0; p < targeted.length; p++) {
               var now = measure(targeted[p].track).covered;
               var expectedCovered = targeted[p].covered - targeted[p].overlap;
-              if (Math.abs(now - expectedCovered) > halfFrame * 2) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
+              // Clip edges are whole ticks, so one lost frame is never rounding.
+              // Live 26.5.2: QE lift/extract can drop the frame before the in point
+              // when a video transition sits on that cut.
+              if (Math.abs(now - expectedCovered) > halfFrame) problems.push(targeted[p].label + " holds " + __ticksToSeconds(String(now)) + "s of clips, expected " + __ticksToSeconds(String(expectedCovered)) + "s");
             }
             return problems;
           };
@@ -558,7 +594,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
     },
 
     set_sequence_frame_rate: {
-      description: "Change the frame rate of the active sequence.",
+      description: "Change the frame rate of the active sequence and verify it. Premiere re-snaps every clip to the new frame grid, so clips off that grid move by up to a frame; the result lists them (clipsMoved, movedClips) and changing back does not restore them.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -589,6 +625,24 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
           var requestedFps = ${args.frame_rate};
           var requestedTicks = ${frame.ticks};
+          // Live 26.5.2: Premiere re-snaps every clip to the new frame grid, so
+          // edits not on that grid move by up to a frame (a 29.97 -> 25 -> 29.97
+          // round trip moved 21 of 44 clips by one frame). Record each clip's
+          // span to report what moved.
+          function clipSpans() {
+            var spans = {};
+            var groups = [["V", seq.videoTracks], ["A", seq.audioTracks]];
+            for (var g = 0; g < groups.length; g++) {
+              for (var t = 0; t < groups[g][1].numTracks; t++) {
+                var clips = groups[g][1][t].clips;
+                for (var c = 0; c < clips.numItems; c++) {
+                  spans[groups[g][0] + t + ":" + clips[c].nodeId] = [parseFloat(clips[c].start.ticks), parseFloat(clips[c].end.ticks), parseFloat(clips[c].inPoint.ticks)];
+                }
+              }
+            }
+            return spans;
+          }
+          var spansBefore = clipSpans();
           var frameDuration = new Time();
           frameDuration.ticks = requestedTicks.toString();
           settings.videoFrameRate = frameDuration;
@@ -606,13 +660,35 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             );
           }
 
-          return __result({
+          var spansAfter = clipSpans();
+          var moved = [];
+          var movedCount = 0;
+          var missing = 0;
+          var maxShift = 0;
+          for (var key in spansBefore) {
+            if (!spansBefore.hasOwnProperty(key)) continue;
+            var was = spansBefore[key], now = spansAfter[key];
+            if (!now) { missing++; continue; }
+            var shift = Math.max(Math.abs(now[0] - was[0]), Math.abs(now[1] - was[1]), Math.abs(now[2] - was[2]));
+            if (shift <= 1) continue;
+            movedCount++;
+            if (shift > maxShift) maxShift = shift;
+            if (moved.length < 50) moved.push({ clip: key, startShiftSeconds: __ticksToSeconds(String(now[0] - was[0])), endShiftSeconds: __ticksToSeconds(String(now[1] - was[1])), inShiftSeconds: __ticksToSeconds(String(now[2] - was[2])) });
+          }
+          var rateResult = {
             frameRate: requestedFps,
             exactFrameRate: ${frame.exactFrameRate},
             ntsc: ${frame.ntsc},
             ticksPerFrame: requestedTicks.toString(),
-            sequence: seq.name
-          });
+            sequence: seq.name,
+            verified: true,
+            clipsMoved: movedCount,
+            clipsMissing: missing,
+            maxShiftSeconds: __ticksToSeconds(String(maxShift)),
+            movedClips: moved
+          };
+          if (movedCount || missing) rateResult.warning = "Premiere re-snapped clips to the new frame grid: " + movedCount + " clip(s) moved by up to " + rateResult.maxShiftSeconds + " s" + (missing ? " and " + missing + " clip(s) could not be found afterwards" : "") + ". Changing back does not restore their original positions; use Undo if that matters.";
+          return __result(rateResult);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1094,7 +1170,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     lift_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
+        "EXPERIMENTAL (undocumented QE DOM: the sequence lift command, exposed as left() on 25.2). Lift (remove without closing the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify the range is empty on those tracks and nothing else on them moved. Marks that Premiere stored just off a frame are first re-written on that exact frame through QE (marksRewritten). Requires sequence in/out marks that do not span the whole sequence. Untargeted tracks are not verified; any that changed are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1127,6 +1203,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             inSeconds: inSeconds,
             outSeconds: outSeconds,
             gapSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            marksRewritten: marksRewritten,
             tracksEdited: edited,
             otherTracksChanged: otherTracksChanged(),
             sequenceEndSeconds: __ticksToSeconds(seq.end),
@@ -1139,7 +1216,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     extract_selection: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
+        "EXPERIMENTAL (undocumented QE DOM: extract()). Extract (remove and close the gap) the content between the sequence in/out points on every targeted, unlocked track, then verify each targeted track lost exactly the range and its later clips moved up by the range. Marks that Premiere stored just off a frame are first re-written on that exact frame through QE (marksRewritten). Requires sequence in/out marks that do not span the whole sequence. Premiere can also change untargeted tracks (for example the linked audio of targeted video, or sync-locked tracks); those are not verified but are listed in otherTracksChanged.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
@@ -1160,7 +1237,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
               for (var c = 0; c < track.clips.numItems; c++) if (String(track.clips[c].nodeId) === want.nodeId) { found = track.clips[c]; break; }
               if (!found) { problems.push(targeted[p].label + ": a clip after the range is missing"); continue; }
               var moved = want.start - parseFloat(found.start.ticks);
-              if (Math.abs(moved - shift) > halfFrame * 2) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
+              if (Math.abs(moved - shift) > halfFrame) problems.push(targeted[p].label + ": '" + found.name + "' moved " + __ticksToSeconds(String(moved)) + "s, expected " + __ticksToSeconds(String(shift)) + "s");
             }
           }
           if (problems.length) return failAfterEdit("Premiere's extract did not close the in/out range as expected: " + problems.join("; ") + ".", { problems: problems });
@@ -1172,6 +1249,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             inSeconds: inSeconds,
             outSeconds: outSeconds,
             removedSeconds: Math.round((outSeconds - inSeconds) * 1000) / 1000,
+            marksRewritten: marksRewritten,
             tracksEdited: edited,
             otherTracksChanged: otherTracksChanged(),
             sequenceEndBeforeSeconds: __ticksToSeconds(String(endBefore)),
@@ -1448,18 +1526,18 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
     },
 
     set_sequence_display_format: {
-      description: "Set the timecode display format for the active sequence.",
+      description: "Set the timecode display format for the active sequence and read it back. Uses Premiere's display codes (video 100-113, audio 200-201); the older 0-11 and 0-1 values are mapped onto them.",
       parameters: {
         type: "object" as const,
         properties: {
           video_display_format: {
             type: "number",
             description:
-              "Video: 0=24 Timecode, 1=25 Timecode, 2=29.97 Drop-frame, 3=29.97 Non-drop-frame, 4=30 Timecode, 5=50 Timecode, 6=59.94 Drop-frame, 7=59.94 Non-drop-frame, 8=60 Timecode, 9=Frames, 10=Feet+Frames 16mm, 11=Feet+Frames 35mm",
+              "Video: 100=24 Timecode, 101=25 Timecode, 102=29.97 Drop-frame, 103=29.97 Non-drop-frame, 104=30 Timecode, 105=50 Timecode, 106=59.94 Drop-frame, 107=59.94 Non-drop-frame, 108=60 Timecode, 109=Frames, 110=23.976 Timecode, 111=Feet+Frames 16mm, 112=Feet+Frames 35mm, 113=48 Timecode. 0-13 are accepted as 100-113.",
           },
           audio_display_format: {
             type: "number",
-            description: "Audio: 0=Audio Samples, 1=Milliseconds",
+            description: "Audio: 200=Audio Samples, 201=Milliseconds. 0 and 1 are accepted as 200 and 201.",
           },
         },
       },
@@ -1470,12 +1548,22 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         if (args.video_display_format === undefined && args.audio_display_format === undefined) {
           return { success: false, error: "Provide video_display_format and/or audio_display_format." };
         }
-        if (args.video_display_format !== undefined && !(Number.isInteger(args.video_display_format) && args.video_display_format >= 0 && args.video_display_format <= 11)) {
-          return { success: false, error: "video_display_format must be an integer from 0 to 11" };
+        // Live 26.5.2: Premiere stores any number here and reads it back, but only
+        // its 100-113 / 200-201 codes mean anything (Time.getFormatted with 2
+        // prints non-drop 00:02:13:10; with 102 it prints drop-frame 00;02;13;14).
+        const video = args.video_display_format === undefined ? undefined
+          : Number.isInteger(args.video_display_format) && args.video_display_format >= 0 && args.video_display_format <= 13 ? args.video_display_format + 100
+          : args.video_display_format;
+        const audio = args.audio_display_format === undefined ? undefined
+          : args.audio_display_format === 0 || args.audio_display_format === 1 ? args.audio_display_format + 200
+          : args.audio_display_format;
+        if (video !== undefined && !(Number.isInteger(video) && video >= 100 && video <= 113)) {
+          return { success: false, error: "video_display_format must be a Premiere display code from 100 to 113 (or 0 to 13)." };
         }
-        if (args.audio_display_format !== undefined && ![0, 1].includes(args.audio_display_format)) {
-          return { success: false, error: "audio_display_format must be 0 (audio samples) or 1 (milliseconds)" };
+        if (audio !== undefined && audio !== 200 && audio !== 201) {
+          return { success: false, error: "audio_display_format must be 200 (audio samples) or 201 (milliseconds), or 0 / 1." };
         }
+        args = { video_display_format: video, audio_display_format: audio };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");

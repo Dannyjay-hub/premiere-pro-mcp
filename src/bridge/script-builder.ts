@@ -45,6 +45,14 @@ function __ticksToSeconds(ticks) {
   return parseFloat(ticks) / TICKS_PER_SECOND;
 }
 
+function __workAreaEnabled(seq) {
+  try {
+    if (typeof seq.isWorkAreaEnabled !== "function") return null;
+    var enabled = seq.isWorkAreaEnabled();
+    return typeof enabled === "boolean" ? enabled : null;
+  } catch (workAreaStateError) { return null; }
+}
+
 // Sequence work-area getters return seconds (often as a string) on live 25.x
 // and 26.x hosts. Values above 1e6 can only be ticks, so convert those.
 function __workAreaSeconds(value) {
@@ -110,6 +118,96 @@ function __isTrackLocked(track) {
   return false;
 }
 
+// Read the private source range before temporarily changing project-item marks.
+function __itemMarksForRestore(item, mediaType) {
+  function domMarks() {
+    try {
+      var inMark = item.getInPoint(mediaType), outMark = item.getOutPoint(mediaType);
+      if (!inMark || !outMark || inMark.ticks === null || outMark.ticks === null || inMark.ticks === undefined || outMark.ticks === undefined || String(inMark.ticks) === "" || String(outMark.ticks) === "") return null;
+      var left = Number(inMark.ticks), right = Number(outMark.ticks);
+      if (isFinite(left) && isFinite(right) && left >= 0 && right >= left) return { inTicks: String(Math.round(left)), outTicks: String(Math.round(right)), inSeconds: left / TICKS_PER_SECOND, outSeconds: right / TICKS_PER_SECOND };
+    } catch (domMarkError) {}
+    return null;
+  }
+  var dom = domMarks(), xml = "";
+  try { if (typeof item.getProjectMetadata === "function") xml = String(item.getProjectMetadata() || ""); } catch (metadataMarkError) { return null; }
+  if (!xml) return dom;
+  if (xml.length > 1000000) return null;
+  function field(name, text) {
+    var escaped = name.replace(/\\./g, "\\\\.");
+    var pattern = new RegExp("<(?:[A-Za-z_][\\\\w.-]*:)?" + escaped + "\\\\b[^>]*>([\\\\s\\\\S]*?)</(?:[A-Za-z_][\\\\w.-]*:)?" + escaped + "\\\\s*>");
+    var match = pattern.exec(text);
+    return match ? match[1] : null;
+  }
+  function value(text) {
+    if (text === null) return null;
+    var nested = field("value", text);
+    return String(nested === null ? text : nested).replace(/^\\s+|\\s+$/g, "");
+  }
+  var timebase = value(field("Column.Intrinsic.MediaTimebase", xml));
+  function point(block, audio) {
+    if (block === null) return null;
+    var tc = value(block), match = /^(\\d+):(\\d{2}):(\\d{2})([:;])(\\d+)$/.exec(tc);
+    if (!match) return null;
+    var hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match[3]), last = Number(match[5]);
+    if (minutes > 59 || seconds > 59) return null;
+    var rateText = value(field("frame_rate", block));
+    var hz = audio && timebase && (/Hz/i.test(timebase) || parseFloat(timebase) > 240) ? parseFloat(timebase) : NaN;
+    if (audio && isFinite(hz) && hz > 0) {
+      if (match[4] === ";" || last >= hz || Math.floor(hz) !== hz) return null;
+      return { ticks: Math.round(((hours * 3600 + minutes * 60 + seconds) * hz + last) * TICKS_PER_SECOND / hz), frameTicks: TICKS_PER_SECOND / hz };
+    }
+    var frameTicks = rateText !== null ? Number(rateText) : NaN;
+    if (rateText !== null && (!isFinite(frameTicks) || frameTicks <= 0)) return null;
+    if (!(frameTicks > 0)) {
+      var fps = timebase ? parseFloat(timebase) : NaN;
+      if (!isFinite(fps) || fps <= 0 || fps > 240 || /Hz/i.test(timebase)) {
+        try { fps = Number(item.getFootageInterpretation().frameRate); } catch (footageRateError) { fps = NaN; }
+      }
+      if (!isFinite(fps) || fps <= 0 || fps > 240) return null;
+      if (Math.abs(fps - 23.976) < 0.001) frameTicks = TICKS_PER_SECOND * 1001 / 24000;
+      else if (Math.abs(fps - 29.97) < 0.001) frameTicks = TICKS_PER_SECOND * 1001 / 30000;
+      else if (Math.abs(fps - 59.94) < 0.001) frameTicks = TICKS_PER_SECOND * 1001 / 60000;
+      else frameTicks = TICKS_PER_SECOND / fps;
+    }
+    var actualRate = TICKS_PER_SECOND / frameTicks, nominal = Math.round(actualRate);
+    if (nominal < 1 || nominal > 240 || last >= nominal) return null;
+    var frames = (hours * 3600 + minutes * 60 + seconds) * nominal + last;
+    if (match[4] === ";") {
+      var dropped = 0;
+      if (nominal === 30) dropped = 2;
+      else if (nominal === 60) dropped = 4;
+      if (!dropped || Math.abs(actualRate - nominal * 1000 / 1001) > 0.01 || (minutes % 10 !== 0 && seconds === 0 && last < dropped)) return null;
+      var totalMinutes = hours * 60 + minutes;
+      frames -= dropped * (totalMinutes - Math.floor(totalMinutes / 10));
+    }
+    return { ticks: Math.round(frames * frameTicks), frameTicks: frameTicks };
+  }
+  var kind = mediaType === 2 ? "Audio" : "Video";
+  var inBlock = field("Column.Intrinsic." + kind + "InPoint", xml), outBlock = field("Column.Intrinsic." + kind + "OutPoint", xml);
+  var videoFieldsPresent = xml.indexOf("Column.Intrinsic.VideoInPoint") >= 0 || xml.indexOf("Column.Intrinsic.VideoOutPoint") >= 0;
+  if (mediaType === 4 && inBlock === null && outBlock === null && !videoFieldsPresent) {
+    kind = "Audio";
+    inBlock = field("Column.Intrinsic.AudioInPoint", xml); outBlock = field("Column.Intrinsic.AudioOutPoint", xml);
+  }
+  if (inBlock === null && outBlock === null) {
+    if (xml.indexOf("Column.Intrinsic." + kind + "InPoint") >= 0 || xml.indexOf("Column.Intrinsic." + kind + "OutPoint") >= 0) return null;
+    return dom;
+  }
+  var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
+  // The private VideoOutPoint names the last frame (inclusive): a subclip made
+  // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2.
+  if (right && kind !== "Audio") right.ticks += right.frameTicks;
+  if (!left || !right || !isFinite(left.ticks) || !isFinite(right.ticks) || left.ticks < 0 || right.ticks > 9007199254740991 || right.ticks <= left.ticks || Math.abs(left.frameTicks - right.frameTicks) > 1) return null;
+  var tolerance = Math.max(left.frameTicks, right.frameTicks);
+  if (dom && Math.abs(Number(dom.inTicks) - left.ticks) <= tolerance && Math.abs(Number(dom.outTicks) - right.ticks) <= tolerance) return dom;
+  // Premiere floors a written mark to the media's frame (or sample) grid, so a
+  // value exactly on the boundary can land one frame early (live 26.5.2: a
+  // restored Out of 00:00:29:22 read back 00:00:29:21). Write a quarter frame
+  // past the boundary; the ticks stay on the boundary for readback checks.
+  return { inTicks: String(left.ticks), outTicks: String(right.ticks), inSeconds: (left.ticks + left.frameTicks / 4) / TICKS_PER_SECOND, outSeconds: (right.ticks + right.frameTicks / 4) / TICKS_PER_SECOND };
+}
+
 // Place exactly [inTicks, outTicks) of a project item on ONE track at
 // startTicks without rippling. Track.overwriteClip places the item's In/Out
 // range, so set those marks first and restore the item's own marks afterwards.
@@ -117,7 +215,66 @@ function __isTrackLocked(track) {
 // empty first; overwrite never shifts neighbours but would replace them.
 // Returns { ok, attempted, marksRestored, error }. attempted=true means the
 // overwrite call ran (or threw), so the timeline may have changed.
-function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, mediaType) {
+// Set a project item's In/Out marks, ordering the writes so the In never
+// passes the current Out, and report whether both read back within tolerance
+// ticks (default: exact).
+function __setItemMarks(item, wantIn, wantOut, mediaType, tolerance, restoreMarks) {
+  var tol = tolerance > __TICK_MATCH_TOL ? tolerance : __TICK_MATCH_TOL;
+  var writeIn = restoreMarks ? restoreMarks.inSeconds : __ticksToSeconds(wantIn);
+  var writeOut = restoreMarks ? restoreMarks.outSeconds : __ticksToSeconds(wantOut);
+  var currentOut = parseFloat(item.getOutPoint(mediaType).ticks);
+  if (parseFloat(wantIn) >= currentOut) {
+    item.setOutPoint(writeOut, mediaType);
+    item.setInPoint(writeIn, mediaType);
+  } else {
+    item.setInPoint(writeIn, mediaType);
+    item.setOutPoint(writeOut, mediaType);
+  }
+  return Math.abs(parseFloat(item.getInPoint(mediaType).ticks) - parseFloat(wantIn)) <= tol &&
+    Math.abs(parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(wantOut)) <= tol;
+}
+
+// Live 26.5.2: a project item's video marks are floored to the media's own
+// frame grid (a 23.976 clip in a 29.97 sequence loses up to 1.25 sequence
+// frames) and audio marks to the sample grid. Returns the most a mark can
+// move, in ticks.
+function __itemMarkToleranceTicks(item, seq, mediaType) {
+  var seqFrame = __sequenceFrameTicks(seq);
+  if (!isFinite(seqFrame) || !(seqFrame > 0)) seqFrame = 0;
+  if (mediaType !== 1) return seqFrame / 2;
+  var mediaFrame = 0;
+  try {
+    var fps = parseFloat(item.getFootageInterpretation().frameRate);
+    if (fps > 0) mediaFrame = TICKS_PER_SECOND / fps;
+  } catch (eInterp) {}
+  return Math.max(mediaFrame, seqFrame);
+}
+
+function __readItemMarks(item, mediaType) {
+  if (!item || typeof item.getInPoint !== "function" || typeof item.getOutPoint !== "function" ||
+      typeof item.setInPoint !== "function" || typeof item.setOutPoint !== "function") return null;
+  try {
+    return __itemMarksForRestore(item, mediaType);
+  } catch (eMarks) { return null; }
+}
+
+// Check, before any timeline change, that the item accepts this source range
+// (a still or a too-short clip does not), then put its marks back.
+function __itemAcceptsRange(item, inTicks, outTicks, mediaType, tolerance) {
+  var original = __readItemMarks(item, mediaType);
+  if (!original) return { ok: false, marksRestored: true, error: "Could not read or set the project item's In/Out marks" };
+  var accepted = false;
+  try { accepted = __setItemMarks(item, inTicks, outTicks, mediaType, tolerance); } catch (eSet) { accepted = false; }
+  var restored = false;
+  try { restored = __setItemMarks(item, original.inTicks, original.outTicks, mediaType, tolerance, original); } catch (eRestore) { restored = false; }
+  return {
+    ok: accepted,
+    marksRestored: restored,
+    error: accepted ? "" : "Premiere did not accept a source range of " + __ticksToSeconds(String(parseFloat(outTicks) - parseFloat(inTicks))) + "s from " + __ticksToSeconds(String(inTicks)) + "s on project item " + item.name
+  };
+}
+
+function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, mediaType, tolerance) {
   if (!track || typeof track.overwriteClip !== "function") {
     return { ok: false, attempted: false, marksRestored: true, error: "Track.overwriteClip is unavailable on this Premiere build" };
   }
@@ -125,31 +282,15 @@ function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, med
       typeof item.setInPoint !== "function" || typeof item.setOutPoint !== "function") {
     return { ok: false, attempted: false, marksRestored: true, error: "Project item In/Out marks cannot be set on this Premiere build" };
   }
-  var originalIn = null;
-  var originalOut = null;
-  try {
-    originalIn = String(item.getInPoint(mediaType).ticks);
-    originalOut = String(item.getOutPoint(mediaType).ticks);
-  } catch (eMarks) {
-    return { ok: false, attempted: false, marksRestored: true, error: "Could not read the project item's In/Out marks" };
-  }
-  function setMarks(wantIn, wantOut) {
-    var currentOut = parseFloat(item.getOutPoint(mediaType).ticks);
-    if (parseFloat(wantIn) >= currentOut) {
-      item.setOutPoint(__ticksToSeconds(wantOut), mediaType);
-      item.setInPoint(__ticksToSeconds(wantIn), mediaType);
-    } else {
-      item.setInPoint(__ticksToSeconds(wantIn), mediaType);
-      item.setOutPoint(__ticksToSeconds(wantOut), mediaType);
-    }
-    return Math.abs(parseFloat(item.getInPoint(mediaType).ticks) - parseFloat(wantIn)) <= __TICK_MATCH_TOL &&
-      Math.abs(parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(wantOut)) <= __TICK_MATCH_TOL;
+  var original = __readItemMarks(item, mediaType);
+  if (!original) {
+    return { ok: false, attempted: false, marksRestored: true, error: "Could not reliably read the project item's In/Out marks; nothing was changed" };
   }
   function restore() {
-    try { return setMarks(originalIn, originalOut); } catch (eRestore) { return false; }
+    try { return __setItemMarks(item, original.inTicks, original.outTicks, mediaType, tolerance, original); } catch (eRestore) { return false; }
   }
   var applied = false;
-  try { applied = setMarks(inTicks, outTicks); } catch (eSet) { applied = false; }
+  try { applied = __setItemMarks(item, inTicks, outTicks, mediaType, tolerance); } catch (eSet) { applied = false; }
   if (!applied) {
     return { ok: false, attempted: false, marksRestored: restore(), error: "Premiere did not apply the source In/Out range to project item " + item.name };
   }
@@ -328,14 +469,37 @@ function __propertyNameMatches(actual, wanted, component) {
   var aliased = (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
   return aliased && __isUniformScale(component);
 }
+function __availablePropertyNames(component) {
+  var names = [];
+  var counts = {};
+  var total = 0;
+  for (var i = 0; i < component.properties.numItems; i++) {
+    var name = "";
+    try { name = String(component.properties[i].displayName || ""); } catch (eName) {}
+    if (!name.replace(/\\s/g, "")) continue;
+    total++;
+    names.push({ name: name, index: i });
+    var key = "$" + name;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  var shown = [];
+  var limit = Math.min(names.length, 25);
+  for (var n = 0; n < limit; n++) {
+    var entry = names[n];
+    shown.push(counts["$" + entry.name] > 1 ? entry.name + " (property_index " + entry.index + ")" : entry.name);
+  }
+  var summary = shown.length ? shown.join(", ") : "none with a non-empty display name";
+  if (total > limit) summary += " (first " + limit + " of " + total + ")";
+  return summary;
+}
 function __resolveProperty(component, wanted, propertyIndex) {
   var matches = [];
   if (propertyIndex !== null && propertyIndex !== undefined) {
     if (typeof propertyIndex !== "number" || !isFinite(propertyIndex) || Math.floor(propertyIndex) !== propertyIndex || propertyIndex < 0 || propertyIndex >= component.properties.numItems) {
-      return { property: null, index: null, candidates: [], error: "property_index is out of range." };
+      return { property: null, index: null, candidates: [], error: "property_index is out of range. Available properties: " + __availablePropertyNames(component) + "." };
     }
     if (!__propertyNameMatches(component.properties[propertyIndex].displayName, wanted, component)) {
-      return { property: null, index: null, candidates: [], error: "property_index " + propertyIndex + " does not match property name '" + wanted + "'." };
+      return { property: null, index: null, candidates: [], error: "property_index " + propertyIndex + " does not match property name '" + wanted + "'. Available properties: " + __availablePropertyNames(component) + "." };
     }
     return { property: component.properties[propertyIndex], index: propertyIndex, candidates: [propertyIndex], error: null };
   }
@@ -343,9 +507,9 @@ function __resolveProperty(component, wanted, propertyIndex) {
     if (__propertyNameMatches(component.properties[i].displayName, wanted, component)) matches.push(i);
   }
   if (matches.length > 1) {
-    return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index." };
+    return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index. Available properties: " + __availablePropertyNames(component) + "." };
   }
-  if (!matches.length) return { property: null, index: null, candidates: [], error: null };
+  if (!matches.length) return { property: null, index: null, candidates: [], error: "Property name '" + wanted + "' not found. Available properties: " + __availablePropertyNames(component) + "." };
   return { property: component.properties[matches[0]], index: matches[0], candidates: matches, error: null };
 }
 

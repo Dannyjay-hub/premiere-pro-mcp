@@ -1250,6 +1250,19 @@ export function getTimelineTools(
           var audioSpan = mediaSpan(2);
           var hasVideo = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
           var hasAudio = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+          // Premiere floors project-item video marks to the media's own frame grid.
+          // When that grid differs from the sequence's, each mark is written a
+          // quarter media frame late so the floor lands on the intended media frame.
+          var mediaFrameTicks = NaN;
+          if (hasVideo) {
+            try {
+              var interpretation = item.getFootageInterpretation();
+              var mediaRate = interpretation ? parseFloat(interpretation.frameRate) : NaN;
+              if (isFinite(mediaRate) && mediaRate > 0) mediaFrameTicks = TICKS_PER_SECOND / mediaRate;
+            } catch (interpretationError) {}
+          }
+          var mixedRate = isFinite(mediaFrameTicks) && Math.abs(mediaFrameTicks - frameTicks) > frameTicks / 1000;
+          var markBias = mixedRate ? __ticksToSeconds(mediaFrameTicks / 4) : 0;
 
           function freeTrack(tracks, fromIndex) {
             for (var t = Math.max(0, fromIndex); t < tracks.numTracks; t++) {
@@ -1283,19 +1296,22 @@ export function getTimelineTools(
           var beforeVideo = videoTarget >= 0 ? idsOn(seq.videoTracks[videoTarget]) : {};
           var beforeAudio = audioTarget >= 0 ? idsOn(seq.audioTracks[audioTarget]) : {};
 
-          var originalIn = item.getInPoint(4);
-          var originalOut = item.getOutPoint(4);
-          var originalInSeconds = originalIn ? Number(originalIn.seconds) : 0;
-          var originalOutSeconds = originalOut ? Number(originalOut.seconds) : 0;
+          var originalMarks = __itemMarksForRestore(item, 4);
+          if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
+          var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
           var placeError = null;
           try {
-            item.setInPoint(copyIn, 4);
-            item.setOutPoint(copyOut, 4);
+            item.setInPoint(copyIn + markBias, 4);
+            item.setOutPoint(copyOut + markBias, 4);
             seq.overwriteClip(item, String(startTicks), Math.max(videoTarget, 0), Math.max(audioTarget, 0));
           } catch (overwriteError) {
             placeError = overwriteError.toString();
           }
           try { item.setInPoint(originalInSeconds, 4); item.setOutPoint(originalOutSeconds, 4); } catch (restoreError) {}
+          var marksRestored = false;
+          try { marksRestored = Math.abs(parseFloat(item.getInPoint(4).ticks) - Number(originalMarks.inTicks)) <= __itemMarkToleranceTicks(item, seq, 1) &&
+            Math.abs(parseFloat(item.getOutPoint(4).ticks) - Number(originalMarks.outTicks)) <= __itemMarkToleranceTicks(item, seq, 1); } catch (restoreReadError) {}
+          if (!marksRestored) return __error("Duplicate was attempted but the project-item marks could not be restored. Inspect the source range before retrying.", { outcome: "committed_unverified", verified: false, marksRestored: false, timelineChanged: null });
           if (placeError) return __error("Premiere rejected the duplicate: " + placeError);
 
           var newVideo = videoTarget >= 0 ? newClipOn(seq.videoTracks[videoTarget], beforeVideo) : null;
@@ -1319,14 +1335,39 @@ export function getTimelineTools(
           }
           correctEnd(newVideo);
           correctEnd(newAudio);
+          // A mixed-rate copy can still land its source in up to one media frame
+          // off, because the mark cannot sit between media frames. Slip it back to
+          // the original's source in when its timeline span already matches.
+          var inCorrected = false;
+          function correctIn(placed) {
+            if (!placed || !mixedRate) return;
+            var offset = inTicks - parseFloat(placed.inPoint.ticks);
+            if (!isFinite(offset) || Math.abs(offset) < frameTicks / 2 || Math.abs(offset) >= mediaFrameTicks) return;
+            if (Math.abs(parseFloat(placed.start.ticks) - startTicks) >= frameTicks / 2) return;
+            if (Math.abs(parseFloat(placed.end.ticks) - endTicks) >= frameTicks / 2) return;
+            try {
+              var slipIn = new Time();
+              slipIn.ticks = String(Math.round(inTicks));
+              var slipOut = new Time();
+              slipOut.ticks = String(Math.round(inTicks + (endTicks - startTicks)));
+              placed.inPoint = slipIn;
+              placed.outPoint = slipOut;
+              inCorrected = true;
+            } catch (inError) {}
+          }
+          correctIn(newVideo);
+          correctIn(newAudio);
           var linkedCopy = isVideo ? newAudio : newVideo;
           var drift = Math.max(Math.abs(parseFloat(primary.start.ticks) - startTicks), Math.abs(parseFloat(primary.end.ticks) - endTicks));
           var inDrift = Math.abs(parseFloat(primary.inPoint.ticks) - inTicks);
+          // A mixed-rate source in within half a media frame shows the same media frame.
+          var inTolerance = mixedRate ? Math.max(frameTicks, mediaFrameTicks) / 2 : frameTicks / 2;
+          var sourceIn = { requestedSeconds: __ticksToSeconds(inTicks), appliedSeconds: __ticksToSeconds(primary.inPoint.ticks), corrected: inCorrected, snappedToMediaFrame: inDrift >= frameTicks / 2 && inDrift < inTolerance };
           var linkedVerified = !partner || (!!linkedCopy && Math.abs(parseFloat(linkedCopy.end.ticks) - endTicks) < frameTicks / 2);
           function describe(c, type, index) {
             return c ? { nodeId: String(c.nodeId), trackType: type, trackIndex: index, startSeconds: __ticksToSeconds(c.start.ticks), endSeconds: __ticksToSeconds(c.end.ticks), inSeconds: __ticksToSeconds(c.inPoint.ticks) } : null;
           }
-          var duplicateVerified = drift < frameTicks / 2 && inDrift < frameTicks / 2 && linkedVerified;
+          var duplicateVerified = drift < frameTicks / 2 && inDrift < inTolerance && linkedVerified;
           if (!duplicateVerified) return __jsonStringify({ success: false, error: "Premiere placed a duplicate, but its timing, source in-point, or linked partner did not verify. Inspect the timeline or use Undo.", data: {
             duplicated: false,
             verified: false,
@@ -1334,7 +1375,8 @@ export function getTimelineTools(
             timelineChanged: true,
             clipName: clip.name,
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
-            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget)
+            linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),
+            sourceIn: sourceIn
           } });
           return __result({
             duplicated: true,
@@ -1344,6 +1386,7 @@ export function getTimelineTools(
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
             linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),
             endCorrected: endCorrected,
+            sourceIn: sourceIn,
             timelineChanged: true
           });
         `);
@@ -1574,6 +1617,7 @@ export function getTimelineTools(
       description:
         "Replace one timeline clip with a different project item on the same track, keeping the exact timeline start and end. " +
         "The replacement plays from its own In mark for the original clip's duration; neighbouring clips do not ripple, and a linked partner clip on another track is left in place. " +
+        "The replacement must carry only the track's media type (for example a still or video-only item on a video track): Premiere's overwrite would also place an item's other media on another track. Checks the replacement accepts the source range before removing anything. " +
         "Refuses without changing anything when the track is locked. Reads the track back: verified when the new clip covers the same span, committed_unverified when the span holds but the source In point cannot be confirmed, otherwise failure with Undo guidance.",
       parameters: {
         type: "object" as const,
@@ -1635,6 +1679,25 @@ export function getTimelineTools(
           var beforeIds = {};
           for (var bi = 0; bi < track.clips.numItems; bi++) beforeIds[String(track.clips[bi].nodeId)] = true;
 
+          // Check the replacement accepts the source range before removing the
+          // original (live 26.5.2: a still image refused it after the removal).
+          // Live 26.5.2: Track.overwriteClip with an item that also has the other
+          // media type places that media too, on the matching track (or a new
+          // one if it is locked), overwriting whatever is there. A still reads
+          // audio marks of 0-0; footage with sound reads its full length.
+          var otherType = mediaType === 1 ? 2 : 1;
+          var otherSpan = 0;
+          try { otherSpan = parseFloat(newItem.getOutPoint(otherType).ticks) - parseFloat(newItem.getInPoint(otherType).ticks); } catch (eOther) {}
+          if (otherSpan > __TICK_MATCH_TOL) {
+            var otherLabel = otherType === 2 ? "audio" : "video";
+            return __error("Replace refused; nothing was changed. " + newItem.name + " also has " + otherLabel + ", and Premiere's Track.overwriteClip would place that " + otherLabel + " on the matching " + otherLabel + " track too, overwriting the clips there. Replace with a " + trackType + "-only item instead.");
+          }
+          var markTolerance = __itemMarkToleranceTicks(newItem, seq, mediaType);
+          var preflight = __itemAcceptsRange(newItem, newIn, newOut, mediaType, markTolerance);
+          if (!preflight.ok) {
+            return __error("Replace refused; nothing was changed. " + preflight.error + ", so it cannot fill the original clip's " + __ticksToSeconds(String(span)) + "s span. Trim the clip to the replacement's available length first, or choose a longer item." + (preflight.marksRestored ? "" : " The In/Out marks of " + newItem.name + " could not be restored."));
+          }
+
           // Lift the old clip and overwrite exactly its span on the same track.
           // Sequence.insertClip would ripple later clips and use the new item's
           // full length, which is what changed the span before (#642).
@@ -1643,7 +1706,7 @@ export function getTimelineTools(
           } catch (removeErr) {
             return __error("Premiere rejected removing the original clip (" + removeErr.toString() + "). The timeline may have changed; inspect it and use Undo if it did.");
           }
-          var placed = __overwriteRangeOnTrack(track, newItem, oldStart, newIn, newOut, mediaType);
+          var placed = __overwriteRangeOnTrack(track, newItem, oldStart, newIn, newOut, mediaType, markTolerance);
           var markNote = placed.marksRestored ? "" : " The In/Out marks of " + newItem.name + " could not be restored.";
           if (!placed.ok) {
             return __error("The timeline changed: the original clip was removed but Premiere could not place " + newItem.name + " (" + placed.error + "). Use Undo to restore it; this replace did not succeed." + markNote);
@@ -1659,10 +1722,22 @@ export function getTimelineTools(
             if (Math.abs(parseFloat(cand.start.ticks) - oldStart) > __TICK_MATCH_TOL) continue;
             replacement = cand;
           }
+          // The item's Out mark can land up to one media frame early, and
+          // overwriteClip can place a clip a frame short (live 26.5.2). Extend
+          // the end into the empty remainder of the original span.
+          var endCorrected = false;
+          if (replacement) {
+            var endGap = oldEnd - parseFloat(replacement.end.ticks);
+            if (endGap > __TICK_MATCH_TOL && endGap <= markTolerance + __sequenceFrameTicks(seq)) {
+              var endTime = new Time();
+              endTime.ticks = String(oldEnd);
+              try { replacement.end = endTime; endCorrected = true; } catch (eEnd) {}
+            }
+          }
           var problems = [];
           if (!replacement) {
             problems.push(newItem.name + " was not found at " + __ticksToSeconds(oldStart) + "s on " + trackType + " track " + trackIndex);
-          } else if (Math.abs(parseFloat(replacement.end.ticks) - oldEnd) > __TICK_MATCH_TOL) {
+          } else if (!(Math.abs(parseFloat(replacement.end.ticks) - oldEnd) <= __TICK_MATCH_TOL)) {
             problems.push("the replacement spans " + __ticksToSeconds(replacement.start.ticks) + "s-" + __ticksToSeconds(replacement.end.ticks) + "s instead of " + __ticksToSeconds(oldStart) + "s-" + __ticksToSeconds(oldEnd) + "s");
           }
           if (__findClip(oldNodeId)) problems.push("the original clip is still on the timeline");
@@ -1689,7 +1764,8 @@ export function getTimelineTools(
             trackIndex: trackIndex,
             trackType: trackType,
             startSeconds: __ticksToSeconds(oldStart),
-            endSeconds: __ticksToSeconds(oldEnd)
+            endSeconds: __ticksToSeconds(oldEnd),
+            endCorrected: endCorrected
           };
           var warnings = [];
           if (!sourceMatches) warnings.push("The replacement keeps the original span, but its source In point could not be confirmed to match the In mark of " + newItem.name + ".");

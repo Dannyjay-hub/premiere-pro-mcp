@@ -9,6 +9,32 @@ import { SPEED_UNAVAILABLE_DESCRIPTION, SPEED_UNAVAILABLE_ERROR } from "./timeli
 import { probeMediaDurationTicks } from "./media-evidence.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 
+// Selected clips plus link readers shared by link_selection and unlink_selection.
+// getLinkedItems() returns null for an unlinked clip and includes the clip itself.
+const SELECTION_LINK_PREAMBLE = `
+          var seq = app.project.activeSequence;
+          if (!seq) return __error("No active sequence");
+          var selection = null;
+          try { selection = seq.getSelection(); } catch (selectionError) {}
+          if (!selection || !selection.length) return __error("No clips are selected. Select clips first (for example with set_clip_selection). Nothing was changed.");
+          function linkedIds(clip) {
+            var linked = null;
+            try { linked = clip.getLinkedItems(); } catch (linkedError) { return null; }
+            var ids = [];
+            for (var li = 0; linked && li < linked.numItems; li++) ids.push(String(linked[li].nodeId));
+            return ids;
+          }
+          function contains(list, value) {
+            for (var ci = 0; ci < list.length; ci++) if (list[ci] === value) return true;
+            return false;
+          }
+          function describeSelection() {
+            var out = [];
+            for (var di = 0; di < selection.length && di < 50; di++) out.push({ nodeId: String(selection[di].nodeId), name: selection[di].name });
+            return out;
+          }
+`;
+
 export function getAdvancedTools(
   bridgeOptions: BridgeOptions,
   dependencies: { probeMediaDurationSeconds?: (path: string) => Promise<number | null>; probeMediaDurationTicks?: (path: string) => Promise<number | null> } = {},
@@ -312,6 +338,7 @@ export function getAdvancedTools(
               return __editFail("The slide edit left a gap or overlap at an adjacent cut.");
             }
             var slidePayload = {
+              durationDrifts: sourceDurationDrifts,
               slid: true,
               verified: true,
               clipName: after.clip.name,
@@ -742,7 +769,7 @@ export function getAdvancedTools(
     },
 
     set_frame_blend: {
-      description: "Enable or disable frame blending on a clip. Uses QE DOM.",
+      description: "Request frame blending on a clip through QE DOM. Premiere exposes no frame-blend readback, so the result is committed_unverified and must be checked in Effect Controls.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -774,8 +801,11 @@ export function getAdvancedTools(
           var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
           if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
 
-          qeClip.setFrameBlend(${args.enabled});
-          return __result({ frameBlend: ${args.enabled}, clipName: result.clip.name });
+          try { qeClip.setFrameBlend(${args.enabled}); }
+          catch (writeError) {
+            return __error("Premiere threw while requesting frame blending; the mutation outcome is unknown. Inspect Effect Controls before retrying: " + writeError.toString(), { outcome: "committed_unverified", mutationAttempted: true, mutationOutcome: "unknown", verified: false });
+          }
+          return __result({ frameBlend: ${args.enabled}, clipName: result.clip.name, outcome: "committed_unverified", verified: false, verificationScope: "Premiere exposes no frame-blend readback; check Effect Controls." });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -783,7 +813,7 @@ export function getAdvancedTools(
 
     set_time_interpolation: {
       description:
-        "Set time interpolation type for a clip (Frame Sampling, Frame Blending, Optical Flow). Uses QE DOM.",
+        "Request time interpolation for a clip (Frame Sampling, Frame Blending, Optical Flow) through QE DOM. Premiere exposes no interpolation readback, so the result is committed_unverified and must be checked in Effect Controls.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -819,12 +849,18 @@ export function getAdvancedTools(
           var qeClip = __findQeClipByDomClip(qeTrack, result.clip);
           if (!qeClip) return __error("Could not match the QE clip for " + result.clip.name + " by timeline start; nothing was changed.");
 
-          qeClip.setTimeInterpolationType(${args.interpolation_type});
+          try { qeClip.setTimeInterpolationType(${args.interpolation_type}); }
+          catch (writeError) {
+            return __error("Premiere threw while requesting time interpolation; the mutation outcome is unknown. Inspect Effect Controls before retrying: " + writeError.toString(), { outcome: "committed_unverified", mutationAttempted: true, mutationOutcome: "unknown", verified: false });
+          }
           var typeNames = ["Frame Sampling", "Frame Blending", "Optical Flow"];
           return __result({
             set: true,
             clipName: result.clip.name,
-            interpolationType: typeNames[${args.interpolation_type}] || "Unknown"
+            interpolationType: typeNames[${args.interpolation_type}] || "Unknown",
+            outcome: "committed_unverified",
+            verified: false,
+            verificationScope: "Premiere exposes no time-interpolation readback; check Effect Controls."
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -929,14 +965,25 @@ export function getAdvancedTools(
 
     link_selection: {
       description:
-        "Link the currently selected video and audio clips in the active sequence",
+        "Link the currently selected video and audio clips in the active sequence, then read the links back. Needs at least two selected clips; verified only when every selected clip is linked to every other.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          seq.linkSelection();
-          return __result({ linked: true });
+          ${SELECTION_LINK_PREAMBLE}
+          if (selection.length < 2) return __error("Select at least two clips to link. Nothing was changed.");
+          var hostResult = null;
+          try { hostResult = seq.linkSelection(); } catch (linkError) { return __error("Premiere rejected linking the selection: " + linkError.toString()); }
+          var notLinked = [];
+          for (var n = 0; n < selection.length; n++) {
+            var ids = linkedIds(selection[n]);
+            var missing = !ids;
+            for (var m = 0; !missing && m < selection.length; m++) if (!contains(ids, String(selection[m].nodeId))) missing = true;
+            if (missing) notLinked.push(String(selection[n].nodeId));
+          }
+          if (notLinked.length) {
+            return __jsonStringify({ success: false, error: "Premiere did not link the selected clips; " + notLinked.length + " of " + selection.length + " are not linked to all the others.", data: { outcome: "failed", verified: false, hostReturned: hostResult, notLinked: notLinked, clips: describeSelection() } });
+          }
+          return __result({ linked: true, verified: true, outcome: "verified", hostReturned: hostResult, clips: describeSelection() });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -944,14 +991,42 @@ export function getAdvancedTools(
 
     unlink_selection: {
       description:
-        "Unlink the currently selected video and audio clips in the active sequence",
+        "Unlink the currently selected video and audio clips in the active sequence, then read the links back. Premiere only unlinks when every clip of a linked group is selected, so a selection missing a linked partner is refused before anything changes.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          seq.unlinkSelection();
-          return __result({ unlinked: true });
+          ${SELECTION_LINK_PREAMBLE}
+          var selectedIds = {};
+          for (var s = 0; s < selection.length; s++) selectedIds[String(selection[s].nodeId)] = true;
+          var anyLinked = false;
+          var unselectedPartners = [];
+          for (var p = 0; p < selection.length; p++) {
+            var ids = linkedIds(selection[p]);
+            if (!ids) return __error("Could not read the links of a selected clip. Nothing was changed.");
+            for (var q = 0; q < ids.length; q++) {
+              if (ids[q] === String(selection[p].nodeId)) continue;
+              anyLinked = true;
+              if (!selectedIds[ids[q]] && !contains(unselectedPartners, ids[q])) unselectedPartners.push(ids[q]);
+            }
+          }
+          if (!anyLinked) return __result({ unlinked: false, alreadyUnlinked: true, verified: true, outcome: "verified", clips: describeSelection() });
+          // Live 26.5.2: unlinkSelection() returns false and changes nothing
+          // unless every clip of the linked group is selected.
+          if (unselectedPartners.length) {
+            return __jsonStringify({ success: false, error: "Premiere only unlinks when every linked clip is selected. Also select the linked partner clip(s) " + unselectedPartners.join(", ") + " (for example with set_clip_selection), then retry. Nothing was changed.", data: { unselectedPartners: unselectedPartners } });
+          }
+          var hostResult = null;
+          try { hostResult = seq.unlinkSelection(); } catch (unlinkError) { return __error("Premiere rejected unlinking the selection: " + unlinkError.toString()); }
+          var stillLinked = [];
+          for (var r = 0; r < selection.length; r++) {
+            var after = linkedIds(selection[r]);
+            if (!after) { stillLinked.push(String(selection[r].nodeId)); continue; }
+            for (var t = 0; t < after.length; t++) if (after[t] !== String(selection[r].nodeId)) { stillLinked.push(String(selection[r].nodeId)); break; }
+          }
+          if (stillLinked.length) {
+            return __jsonStringify({ success: false, error: "Premiere did not unlink " + stillLinked.length + " of the " + selection.length + " selected clips.", data: { outcome: "failed", verified: false, hostReturned: hostResult, stillLinked: stillLinked, clips: describeSelection() } });
+          }
+          return __result({ unlinked: true, verified: true, outcome: "verified", hostReturned: hostResult, clips: describeSelection() });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1201,7 +1276,7 @@ export function getAdvancedTools(
     },
 
     set_zero_point: {
-      description: "Set the starting timecode (zero point) of a sequence",
+      description: "Set the starting timecode (zero point) of a sequence and read it back. The value is snapped to the sequence frame grid; for drop-frame 29.97, 01;00;00;00 is 3599.9964 s, and for non-drop 29.97 it is 3603.6 s.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1212,7 +1287,7 @@ export function getAdvancedTools(
           },
           start_seconds: {
             type: "number",
-            description: "Start time in seconds for the timecode origin",
+            description: "Start time in seconds for the timecode origin (0 or more)",
           },
         },
         required: ["start_seconds"],
@@ -1221,15 +1296,40 @@ export function getAdvancedTools(
         sequence_id?: string;
         start_seconds: number;
       }) => {
+        if (!Number.isFinite(args.start_seconds) || args.start_seconds < 0) {
+          return { success: false, error: "start_seconds must be a finite, non-negative number of seconds." };
+        }
         const seqLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found");`
           : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
 
         const script = buildToolScript(`
           ${seqLookup}
-          var ticks = __secondsToTicks(${args.start_seconds}).toString();
-          seq.setZeroPoint(ticks);
-          return __result({ set: true, startSeconds: ${args.start_seconds} });
+          // Premiere keeps the zero point on the frame grid (live 26.5.2: 3600 s
+          // at 29.97 is stored as 3599.9964 s, frame 107892), so write the
+          // snapped value and verify it.
+          var requestedTicks = __secondsToTicks(${args.start_seconds});
+          var appliedTicks = __snapSequenceTicks(seq, requestedTicks);
+          var previousTicks = String(seq.zeroPoint);
+          try { seq.setZeroPoint(String(appliedTicks)); } catch (zeroError) {
+            return __error("Premiere rejected the zero point: " + zeroError.toString());
+          }
+          var observedTicks = parseFloat(seq.zeroPoint);
+          var zeroResult = {
+            startSeconds: __ticksToSeconds(String(observedTicks)),
+            requestedSeconds: ${args.start_seconds},
+            appliedSeconds: __ticksToSeconds(String(appliedTicks)),
+            previousSeconds: __ticksToSeconds(previousTicks)
+          };
+          if (!(Math.abs(observedTicks - appliedTicks) <= __TICK_MATCH_TOL)) {
+            zeroResult.outcome = "failed";
+            zeroResult.verified = false;
+            return __error("Premiere did not apply the zero point; it reads " + zeroResult.startSeconds + " s.", zeroResult);
+          }
+          zeroResult.set = true;
+          zeroResult.outcome = "verified";
+          zeroResult.verified = true;
+          return __result(zeroResult);
         `);
         return sendCommand(script, bridgeOptions);
       },

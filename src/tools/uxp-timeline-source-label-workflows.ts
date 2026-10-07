@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type SourceLabelSnapshot = {
   project_guid: string; sequence_id: string; media_type: "video" | "audio";
@@ -32,6 +33,7 @@ const snapshotProperties = {
   end_seconds: { type: "number", minimum: 0, maximum: 86400 },
 } as const;
 const snapshotRequired = ["project_guid", "sequence_id", "media_type", "track_index", "clip_index", "track_item_count", "source_project_item_id", "source_color_label_index", "start_seconds", "end_seconds"];
+const expectedSnapshotSchema = { properties: snapshotProperties };
 
 function invoke(bridge: UxpWebSocketBridge, command: string, args: Record<string, unknown>) {
   return bridge.request(command, args)
@@ -83,7 +85,7 @@ export function getUxpTimelineSourceLabelWorkflowTools(bridge: UxpWebSocketBridg
           mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
           ...(args.sequence_id === undefined ? {} : { sequenceId: args.sequence_id }),
         };
-        if (args.action === "inspect") return invoke(bridge, "timeline.sourceLabel.inspect", target);
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "timeline.sourceLabel.inspect", target), expectedSnapshotSchema);
         if (args.action === "update") {
           const expectedSnapshot = strictSnapshot(args.expected_snapshot);
           if (args.sequence_id !== undefined && args.sequence_id !== expectedSnapshot.sequenceId) {

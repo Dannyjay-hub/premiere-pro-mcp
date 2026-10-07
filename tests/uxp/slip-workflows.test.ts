@@ -39,6 +39,7 @@ function slipHost(options: SlipHostOptions = {}) {
   const videoTrack = { getTrackItems: vi.fn(async () => [item]) };
   const sequence = {
     guid: "sequence-1",
+    getTimebase: vi.fn(async () => "10160640000"),
     getVideoTrackCount: vi.fn(async () => 1),
     getVideoTrack: vi.fn(async () => videoTrack),
     getAudioTrackCount: vi.fn(async () => 0),
@@ -110,16 +111,18 @@ describe("guarded documented UXP track-item slip workflow", () => {
     })).resolves.toMatchObject({
       operationId: "slip-apply-1",
       slipped: true,
+      requestedSlipBySeconds: 2.5,
+      appliedSlipBySeconds: 2.52,
       outcome: "verified",
       before: expectedSnapshot,
-      after: { ...expectedSnapshot, inSeconds: 32.5, outSeconds: 42.5 },
+      after: { ...expectedSnapshot, inSeconds: 32.52, outSeconds: 42.52 },
       verificationBoundary: "track_item_source_and_timeline_readback",
     });
-    expect(value.state).toEqual({ start: 10, end: 20, inPoint: 32.5, outPoint: 42.5 });
+    expect(value.state).toEqual({ start: 10, end: 20, inPoint: 32.52, outPoint: 42.52 });
     expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
     expect(value.project.executeTransaction.mock.calls[0]?.[1]).toBe("Slip timeline item source");
-    expect(value.item.createSetInPointAction).toHaveBeenCalledWith({ seconds: 32.5 });
-    expect(value.item.createSetOutPointAction).toHaveBeenCalledWith({ seconds: 42.5 });
+    expect(value.item.createSetInPointAction).toHaveBeenCalledWith({ seconds: 32.52 });
+    expect(value.item.createSetOutPointAction).toHaveBeenCalledWith({ seconds: 42.52 });
   });
 
   it("requires a complete unchanged snapshot, confirmation, replay key, forward 1x state, and valid source bounds before action creation", async () => {

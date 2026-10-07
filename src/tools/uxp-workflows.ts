@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplyGuards, withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type WorkflowArgs = {
   action?: string;
@@ -118,6 +119,20 @@ const operationId = {
 };
 
 export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
+  const effectIdentityGuardSchema = { type: "string", minLength: 1, maxLength: 256 };
+  const projectGuidGuardSchema = { type: "string", minLength: 1, maxLength: 512 };
+  const panelMetadataGuardSchema = { type: "string", maxLength: 12288 };
+  const schemaMetadataGuardSchema = { type: "string", maxLength: 350000 };
+  const selectionItemSnapshotSchema = {
+    type: "array", minItems: 1, maxItems: 64,
+    items: { type: "object", additionalProperties: false, properties: {
+      media_type: { type: "string", enum: ["video", "audio"] },
+      track_index: { type: "integer", minimum: 0 }, clip_index: { type: "integer", minimum: 0 },
+      expected_project_item_id: { type: "string", minLength: 1, maxLength: 512, sourceKey: "projectItem.id" },
+      expected_start_seconds: { type: "number", minimum: 0, sourceKey: "startSeconds" },
+      expected_end_seconds: { type: "number", minimum: 0, sourceKey: "endSeconds" },
+    }, required: ["media_type", "track_index", "clip_index", "expected_project_item_id", "expected_start_seconds", "expected_end_seconds"] },
+  };
   return {
     manage_clip_effects_uxp: {
       description: "List native audio/video effects, inspect one clip's component chain, or add/remove one effect in a locked Premiere UXP transaction. Mutation verification covers the component chain only; inspect playback or exported output to confirm rendering.",
@@ -132,7 +147,7 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
           effect_id: { type: "string", minLength: 1, maxLength: 256, description: "Video match name or audio display name returned by catalog." },
           insertion_index: { type: "integer", minimum: 0 },
           component_index: { type: "integer", minimum: 0 },
-          expected_effect_id: { type: "string", minLength: 1, maxLength: 256, description: "Required stale-chain guard for removal; must match the inspected match or display name." },
+          expected_effect_id: { ...effectIdentityGuardSchema, description: "Required for removal; the expected_effect_id returned by inspect with component_index, passed unchanged." },
           operation_id: operationId,
         },
         required: ["action"],
@@ -142,7 +157,16 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         const coordinates = {
           mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
         };
-        if (args.action === "inspect") return invoke(bridge, "effects.chain.get", coordinates);
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "effects.chain.get", coordinates), args.component_index !== undefined ? {
+          expected_effect_id: {
+            schema: effectIdentityGuardSchema,
+            sourceValue: (record) => {
+              if (!Array.isArray(record.components)) return undefined;
+              const component = record.components.find((value) => value && typeof value === "object" && (value as Record<string, unknown>).index === args.component_index) as Record<string, unknown> | undefined;
+              return component?.matchName || component?.displayName;
+            },
+          },
+        } : {});
         if (args.action === "add") return invoke(bridge, "effects.chain.add", {
           ...coordinates, effectId: args.effect_id,
           ...(args.insertion_index === undefined ? {} : { insertionIndex: args.insertion_index }),
@@ -185,7 +209,7 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
           effect_id: { type: "string", minLength: 1, maxLength: 256 },
           insertion_index: { type: "integer", minimum: 0 },
           component_index: { type: "integer", minimum: 0 },
-          expected_effect_id: { type: "string", minLength: 1, maxLength: 256 },
+          expected_effect_id: effectIdentityGuardSchema,
           operation_id: operationId,
         },
         required: ["action"],
@@ -226,41 +250,32 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
           },
           expected_sequence_guid: {
             type: "string", minLength: 1, maxLength: 512,
-            description: "Required for mutations; copy sequenceGuid from a recent inspect result.",
+            description: "Required for mutations; the expected_sequence_guid returned by inspect or inspect_targets, passed unchanged.",
           },
           selection_items: {
-            type: "array", minItems: 1, maxItems: 64,
-            description: "Required for replace/add/remove. Every coordinate must include the project-item and timeline-time fingerprint returned by inspect.",
-            items: {
-              type: "object", additionalProperties: false,
-              properties: {
-                media_type: { type: "string", enum: ["video", "audio"] },
-                track_index: { type: "integer", minimum: 0 },
-                clip_index: { type: "integer", minimum: 0 },
-                expected_project_item_id: { type: "string", minLength: 1, maxLength: 512 },
-                expected_start_seconds: { type: "number", minimum: 0 },
-                expected_end_seconds: { type: "number", minimum: 0 },
-              },
-              required: [
-                "media_type", "track_index", "clip_index", "expected_project_item_id",
-                "expected_start_seconds", "expected_end_seconds",
-              ],
-            },
+            ...selectionItemSnapshotSchema,
+            description: "Required for replace/add/remove; the selection_items array returned by inspect or inspect_targets, passed unchanged.",
           },
           operation_id: operationId,
         },
         required: ["action"],
       },
       handler: async (args: WorkflowArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "selection.fingerprints.inspect");
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "selection.fingerprints.inspect"), {
+          expected_sequence_guid: { schema: projectGuidGuardSchema, sourceKey: "sequenceGuid" },
+          selection_items: { schema: selectionItemSnapshotSchema, sourceKey: "items" },
+        });
         if (args.action === "inspect_targets") {
           if (!args.selection_targets?.length) {
             return { success: false, error: "inspect_targets requires one or more selection_targets" };
           }
-          return invoke(bridge, "selection.targets.inspect", {
+          return withApplyGuards(invoke(bridge, "selection.targets.inspect", {
             items: args.selection_targets.map((item) => ({
               mediaType: item.media_type, trackIndex: item.track_index, clipIndex: item.clip_index,
             })),
+          }), {
+            expected_sequence_guid: { schema: projectGuidGuardSchema, sourceKey: "sequenceGuid" },
+            selection_items: { schema: selectionItemSnapshotSchema, sourceKey: "items" },
           });
         }
         if (["replace", "add", "remove", "clear"].includes(args.action ?? "")) {
@@ -461,8 +476,8 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         additionalProperties: false,
         properties: {
           action: { type: "string", enum: ["inspect", "update"] },
-          expected_project_guid: { type: "string", minLength: 1, maxLength: 512, description: "Required for update; must exactly match inspect's active-project GUID." },
-          expected_project_panel_metadata: { type: "string", maxLength: 12288, description: "Required for update; exact inspected Project-panel XML. The UXP host enforces a 12 KiB UTF-8 bound." },
+          expected_project_guid: { ...projectGuidGuardSchema, description: "Required for update; the expected_project_guid returned by inspect, passed unchanged." },
+          expected_project_panel_metadata: { ...panelMetadataGuardSchema, description: "Required for update; the expected_project_panel_metadata returned by inspect, passed unchanged. The UXP host enforces a 12 KiB UTF-8 bound." },
           project_panel_metadata: { type: "string", maxLength: 12288, description: "Required replacement Project-panel XML. The UXP host enforces a 12 KiB UTF-8 bound." },
           confirm_update: { type: "boolean", description: "Required true for update because this direct setter is non-undoable." },
           operation_id: { ...operationId, description: "Required replay key for a guarded Project-panel metadata replacement." },
@@ -481,7 +496,10 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         ],
       },
       handler: async (args: WorkflowArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "metadata.projectPanel.get");
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "metadata.projectPanel.get"), {
+          expected_project_guid: { schema: projectGuidGuardSchema, sourceKey: "projectGuid" },
+          expected_project_panel_metadata: { schema: panelMetadataGuardSchema, sourceKey: "projectPanelMetadata" },
+        });
         if (args.action === "update") return invoke(bridge, "metadata.projectPanel.update", {
           expectedProjectGuid: args.expected_project_guid,
           expectedProjectPanelMetadata: args.expected_project_panel_metadata,
@@ -500,8 +518,8 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         additionalProperties: false,
         properties: {
           action: { type: "string", enum: ["inspect", "create"] },
-          expected_project_guid: { type: "string", minLength: 1, maxLength: 512, description: "Required for create; must exactly match inspect's active-project GUID." },
-          expected_project_panel_metadata: { type: "string", maxLength: 350000, description: "Required for create; exact inspected Project-panel XML. Inspect uses the same 350,000-character / 900 KiB serialized read bound as inspect_project_panel_metadata_uxp." },
+          expected_project_guid: { ...projectGuidGuardSchema, description: "Required for create; the expected_project_guid returned by inspect, passed unchanged." },
+          expected_project_panel_metadata: { ...schemaMetadataGuardSchema, description: "Required for create; the expected_project_panel_metadata returned by inspect, passed unchanged. Inspect uses the same 350,000-character / 900 KiB serialized read bound as inspect_project_panel_metadata_uxp." },
           field_name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,127}$", description: "Required stable metadata field identifier. Starts with a letter; only letters, digits, periods, underscores, and hyphens are accepted." },
           field_label: { type: "string", minLength: 1, maxLength: 255, description: "Required user-visible label for the new metadata field." },
           schema_field_type: { type: "string", enum: ["integer", "real", "text", "boolean"], description: "Required documented Premiere metadata-field type." },
@@ -522,7 +540,10 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         ],
       },
       handler: async (args: WorkflowArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "metadata.projectSchema.inspect");
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "metadata.projectSchema.inspect"), {
+          expected_project_guid: { schema: projectGuidGuardSchema, sourceKey: "projectGuid" },
+          expected_project_panel_metadata: { schema: schemaMetadataGuardSchema, sourceKey: "projectPanelMetadata" },
+        });
         if (args.action === "create") return invoke(bridge, "metadata.projectSchema.create", {
           expectedProjectGuid: args.expected_project_guid,
           expectedProjectPanelMetadata: args.expected_project_panel_metadata,

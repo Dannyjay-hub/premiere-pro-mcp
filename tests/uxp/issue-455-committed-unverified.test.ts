@@ -30,6 +30,7 @@ function slipHost(apply: (state: SlipState, inSeconds: number, outSeconds: numbe
   const videoTrack = { getTrackItems: vi.fn(async () => [item]) };
   const sequence = {
     guid: "sequence-1",
+    getTimebase: vi.fn(async () => "10160640000"),
     getVideoTrackCount: vi.fn(async () => 1),
     getVideoTrack: vi.fn(async () => videoTrack),
     getAudioTrackCount: vi.fn(async () => 0),

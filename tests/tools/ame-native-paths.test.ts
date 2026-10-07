@@ -26,19 +26,19 @@ describe("AME handoff native paths", () => {
   it("passes native output and preset paths to encoder and preserves unverified handoff", async () => {
     const { preset, output, script } = await prepare();
     const seen: string[] = [];
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn() };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn() };
     const sequence = { name: "Sequence" };
     function File(this: any, path: string) { seen.push(path); this.fsName = path; this.exists = true; this.parent = { exists: true, fsName: "parent" }; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: sequence, path: "saved.prproj" }, encoder } })));
     expect(seen).toEqual([resolve(output), resolve(preset)]);
-    expect(encoder.encodeSequence).toHaveBeenCalledWith(sequence, resolve(output), resolve(preset), 0, true);
+    expect(encoder.encodeSequence).toHaveBeenCalledWith(sequence, resolve(output), resolve(preset), 1, true);
     expect(result).toMatchObject({ success: true, data: { accepted: true, verified: false, outcome: "committed_unverified", queueBatchStart: "not_requested" } });
     expect(encoder.startBatch).not.toHaveBeenCalled();
   });
 
   it.each([true, 1])("starts every ready AME job only with opt-in and accepting host return %s", async accepted => {
     const { script } = await prepare(true);
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => accepted) };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => accepted) };
     function File(this: any, path: string) { this.fsName = path; this.exists = true; this.parent = { exists: true, fsName: "parent" }; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
     expect(encoder.startBatch).toHaveBeenCalledOnce();
@@ -48,7 +48,7 @@ describe("AME handoff native paths", () => {
 
   it.each([false, 0, undefined])("preserves queue handoff without claiming batch acceptance for %s", async accepted => {
     const { script } = await prepare(true);
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => accepted) };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => accepted) };
     function File(this: any, path: string) { this.fsName = path; this.exists = true; this.parent = { exists: true, fsName: "parent" }; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
     expect(result).toMatchObject({ success: true, data: { accepted: true, queueBatchStart: "rejected", outcome: "committed_unverified" } });
@@ -57,7 +57,7 @@ describe("AME handoff native paths", () => {
 
   it("preserves the queue handoff when batch startup is unavailable", async () => {
     const { script } = await prepare(true);
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => { throw new Error("unavailable"); }) };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn(() => "job"), startBatch: vi.fn(() => { throw new Error("unavailable"); }) };
     function File(this: any, path: string) { this.fsName = path; this.exists = true; this.parent = { exists: true, fsName: "parent" }; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
     expect(result).toMatchObject({ success: true, data: { queueBatchStart: "unavailable: unavailable", outcome: "committed_unverified" } });
@@ -66,7 +66,7 @@ describe("AME handoff native paths", () => {
 
   it.each(["output", "preset"])("rejects missing host %s before launching encoder", async (missing) => {
     const { script } = await prepare();
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn() };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn() };
     let calls = 0;
     function File(this: any, path: string) { calls++; this.fsName = path; this.exists = missing !== "preset" || calls !== 2; this.parent = { exists: missing !== "output", fsName: "missing-directory" }; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
@@ -78,12 +78,22 @@ describe("AME handoff native paths", () => {
 
   it("rejects an output file without a parent before launching encoder", async () => {
     const { script } = await prepare();
-    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn() };
+    const encoder = { ENCODE_IN_TO_OUT: 1, launchEncoder: vi.fn(), encodeSequence: vi.fn() };
     function File(this: any, path: string) { this.fsName = path; this.exists = false; this.parent = null; }
     const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
     expect(result).toMatchObject({ success: false });
     expect(result.error).toContain("The requested AME output directory does not exist:");
     expect(encoder.launchEncoder).not.toHaveBeenCalled();
+  });
+
+  it("refuses before launching when Premiere exposes no sequence In/Out encode mode", async () => {
+    const { script } = await prepare();
+    const encoder = { launchEncoder: vi.fn(), encodeSequence: vi.fn() };
+    function File(this: any, path: string) { this.fsName = path; this.exists = true; this.parent = { exists: true, fsName: "parent" }; }
+    const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { File, app: { project: { activeSequence: {}, path: "saved.prproj" }, encoder } })));
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("IN_TO_OUT encode mode") });
+    expect(encoder.launchEncoder).not.toHaveBeenCalled();
+    expect(encoder.encodeSequence).not.toHaveBeenCalled();
   });
 });
 

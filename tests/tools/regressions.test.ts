@@ -162,8 +162,8 @@ describe("real-host social sequence regressions", () => {
 
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
-    expect(setScript).toContain("seq.setInPoint(appliedInSeconds)");
-    expect(setScript).toContain("seq.setOutPoint(appliedOutSeconds)");
+    expect(setScript).toContain("seq.setInPoint(inWriteSeconds)");
+    expect(setScript).toContain("seq.setOutPoint(outWriteSeconds)");
     expect(setScript).toContain("requestedOutTicks = __secondsToTicks(60)");
     expect(setScript).toContain("Math.abs(observedOut - appliedOutSeconds)");
 
@@ -185,10 +185,10 @@ describe("real-host social sequence regressions", () => {
     expect(setArea).toContain("seq.setWorkAreaInPoint(requestedIn)");
     expect(setArea).toContain("requestedInRaw = __secondsToTicks(4)");
     expect(setArea).toContain("Premiere did not apply the work area");
-    expect(setArea).toContain("verified: true");
+    expect(setArea).toContain('outcome: verified ? "verified" : "committed_unverified"');
 
     const enabled = await codeFor(sequence.is_work_area_enabled, {});
-    expect(enabled).toContain("seq.isWorkAreaEnabled()");
+    expect(enabled).toContain("__workAreaEnabled(seq)");
     expect(enabled).not.toContain("seq.isWorkAreaBarEnabled()");
   });
 
@@ -879,6 +879,39 @@ describe("issue #37 — sequence frame rate uses ticks per frame", () => {
     expect(script).toContain("var requestedTicks = 8475667200;");
   });
 
+  it("reports clips Premiere re-snaps to the new frame grid", async () => {
+    // Live 26.5.2: a 29.97 -> 25 -> 29.97 round trip moved 21 of 44 clips by a frame.
+    const TPS = 254016000000;
+    const old = TPS * 1001 / 30000;
+    const clip = (nodeId: string, startFrames: number, endFrames: number) => ({
+      nodeId,
+      start: { ticks: String(startFrames * old) }, end: { ticks: String(endFrames * old) }, inPoint: { ticks: "0" },
+    });
+    const clips = [clip("on-grid", 0, 1200), clip("off-grid", 1201, 1256)];
+    const settings: Record<string, unknown> = { videoFrameRate: { ticks: String(old) } };
+    const seq = {
+      name: "Seq",
+      videoTracks: { numTracks: 1, 0: { clips: Object.assign({ numItems: clips.length }, clips) } },
+      audioTracks: { numTracks: 0 },
+      getSettings: () => ({ ...settings }),
+      setSettings: (next: { videoFrameRate: { ticks: string } }) => {
+        settings.videoFrameRate = { ticks: next.videoFrameRate.ticks };
+        const frame = parseFloat(next.videoFrameRate.ticks);
+        for (const c of clips) {
+          c.start.ticks = String(Math.round(parseFloat(c.start.ticks) / frame) * frame);
+          c.end.ticks = String(Math.round(parseFloat(c.end.ticks) / frame) * frame);
+        }
+      },
+    };
+    function Time(this: { ticks: string }) { this.ticks = "0"; }
+    const script = await scriptFor(utility.set_sequence_frame_rate, { frame_rate: 25 });
+    const result = JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, { Time, app: { project: { activeSequence: seq } } })));
+    expect(result).toMatchObject({ success: true, data: { verified: true, clipsMoved: 1, clipsMissing: 0 } });
+    expect(result.data.movedClips).toHaveLength(1);
+    expect(result.data.movedClips[0].clip).toBe("V0:off-grid");
+    expect(result.data.warning).toContain("1 clip(s) moved");
+  });
+
   it("rejects invalid frame rates before sending a Premiere command", async () => {
     mockedSendCommand.mockClear();
     const result = await utility.set_sequence_frame_rate.handler({ frame_rate: 0 });
@@ -1130,13 +1163,13 @@ describe("issue #235 — CEP tool calls use the host's documented argument types
     expect(script).toContain("Premiere did not apply the requested sequence pixel aspect ratio");
   });
 
-  it("clears sequence points with seconds derived from their tick values", async () => {
+  it("clears sequence points with the unset value and keeps tick-derived bounds as the fallback", async () => {
     const script = await scriptFor(tracks.clear_sequence_in_out, {});
 
-    expect(script).toContain("var zeroSeconds = __ticksToSeconds(seq.zeroPoint)");
-    expect(script).toContain("var endSeconds = __ticksToSeconds(seq.end)");
-    expect(script).toContain("seq.setInPoint(zeroSeconds)");
-    expect(script).toContain("seq.setOutPoint(endSeconds)");
+    expect(script).toContain("seq.setInPoint(-400000)");
+    expect(script).toContain("seq.setOutPoint(-400000)");
+    expect(script).toContain("__ticksToSeconds(seq.zeroPoint)");
+    expect(script).toContain("__ticksToSeconds(seq.end)");
     expect(script).not.toContain("seq.zeroPoint.ticks");
   });
 
@@ -1341,6 +1374,8 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
 
     expect(queued).toContain("var outputFile = new File");
     expect(queued).toContain("var jobId = encoder.encodeSequence");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
+    expect(queued).not.toContain("0, // workAreaType");
     // Queueing remains an unverified handoff. Batch start is opt-in because it
     // affects every ready AME job, including jobs unrelated to this call.
     expect(queued).toContain("Batch startup and output-file creation are not verified by this tool");
@@ -1348,6 +1383,15 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
     expect(queued).toContain("app.encoder.startBatch()");
     expect(projectItem).toContain("outputFile.fsName");
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
+  });
+
+  it("escapes quoted output and preset paths before building the sequence handoff", async () => {
+    const queued = await scriptFor(exports.add_to_render_queue, {
+      output_path: '/tmp/render "quoted".mp4',
+      preset_path: temporaryPreset(),
+    });
+    expect(queued).toContain('render \\"quoted\\".mp4');
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
   });
 
   it("uses the documented encodeFile signature without a workArea argument (live: 'Illegal Parameter type')", async () => {
@@ -1432,6 +1476,7 @@ describe("issue #615 — encode_file passes natively typed arguments", () => {
     expect(proxy).toMatch(/ENCODE_ENTIRE,\s*true\s*\)/);
     expect(proxy).not.toMatch(/ENCODE_ENTIRE,\s*1\s*\)/);
     expect(queued).toContain("encoder.encodeSequence(");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
     expect(queued).toContain("true // removeUponCompletion");
     expect(queued).not.toMatch(/encodeSequence\([\s\S]*\b1\s*\/\/\s*removeOnCompletion/);
   });
@@ -1706,13 +1751,16 @@ describe("sequence settings setters verify their readback", () => {
     await expect(run(utility.set_sequence_resolution, { width: 1080, height: 1920 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("got 1920x1080") });
     await expect(run(utility.set_sequence_field_type, { field_type: 1 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("field type") });
     await expect(run(utility.set_sequence_display_format, { video_display_format: 9 }, false)).resolves.toMatchObject({ success: false, error: expect.stringContaining("video display format") });
-    await expect(run(utility.set_sequence_display_format, { video_display_format: 9, audio_display_format: 1 }, true)).resolves.toMatchObject({ success: true, data: { videoDisplayFormat: 9, audioDisplayFormat: 1, verified: true } });
+    await expect(run(utility.set_sequence_display_format, { video_display_format: 9, audio_display_format: 1 }, true)).resolves.toMatchObject({ success: true, data: { videoDisplayFormat: 109, audioDisplayFormat: 201, verified: true } });
+    await expect(run(utility.set_sequence_display_format, { video_display_format: 102, audio_display_format: 200 }, true)).resolves.toMatchObject({ success: true, data: { videoDisplayFormat: 102, audioDisplayFormat: 200, verified: true } });
   });
 
   it("rejects out-of-range values before touching the host", async () => {
     await expect(utility.set_sequence_resolution.handler({ width: 0, height: 1080 })).resolves.toMatchObject({ success: false });
     await expect(utility.set_sequence_field_type.handler({ field_type: 7 })).resolves.toMatchObject({ success: false });
     await expect(utility.set_sequence_display_format.handler({})).resolves.toMatchObject({ success: false });
+    await expect(utility.set_sequence_display_format.handler({ video_display_format: 114 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("100 to 113") });
+    await expect(utility.set_sequence_display_format.handler({ audio_display_format: 2 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("200") });
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
