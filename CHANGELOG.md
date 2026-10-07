@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `manage_proxies` with `action: "toggle"` can set a known proxy display state. The action changes Premiere's application-wide proxy display (`app.setEnableProxies`), not the given item, and it only flipped the current state, so on Premiere 26.5.2 an agent could not ask for proxies on or off and two calls undid each other. It now accepts `enabled: true | false`, writes only when the state differs, and verifies by reading `app.getEnableProxies()` back; a host that ignores the write is reported as a failure. Omitting `enabled` still flips the state. Results report `previousEnabled`, `proxiesEnabled`, `changed` and `mode` (`set` or `flip`), and the description now says the action is application-wide.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

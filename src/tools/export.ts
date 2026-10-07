@@ -2062,7 +2062,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     manage_proxies: {
       description:
-        "Create, attach, or toggle proxies for a project item. " +
+        "Create or attach proxies for a project item, or set Premiere's proxy display. " +
+        "'toggle' is application-wide, not per item: it changes app.getEnableProxies()/setEnableProxies() for every sequence and monitor, " +
+        "and item_id is only checked to exist. Pass enabled: true or false to set a known state; omitting enabled flips the current state, " +
+        "so two calls undo each other. The result reports previousEnabled and proxiesEnabled read back from Premiere. " +
         "Note: 'create' only requests a proxy encode from Adobe Media Encoder and returns an unverified handoff. " +
         "Independently verify the AME queue or output file before calling this tool again with action 'attach' " +
         "and proxy_path set to the output_path you passed here. Optional start_batch requests processing of every ready AME queue job, including unrelated jobs. " +
@@ -2099,6 +2102,12 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: AME_START_BATCH_DESCRIPTION,
           },
+          enabled: {
+            type: "boolean",
+            description:
+              "For 'toggle' only: sets the application-wide proxy display to this state (true shows proxies, false shows full-resolution media) " +
+              "and verifies it by reading app.getEnableProxies() back. Omit to flip the current state, which is discouraged because the outcome depends on a state you have not read.",
+          },
         },
         required: ["item_id", "action"],
       },
@@ -2109,7 +2118,14 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         output_path?: string;
         preset_path?: string;
         start_batch?: boolean;
+        enabled?: boolean;
       }) => {
+        if (!["create", "attach", "toggle"].includes(args.action)) {
+          return { success: false, error: "action must be create, attach, or toggle. Nothing was changed." };
+        }
+        if (args.enabled !== undefined && typeof args.enabled !== "boolean") {
+          return { success: false, error: "enabled must be a boolean" };
+        }
         let presetPath = args.preset_path;
         const skippedPresets: string[] = [];
         if (args.action === "create" && args.output_path && !presetPath) {
@@ -2199,11 +2215,27 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             if (typeof app.getEnableProxies !== "function" || typeof app.setEnableProxies !== "function") {
               return __error("This Premiere build does not expose app.getEnableProxies/setEnableProxies; toggle proxies in the Program Monitor.");
             }
+            var requestedEnabled = ${args.enabled === undefined ? "null" : args.enabled ? "true" : "false"};
             var wasEnabled = Number(app.getEnableProxies()) === 1;
-            app.setEnableProxies(wasEnabled ? 0 : 1);
+            var targetEnabled = requestedEnabled === null ? !wasEnabled : requestedEnabled;
+            if (targetEnabled !== wasEnabled) app.setEnableProxies(targetEnabled ? 1 : 0);
             var nowEnabled = Number(app.getEnableProxies()) === 1;
-            if (nowEnabled === wasEnabled) return __error("Premiere did not change the proxy display setting.");
-            return __result({ action: "toggle", proxiesEnabled: nowEnabled, verified: true, scope: "application-wide proxy display" });
+            if (nowEnabled !== targetEnabled) {
+              return __error(
+                "Premiere did not apply the proxy display setting: requested " + (targetEnabled ? "enabled" : "disabled") + ", read back " + (nowEnabled ? "enabled" : "disabled") + ".",
+                { action: "toggle", previousEnabled: wasEnabled, requestedEnabled: targetEnabled, proxiesEnabled: nowEnabled, verified: false, outcome: "failed", scope: "application-wide proxy display" }
+              );
+            }
+            return __result({
+              action: "toggle",
+              mode: requestedEnabled === null ? "flip" : "set",
+              previousEnabled: wasEnabled,
+              proxiesEnabled: nowEnabled,
+              changed: nowEnabled !== wasEnabled,
+              verified: true,
+              outcome: "verified",
+              scope: "application-wide proxy display"
+            });
           }
 
           return __error("Unknown proxy action: " + action);
