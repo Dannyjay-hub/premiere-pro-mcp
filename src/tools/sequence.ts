@@ -594,6 +594,13 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
             return markWarnings.length ? " Project item In/Out marks could not be restored on: " + markWarnings.join(", ") + "." : "";
           }
 
+          // Check every source range is accepted before removing the nested clip.
+          for (var pf = 0; pf < planned.length; pf++) {
+            var check = __itemAcceptsRange(planned[pf].projectItem, planned[pf].inTicks, planned[pf].outTicks, mediaType);
+            if (!check.marksRestored) markWarnings.push(planned[pf].projectItem.name);
+            if (!check.ok) return __error("Unnest refused; nothing was changed. " + check.error + "." + markNote());
+          }
+
           // Mutation. Track.overwriteClip places each nested clip's exact source
           // range on one track without rippling neighbours (the range is empty).
           try {

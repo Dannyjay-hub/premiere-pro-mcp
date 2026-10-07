@@ -38,7 +38,17 @@ class FakeItem {
     return { ticks: String(this.marks[mediaType].out), seconds: this.marks[mediaType].out / TPS };
   }
   setInPoint(seconds: number, mediaType: number) { this.marks[mediaType].in = Math.round(seconds * TPS); }
-  setOutPoint(seconds: number, mediaType: number) { this.marks[mediaType].out = Math.round(seconds * TPS); }
+  // Live 26.5.2: Premiere ignores an Out mark past the media's length (a still or a short clip).
+  maxOutTicks: number | null = null;
+  // Live 26.5.2: video marks are floored to the media's own frame grid.
+  mediaFps: number | null = null;
+  getFootageInterpretation() { return { frameRate: this.mediaFps ?? 25 }; }
+  setOutPoint(seconds: number, mediaType: number) {
+    let ticks = Math.round(seconds * TPS);
+    if (this.maxOutTicks !== null && ticks > this.maxOutTicks) return;
+    if (this.mediaFps && mediaType === 1) ticks = Math.floor(ticks / (TPS / this.mediaFps) + 1e-9) * Math.round(TPS / this.mediaFps);
+    this.marks[mediaType].out = ticks;
+  }
 }
 
 class FakeClip {
@@ -56,7 +66,10 @@ class FakeClip {
   get start() { return { ticks: String(this._start) }; }
   set start(value: unknown) { this._start = parseFloat(String(value)); }
   get end() { return { ticks: String(this._end) }; }
-  set end(value: unknown) { if (!this.frozenEnd) this._end = parseFloat(String(value)); }
+  set end(value: unknown) {
+    if (this.frozenEnd) return;
+    this._end = parseFloat(typeof value === "object" && value !== null && "ticks" in value ? String((value as { ticks: string }).ticks) : String(value));
+  }
   get inPoint() { return { ticks: String(this._in) }; }
   get outPoint() { return { ticks: String(this._out) }; }
   getSpeed() { return 1; }
@@ -190,6 +203,17 @@ describe("unnest_sequence refuses unsafe unnests and verifies placements (#642)"
     expect(parentV[1].items).toEqual([blocker]);
   });
 
+  it("refuses when a nested clip's source range is not accepted, before removing the nest", async () => {
+    const { app, parentV, nestClip, itemB } = fixture();
+    itemB.maxOutTicks = 0;
+    const result = await unnest(app);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Unnest refused; nothing was changed\. Premiere did not accept a source range of 1s from 0s on project item B/);
+    expect(parentV[0].items).toEqual([nestClip]);
+    expect(parentV[1].items).toHaveLength(0);
+    expect(itemB.marks[1]).toEqual({ in: 0, out: t(10) });
+  });
+
   it("refuses when a destination track is locked", async () => {
     const { app, parentV, nestClip } = fixture();
     parentV[1].locked = true;
@@ -307,6 +331,7 @@ describe("replace_clip keeps the original span (#642)", () => {
     const neighbour = video[0].add(new FakeClip("next", "Next", new FakeItem("item-next", "Next", 10), t(5), t(7), 0, t(2)));
     const replacement = new FakeItem("item-new", "New", 10);
     replacement.marks[1] = { in: t(1), out: t(10) };
+    replacement.marks[2] = { in: 0, out: 0 };
     const parent = makeSequence("seq-parent", "Main", video, [new FakeTrack("audio")]);
     const app = {
       project: {
@@ -342,6 +367,48 @@ describe("replace_clip keeps the original span (#642)", () => {
     expect(result.error).toContain("The timeline changed");
     expect(result.error).toContain("instead of 2s-5s");
     expect(result.error).toContain("Use Undo");
+  });
+
+  it("refuses a replacement too short for the span without removing the original", async () => {
+    const { app, video, original, replacement } = fixture();
+    replacement.maxOutTicks = t(3);
+    const result = await replace(app);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Replace refused; nothing was changed\. Premiere did not accept a source range of 3s from 1s on project item New/);
+    expect(video[0].items).toContain(original);
+    expect(video[0].items.some((clip) => clip.projectItem === replacement)).toBe(false);
+    expect(replacement.marks[1]).toEqual({ in: t(1), out: t(10) });
+  });
+
+  it("fills the span with media at another frame rate by extending the placed end", async () => {
+    const { app, video, original, neighbour, replacement } = fixture();
+    replacement.mediaFps = 24000 / 1001;
+    const result = await replace(app);
+    expect(result).toMatchObject({ success: true, data: { replaced: true, verified: true, endCorrected: true, startSeconds: 2, endSeconds: 5 } });
+    const placed = video[0].items.find((clip) => clip.projectItem === replacement);
+    expect(placed).toMatchObject({ _start: t(2), _end: t(5) });
+    expect(video[0].items).not.toContain(original);
+    expect(neighbour).toMatchObject({ _start: t(5), _end: t(7) });
+  });
+
+  it("reports a failed replace when the placed end cannot be extended", async () => {
+    const { app, video, replacement } = fixture();
+    replacement.mediaFps = 24000 / 1001;
+    const realOverwrite = video[0].overwriteClip.bind(video[0]);
+    video[0].overwriteClip = (item, time) => { realOverwrite(item, time); video[0].items[video[0].items.length - 1].frozenEnd = true; };
+    const result = await replace(app);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("did not verify");
+  });
+
+  it("refuses a replacement that also has audio, before removing the original", async () => {
+    const { app, video, original, replacement } = fixture();
+    replacement.marks[2] = { in: 0, out: t(10) };
+    const result = await replace(app);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Replace refused; nothing was changed\. New also has audio/);
+    expect(video[0].items).toContain(original);
+    expect(video[0].items.some((clip) => clip.projectItem === replacement)).toBe(false);
   });
 
   it("refuses a locked track without removing the original", async () => {
