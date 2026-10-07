@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `replace_clip` checks, before removing the original clip, that the replacement accepts the source range, and refuses an item that also carries the other media type, because Premiere 26.5.2's `Track.overwriteClip` also places that media on the matching track and overwrites the clips there. A replacement at another frame rate now fills the span: item marks may land up to one media frame early, and the placed end is extended to the original end (`endCorrected`). `unnest_sequence` runs the same source-range check before removing the nested clip.
 
+- `link_selection` and `unlink_selection` read the clip links back instead of always reporting success. On Premiere 26.5.2 `unlinkSelection()` returns false and changes nothing unless every clip of the linked group is selected; `unlink_selection` now refuses such a selection before calling Premiere and names the partner clips to add. An already-unlinked selection is reported as `alreadyUnlinked`, and `link_selection` needs at least two selected clips.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
