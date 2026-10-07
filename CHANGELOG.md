@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Effect-property lookup errors now list up to 25 non-empty display names; repeated names include their `property_index`, helping identify controls such as Gaussian Blur's `Amount` without guessing.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

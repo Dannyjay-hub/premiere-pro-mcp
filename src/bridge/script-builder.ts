@@ -328,14 +328,37 @@ function __propertyNameMatches(actual, wanted, component) {
   var aliased = (wanted === "Scale" && actual === "Scale Height") || (wanted === "Scale Height" && actual === "Scale");
   return aliased && __isUniformScale(component);
 }
+function __availablePropertyNames(component) {
+  var names = [];
+  var counts = {};
+  var total = 0;
+  for (var i = 0; i < component.properties.numItems; i++) {
+    var name = "";
+    try { name = String(component.properties[i].displayName || ""); } catch (eName) {}
+    if (!name.replace(/\\s/g, "")) continue;
+    total++;
+    names.push({ name: name, index: i });
+    var key = "$" + name;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  var shown = [];
+  var limit = Math.min(names.length, 25);
+  for (var n = 0; n < limit; n++) {
+    var entry = names[n];
+    shown.push(counts["$" + entry.name] > 1 ? entry.name + " (property_index " + entry.index + ")" : entry.name);
+  }
+  var summary = shown.length ? shown.join(", ") : "none with a non-empty display name";
+  if (total > limit) summary += " (first " + limit + " of " + total + ")";
+  return summary;
+}
 function __resolveProperty(component, wanted, propertyIndex) {
   var matches = [];
   if (propertyIndex !== null && propertyIndex !== undefined) {
     if (typeof propertyIndex !== "number" || !isFinite(propertyIndex) || Math.floor(propertyIndex) !== propertyIndex || propertyIndex < 0 || propertyIndex >= component.properties.numItems) {
-      return { property: null, index: null, candidates: [], error: "property_index is out of range." };
+      return { property: null, index: null, candidates: [], error: "property_index is out of range. Available properties: " + __availablePropertyNames(component) + "." };
     }
     if (!__propertyNameMatches(component.properties[propertyIndex].displayName, wanted, component)) {
-      return { property: null, index: null, candidates: [], error: "property_index " + propertyIndex + " does not match property name '" + wanted + "'." };
+      return { property: null, index: null, candidates: [], error: "property_index " + propertyIndex + " does not match property name '" + wanted + "'. Available properties: " + __availablePropertyNames(component) + "." };
     }
     return { property: component.properties[propertyIndex], index: propertyIndex, candidates: [propertyIndex], error: null };
   }
@@ -345,7 +368,7 @@ function __resolveProperty(component, wanted, propertyIndex) {
   if (matches.length > 1) {
     return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index." };
   }
-  if (!matches.length) return { property: null, index: null, candidates: [], error: null };
+  if (!matches.length) return { property: null, index: null, candidates: [], error: "Property name '" + wanted + "' not found. Available properties: " + __availablePropertyNames(component) + "." };
   return { property: component.properties[matches[0]], index: matches[0], candidates: matches, error: null };
 }
 
