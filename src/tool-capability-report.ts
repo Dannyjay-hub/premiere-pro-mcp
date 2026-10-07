@@ -80,6 +80,11 @@ export const TOOL_OPERATIONAL_OVERRIDES: Readonly<
     authority: "inspect", verificationBoundary: "host_response", hostVerificationRequired: true,
     notes: ["Inspects sequence, clip, project-item and effective track targets in Premiere before issuing a local confirmation token. It does not activate the sequence or mutate the project; apply revalidates targets."],
   },
+  ripple_remove_timeline_ranges: {
+    backend: "CEP/ExtendScript + QE", backends: ["cep", "extendscript", "qe"], status: "experimental", minimumPremiereVersion: null,
+    authority: "edit", verificationBoundary: "local_and_host_response", hostVerificationRequired: true,
+    notes: ["Requires a single-use preview token, frame-snaps ranges, and shifts only unlocked sync-locked participating tracks. QE razor behavior requires live Premiere verification."],
+  },
   roll_edit: {
     backend: "local + CEP/ExtendScript", backends: ["local", "cep", "extendscript"],
     authority: "edit", verificationBoundary: "local_and_host_response", hostVerificationRequired: true,
