@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-06
+
 ### Added
+
+- `ripple_remove_timeline_ranges` previews and then applies a multi-range ripple removal (up to 50 sorted ranges) across unlocked, sync-locked tracks. Apply needs a single-use preview confirmation token and the `edit` capability, cuts on Premiere's own sequence timecode, and verifies every resulting clip by readback. It uses the experimental QE razor; a timeout after Premiere accepts the edit is reported as `mutationOutcome: "unknown"`. Live Premiere verification was reported by the contributor on 25.2.3 and 26.5.2; it was not re-run for this release.
 
 - `set_footage_interpretation` accepts `field_type` (0 progressive, 1 upper field first, 2 lower field first) and reads it back (#806).
 - `import_folder` accepts `target_bin` and skips `Thumbs.db`, `desktop.ini` and `.DS_Store` (#807).
