@@ -368,7 +368,7 @@ operation” when the tool has no enum-based mode.
 | `set_color_value` | Default profile | Single operation | Set a color value on an effect property (e.g., tint color, fill color) |
 | `set_effect_property` | Default profile | Single operation | Set one effect property. Duplicate names require property_index from get_effect_properties. Colour values use [alpha, red, green, blue] and the lossless colour API; keyframed colour writes are refused. |
 | `set_footage_interpretation` | Default profile | Single operation | Set footage interpretation settings for a project item and read them back, including fields that were not meant to change |
-| `set_frame_blend` | Default profile | Single operation | Enable or disable frame blending on a clip. Uses QE DOM. |
+| `set_frame_blend` | Default profile | Single operation | Request frame blending on a clip through QE DOM. Premiere exposes no frame-blend readback, so the result is committed_unverified and must be checked in Effect Controls. |
 | `set_graphics_white_luminance` | Default profile | Single operation | Set the graphics white luminance value (HDR setting) for the project |
 | `set_item_in_out` | Default profile | Single operation | Set in and/or out points on a project item in the project panel (marks source range for editing). |
 | `set_keyframe_interpolation` | Default profile | `interpolation`: `linear`, `hold`, `bezier` | Set the interpolation type of an existing keyframe (Linear, Hold, or Bezier). Premiere exposes no interpolation readback, so a write is reported as committed_unverified. Stored curves do not establish rendering; verify with a short video export, or with PNG stills composited over black (they carry straight alpha). |
@@ -395,7 +395,7 @@ operation” when the tool has no enum-based mode.
 | `set_source_in_out` | Default profile | Single operation | Set in and/or out points on the clip currently open in the Source Monitor. |
 | `set_start_time` | Default profile | Single operation | Set the start time (timecode offset) for a project item |
 | `set_target_track` | Default profile | `track_type`: `video`, `audio` | Target or untarget one video or audio track for source-patched insert/overwrite edits. Premiere allows several tracks of a type to be targeted at once, so by default (exclusive=true) targeting a track also untargets every other track of the same type. Reads back every track of that type and reports verified only when the readback matches the requested state; otherwise committed_unverified or an error. |
-| `set_time_interpolation` | Default profile | Single operation | Set time interpolation type for a clip (Frame Sampling, Frame Blending, Optical Flow). Uses QE DOM. |
+| `set_time_interpolation` | Default profile | Single operation | Request time interpolation for a clip (Frame Sampling, Frame Blending, Optical Flow) through QE DOM. Premiere exposes no interpolation readback, so the result is committed_unverified and must be checked in Effect Controls. |
 | `set_transcode_on_ingest` | Default profile | Single operation | Request enabling or disabling project transcoding on ingest. Premiere exposes no getter for independent verification, so dispatch is reported as requested_unverified. |
 | `set_uniform_scale` | Default profile | Single operation | Toggle uniform scale on a clip's Motion effect. When enabled, Scale Width and Scale Height are linked. |
 | `set_work_area` | Default profile | Single operation | Set the work area (bar) in and out points |

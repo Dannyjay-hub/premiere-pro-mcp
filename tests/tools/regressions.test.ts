@@ -1341,6 +1341,8 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
 
     expect(queued).toContain("var outputFile = new File");
     expect(queued).toContain("var jobId = encoder.encodeSequence");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
+    expect(queued).not.toContain("0, // workAreaType");
     // Queueing remains an unverified handoff. Batch start is opt-in because it
     // affects every ready AME job, including jobs unrelated to this call.
     expect(queued).toContain("Batch startup and output-file creation are not verified by this tool");
@@ -1348,6 +1350,15 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
     expect(queued).toContain("app.encoder.startBatch()");
     expect(projectItem).toContain("outputFile.fsName");
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
+  });
+
+  it("escapes quoted output and preset paths before building the sequence handoff", async () => {
+    const queued = await scriptFor(exports.add_to_render_queue, {
+      output_path: '/tmp/render "quoted".mp4',
+      preset_path: temporaryPreset(),
+    });
+    expect(queued).toContain('render \\"quoted\\".mp4');
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
   });
 
   it("uses the documented encodeFile signature without a workArea argument (live: 'Illegal Parameter type')", async () => {
@@ -1432,6 +1443,7 @@ describe("issue #615 — encode_file passes natively typed arguments", () => {
     expect(proxy).toMatch(/ENCODE_ENTIRE,\s*true\s*\)/);
     expect(proxy).not.toMatch(/ENCODE_ENTIRE,\s*1\s*\)/);
     expect(queued).toContain("encoder.encodeSequence(");
+    expect(queued).toContain("encoder.ENCODE_IN_TO_OUT");
     expect(queued).toContain("true // removeUponCompletion");
     expect(queued).not.toMatch(/encodeSequence\([\s\S]*\b1\s*\/\/\s*removeOnCompletion/);
   });

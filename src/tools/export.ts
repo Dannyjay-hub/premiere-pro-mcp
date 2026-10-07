@@ -1584,6 +1584,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           
           var encoder = app.encoder;
           if (!encoder) return __error("Adobe Media Encoder not available");
+          if (typeof encoder.ENCODE_IN_TO_OUT !== "number") return __error("Premiere does not expose the IN_TO_OUT encode mode; the sequence was not queued.");
           var savedProjectPath = "";
           try { savedProjectPath = String(app.project.path || ""); } catch (projectPathError) { savedProjectPath = ""; }
           if (!savedProjectPath || savedProjectPath === "undefined") {
@@ -1604,7 +1605,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             seq,
             outputPath,
             presetPath,
-            0, // workAreaType (Number)
+            encoder.ENCODE_IN_TO_OUT, // honor the sequence's In/Out points
             true // removeUponCompletion (Boolean; Premiere type-checks this natively)
           );
           if (!jobId || String(jobId) === "0") return __error("Adobe Media Encoder did not queue the sequence export.");
