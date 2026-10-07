@@ -185,10 +185,10 @@ describe("real-host social sequence regressions", () => {
     expect(setArea).toContain("seq.setWorkAreaInPoint(requestedIn)");
     expect(setArea).toContain("requestedInRaw = __secondsToTicks(4)");
     expect(setArea).toContain("Premiere did not apply the work area");
-    expect(setArea).toContain("verified: true");
+    expect(setArea).toContain('outcome: verified ? "verified" : "committed_unverified"');
 
     const enabled = await codeFor(sequence.is_work_area_enabled, {});
-    expect(enabled).toContain("seq.isWorkAreaEnabled()");
+    expect(enabled).toContain("__workAreaEnabled(seq)");
     expect(enabled).not.toContain("seq.isWorkAreaBarEnabled()");
   });
 

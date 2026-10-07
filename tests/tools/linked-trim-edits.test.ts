@@ -127,6 +127,53 @@ describe("trim edits keep linked audio in sync", () => {
     }
   });
 
+  it.each([25, 29.97, 23.976].flatMap((fps) => [0.5, -0.5, 1, -1].map((frames) => [fps, frames])))
+    ("slide accepts %s fps / %s frame source-duration drift and reports it", async (fps, frames) => {
+    const exactFrameTicks = fps === 23.976 ? TICKS * 1001 / 24000 : fps === 29.97 ? TICKS * 1001 / 30000 : TICKS / 25;
+    const { video, seq } = host({ frameTicks: exactFrameTicks });
+    const frameTicks = Number(seq.timebase);
+    const originalOut = ticksOf(video[1].outPoint) - frames * frameTicks;
+    video[1].outPoint = String(originalOut);
+    const result = await tools.slide_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
+    expect(result.success, result.error).toBe(true);
+    expect(result.data?.durationDrifts).toContainEqual({ nodeId: "v1", timelineMinusSourceTicks: frames * frameTicks, timelineMinusSourceSeconds: frames * frameTicks / TICKS, timelineMinusSourceFrames: frames });
+    expect(ticksOf(video[1].outPoint)).toBe(originalOut);
+    expect(ticksOf(video[0].end)).toBe(ticksOf(video[1].start));
+    expect(ticksOf(video[2].start)).toBe(ticksOf(video[1].end));
+    expect(ticksOf(video[0].outPoint)).toBe(ticksOf(video[0].end));
+    expect(ticksOf(video[2].inPoint)).toBe(ticksOf(video[2].start));
+  });
+
+  it.each([0.75, 1.1, 2, -2])("slide refuses real %s frame duration mismatch without changes", async (frames) => {
+    const { video, audio, seq } = host();
+    video[1].outPoint = String(ticksOf(video[1].outPoint) - frames * Number(seq.timebase));
+    const before = [...video, ...audio].map((clip) => clip.snapshot());
+    const result = await tools.slide_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("inconsistent timeline/source duration");
+    expect([...video, ...audio].map((clip) => clip.snapshot())).toEqual(before);
+  });
+
+  it("keeps roll duration checks strict and slide neighbour postconditions strict", async () => {
+    let value = host();
+    value.video[1].outPoint = String(ticksOf(value.video[1].outPoint) + Number(value.seq.timebase));
+    await expect(tools.roll_edit.handler({ node_id: "v1", offset_seconds: 1 })).resolves.toMatchObject({ success: false });
+    value = host();
+    value.video[1].outPoint = String(ticksOf(value.video[1].outPoint) + Number(value.seq.timebase));
+    const oldOut = value.video[0].outPoint;
+    Object.defineProperty(value.video[0], "outPoint", { get: () => oldOut, set: () => {} });
+    const result = await tools.slide_edit.handler({ node_id: "v1", offset_seconds: 1 }) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("neighbours' source points did not follow");
+  });
+
+  it("escapes a slide target ID containing quotes and script syntax", async () => {
+    const { video } = host();
+    const id = 'target"; throw new Error("injected"); //';
+    video[1].nodeId = id;
+    await expect(tools.slide_edit.handler({ node_id: id, offset_seconds: 1 })).resolves.toMatchObject({ success: true });
+  });
+
   it("include_linked false edits only the given clip", async () => {
     const { video, audio } = host();
     await expect(tools.slip_edit.handler({ node_id: "v1", offset_seconds: 1, include_linked: false })).resolves.toMatchObject({ success: true, data: { linkedPartnersEdited: [] } });

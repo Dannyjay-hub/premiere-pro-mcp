@@ -827,7 +827,8 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var enabled = seq.isWorkAreaEnabled();
+          var enabled = __workAreaEnabled(seq);
+          if (enabled === null) return __error("Work-area enabled state could not be read from this host.", { outcome: "failed" });
           return __result({ sequenceName: seq.name, workAreaEnabled: enabled });
         `);
         return sendCommand(script, bridgeOptions);

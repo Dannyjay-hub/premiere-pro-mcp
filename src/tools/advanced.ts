@@ -312,6 +312,7 @@ export function getAdvancedTools(
               return __editFail("The slide edit left a gap or overlap at an adjacent cut.");
             }
             var slidePayload = {
+              durationDrifts: sourceDurationDrifts,
               slid: true,
               verified: true,
               clipName: after.clip.name,

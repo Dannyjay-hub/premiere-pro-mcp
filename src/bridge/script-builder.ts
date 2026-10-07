@@ -45,6 +45,14 @@ function __ticksToSeconds(ticks) {
   return parseFloat(ticks) / TICKS_PER_SECOND;
 }
 
+function __workAreaEnabled(seq) {
+  try {
+    if (typeof seq.isWorkAreaEnabled !== "function") return null;
+    var enabled = seq.isWorkAreaEnabled();
+    return typeof enabled === "boolean" ? enabled : null;
+  } catch (workAreaStateError) { return null; }
+}
+
 // Sequence work-area getters return seconds (often as a string) on live 25.x
 // and 26.x hosts. Values above 1e6 can only be ticks, so convert those.
 function __workAreaSeconds(value) {
