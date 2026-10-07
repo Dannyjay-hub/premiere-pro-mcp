@@ -10,11 +10,11 @@ source catalog may include unreleased actions.
 
 | Surface | Count | Availability |
 | --- | ---: | --- |
-| Registered core actions | 392 | CEP/local server catalog; host and authority checks still apply |
-| Default-profile core actions | 390 | Advertised with `inspect,edit,export,filesystem` |
+| Registered core actions | 393 | CEP/local server catalog; host and authority checks still apply |
+| Default-profile core actions | 391 | Advertised with `inspect,edit,export,filesystem` |
 | Restricted core actions | 2 | Require explicit `unsafe-script` authority |
 | Authenticated UXP additions | 96 | Advertised only while a compatible authenticated UXP panel is connected |
-| Default profile with UXP | 486 | 390 core plus 96 UXP tools |
+| Default profile with UXP | 487 | 391 core plus 96 UXP tools |
 
 ## How to read support
 
@@ -331,6 +331,7 @@ operation” when the tool has no enum-based mode.
 | `review_sync_evidence` | Default profile | Single operation | Review caller-supplied camera/recorder offset estimates for independent-method agreement, confidence and conflicting alternatives. All matches require selection; conflicting matches cannot be approved. Does not analyze audio, calibrate confidence or synchronize Premiere. |
 | `review_text_changes` | Default profile | Single operation | Preview literal replacements or supplied copy changes for inspected MOGRT text and supplied caption artifacts. Preserve original text and evidence revisions with explicit approve/reject decisions. Does not translate, access native graphics/caption text or apply changes. |
 | `ripple_delete` | Default profile | `scope`: `sync_locked`, `own_track`; `range_content`: `refuse`, `delete` | Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. With the default scope the clip's linked audio/video partners are removed with it and their tracks close up too, even when not sync-locked; with scope 'own_track' the partners stay in place (reported as linkedPartnersKept). Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed. |
+| `ripple_remove_timeline_ranges` | Default profile | `scope`: `sync_locked`; `range_content`: `delete` | Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true. |
 | `roll_edit` | Default profile | Single operation | Perform a verified roll edit at the outgoing cut of a clip using the public timeline DOM, moving both visible edges and their source in/out points and verifying all four. Linked audio/video partners get the same edit by default (include_linked); every clip is checked before any is changed. Requires readable finite media and ffprobe duration evidence for every edited source; refuses unknown duration, stills, and nonunit/reversed speed before mutation. |
 | `save_project` | Default profile | Single operation | Save the current Premiere Pro project to its existing path. Fails when the project has never been saved (use save_project_as) or when Premiere writes no non-empty file. Fresh disk metadata verifies a save; unchanged or unreadable metadata reports committed_unverified. |
 | `save_project_as` | Default profile | Single operation | Save the current project to a new .prproj path. Premiere then has the NEW copy open and closes the original, so later edits go to the copy; the result reports both paths. Fails when Premiere writes no file or leaves a pre-existing path unchanged. Use open_project to return to the original. |
@@ -365,7 +366,7 @@ operation” when the tool has no enum-based mode.
 | `set_clips_volume` | Default profile | Single operation | Set the volume (in dB) on every audio clip of a track, or on a list of clip indices. One round trip instead of one call per clip - essential for sequences with dozens of clips. |
 | `set_color_label` | Default profile | Single operation | Set the color label on a project item or clip and read it back |
 | `set_color_value` | Default profile | Single operation | Set a color value on an effect property (e.g., tint color, fill color) |
-| `set_effect_property` | Default profile | Single operation | Set the value of a specific effect property on a clip. Accepts scalar, boolean, string, array-shaped vector values (for example Motion > Position as [x, y]), and MOGRT JSON objects or strings, and verifies the readback component by component. |
+| `set_effect_property` | Default profile | Single operation | Set one effect property. Duplicate names require property_index from get_effect_properties. Colour values use [alpha, red, green, blue] and the lossless colour API; keyframed colour writes are refused. |
 | `set_footage_interpretation` | Default profile | Single operation | Set footage interpretation settings for a project item and read them back, including fields that were not meant to change |
 | `set_frame_blend` | Default profile | Single operation | Enable or disable frame blending on a clip. Uses QE DOM. |
 | `set_graphics_white_luminance` | Default profile | Single operation | Set the graphics white luminance value (HDR setting) for the project |

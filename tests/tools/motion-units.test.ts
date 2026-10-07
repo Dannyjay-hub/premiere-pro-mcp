@@ -19,13 +19,14 @@ const tools = getTrackTargetingTools(bridgeOptions);
 beforeEach(() => vi.clearAllMocks());
 
 /** A 1920x1080 clip whose Motion uses Premiere 25.2's normalized Position and a renamed "Scale Height". */
-function host(position: number[] = [0.5, 0.5], uniform = true, heightName = "Scale Height", withWidth = true) {
+function host(position: number[] = [0.5, 0.5], uniform = true, heightName = "Scale Height", withWidth = true, duplicateHeight = false) {
   const props: Record<string, unknown> = { Position: position, [heightName]: 100, ...(withWidth ? { "Scale Width": 100 } : {}), "Uniform Scale": uniform, "Anchor Point": [0.5, 0.5] };
   const list = Object.keys(props).map((displayName) => ({
     displayName,
     getValue: () => props[displayName],
     setValue: (v: unknown) => { props[displayName] = v; },
   }));
+  if (duplicateHeight) list.push({ displayName: heightName, getValue: () => 90, setValue: vi.fn() });
   const motion = { displayName: "Motion", properties: { numItems: list.length, ...list } };
   const clip = { nodeId: "c1", name: "Speaker", components: { numItems: 1, 0: motion }, projectItem: { getProjectMetadata: () => "<Column.Intrinsic.VideoInfo>1920 x 1080 (1.0)</Column.Intrinsic.VideoInfo>" } };
   const seq = { frameSizeHorizontal: 1920, frameSizeVertical: 1080, videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } };
@@ -63,6 +64,14 @@ describe("Motion units", () => {
     await expect(tools.set_clip_scale.handler({ node_id: "c1", scale: 120 })).resolves.toMatchObject({ success: true, data: { uniformScale: false, verified: true } });
     expect(props.Scale).toBe(120);
     expect(props["Scale Width"]).toBe(120);
+  });
+
+  it("refuses duplicate Motion Scale names with candidate indices before writing", async () => {
+    const props = host([0.5, 0.5], true, "Scale Height", true, true);
+    await expect(tools.set_clip_scale.handler({ node_id: "c1", scale: 120 })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("Motion Scale is ambiguous at property indices [1, 5]"),
+    });
+    expect(props["Scale Height"]).toBe(100);
   });
 
   it("refuses, changing nothing, when Uniform Scale is off and there is no Scale Width", async () => {

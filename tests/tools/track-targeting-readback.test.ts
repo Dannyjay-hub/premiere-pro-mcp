@@ -123,6 +123,32 @@ describe("clip parameter writes read the stored value back", () => {
     await expect(run(tools.set_clip_rotation, { node_id: "c2", degrees: 45 })).resolves.toMatchObject({ success: false, error: expect.stringContaining("stored Rotation 0") });
   });
 
+  it("refuses duplicate fixed effect properties with candidate indices before writing", async () => {
+    const clip = clipWith("c3");
+    const motion = clip.components[1];
+    const duplicate = param("Rotation", 10);
+    motion.properties = collection([motion.properties[0], motion.properties[1], duplicate]);
+    host([clip]);
+    await expect(run(tools.set_clip_rotation, { node_id: "c3", degrees: 45 })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("Motion Rotation is ambiguous at property indices [0, 2]"),
+    });
+    expect(clip.params.rotation.getValue()).toBe(0);
+    expect(duplicate.getValue()).toBe(10);
+  });
+
+  it("refuses duplicate independent scale properties before writing", async () => {
+    const clip = clipWith("c4");
+    const motion = clip.components[1];
+    const firstWidth = param("Scale Width", 100);
+    const duplicateWidth = param("Scale Width", 120);
+    motion.properties = collection([motion.properties[0], motion.properties[1], firstWidth, duplicateWidth]);
+    host([clip]);
+    await expect(run(tools.set_scale_width_height, { node_id: "c4", scale_width: 110, scale_height: 105 })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("Motion Scale Width is ambiguous at property indices [2, 3]"),
+    });
+    expect(duplicateWidth.getValue()).toBe(120);
+  });
+
   it("set_clip_volume retains the clamping receipt and reads applied levels back", async () => {
     const clip = clipWith("c1");
     host([clip]);
