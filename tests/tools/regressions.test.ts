@@ -1130,13 +1130,13 @@ describe("issue #235 — CEP tool calls use the host's documented argument types
     expect(script).toContain("Premiere did not apply the requested sequence pixel aspect ratio");
   });
 
-  it("clears sequence points with seconds derived from their tick values", async () => {
+  it("clears sequence points with the unset value and keeps tick-derived bounds as the fallback", async () => {
     const script = await scriptFor(tracks.clear_sequence_in_out, {});
 
-    expect(script).toContain("var zeroSeconds = __ticksToSeconds(seq.zeroPoint)");
-    expect(script).toContain("var endSeconds = __ticksToSeconds(seq.end)");
-    expect(script).toContain("seq.setInPoint(zeroSeconds)");
-    expect(script).toContain("seq.setOutPoint(endSeconds)");
+    expect(script).toContain("seq.setInPoint(-400000)");
+    expect(script).toContain("seq.setOutPoint(-400000)");
+    expect(script).toContain("__ticksToSeconds(seq.zeroPoint)");
+    expect(script).toContain("__ticksToSeconds(seq.end)");
     expect(script).not.toContain("seq.zeroPoint.ticks");
   });
 

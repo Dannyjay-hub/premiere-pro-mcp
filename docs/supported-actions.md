@@ -76,7 +76,7 @@ operation” when the tool has no enum-based mode.
 | `check_caption_safe_zone` | Default profile | `platform`: `tiktok`, `instagram_reels`, `youtube_shorts`, `instagram_feed`, `youtube`, `linkedin`, `x` | Check caption, title, logo, and graphic rectangles against approximate platform UI overlay zones (TikTok, Reels, Shorts, feed, YouTube, LinkedIn, X) and suggest the nearest clear position. Local-only geometry on caller-supplied normalized rects; it never reads or changes Premiere. |
 | `check_offline_media` | Default profile | Single operation | Check for offline (missing) media in the project |
 | `clear_item_in_out` | Default profile | Single operation | Clear in and/or out points on a project item (reset to full duration). |
-| `clear_sequence_in_out` | Default profile | Single operation | Clear the in and/or out points on the active sequence. |
+| `clear_sequence_in_out` | Default profile | Single operation | Clear the in and/or out points on the active sequence so they read back as unset, and leave the other point unchanged. |
 | `close_all_source_clips` | Default profile | Single operation | Close all clips in the Source Monitor. |
 | `close_project` | Default profile | Single operation | Close an open Premiere Pro project: the active one, or the open project at project_path. Verifies it is no longer open and reports which project is active afterwards. |
 | `close_sequence` | Default profile | Single operation | Request closing a sequence timeline tab. Premiere exposes no open-tab enumeration, so dispatch is requested_unverified; the sequence stays in the project. |

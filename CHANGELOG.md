@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `lift_selection` and `extract_selection` no longer cut one extra frame. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid, so at 29.97 an In on a frame was stored just before it: video lost the frame before the range and Extract rippled one frame short. Inexact marks are re-written on their exact frame through QE first (`marksRewritten`), and coverage and ripple checks now allow half a frame instead of a full frame, so a lost frame is reported instead of verified.
 - `set_sequence_in_out_points` writes each mark on the first audio sample at or after its frame start. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid and renders an In/Out export from the frame holding the In to the frame holding the Out, so at 29.97 an export of a marked range started and ended one frame early on four of every five frames.
 
+- `clear_sequence_in_out` now writes Premiere's unset value, so cleared points read back as unset like a new sequence, instead of writing 0 and the sequence end. On 26.5.2 the old method failed its own readback because the Out point is stored rounded to an audio sample. It reports each point after the change and leaves the point it was not asked to clear unchanged.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

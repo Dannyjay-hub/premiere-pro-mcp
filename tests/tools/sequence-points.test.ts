@@ -13,11 +13,13 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getPlayheadTools } from "../../src/tools/playhead.js";
 import { getEditorRequestTools } from "../../src/tools/editor-requests.js";
+import { getTrackTargetingTools } from "../../src/tools/track-targeting.js";
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const TICKS = 254016000000;
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/sequence-points", timeoutMs: 5000 };
 const playhead = getPlayheadTools(bridgeOptions);
+const targeting = getTrackTargetingTools(bridgeOptions);
 const editor = getEditorRequestTools(bridgeOptions);
 type Result = { success: boolean; error?: string; data?: Record<string, unknown> };
 
@@ -46,7 +48,8 @@ function sequence(options: { inSeconds?: number; outSeconds?: number; workAreaWr
     getOutPoint: () => String(outPoint),
     setInPoint: (seconds: number) => { inPoint = seconds; },
     // Live 25.2.3: an out-point before the in-point clears the in-point.
-    setOutPoint: (seconds: number) => { outPoint = seconds; if (inPoint > -399999 && seconds < inPoint) inPoint = -400000; },
+    // Live 26.5.2: writing the unset value -400000 clears only that point.
+    setOutPoint: (seconds: number) => { outPoint = seconds; if (seconds > -399999 && inPoint > -399999 && seconds < inPoint) inPoint = -400000; },
     getWorkAreaInPoint: () => String(workIn),
     getWorkAreaOutPoint: () => String(workOut),
     setWorkAreaInPoint: (seconds: number) => { if (enabled && options.workAreaWritable) workIn = Number(seconds); },
@@ -103,6 +106,56 @@ describe("get_sequence_in_out_points", () => {
     await expect(playhead.get_sequence_in_out_points.handler()).resolves.toMatchObject({
       data: { inSeconds: 5, outSeconds: 20, inSet: true, outSet: true },
     });
+  });
+});
+
+describe("clear_sequence_in_out", () => {
+  it("unsets both points instead of marking the whole sequence", async () => {
+    const seq = sequence({ inSeconds: 10, outSeconds: 20 });
+    host(seq);
+    await expect(targeting.clear_sequence_in_out.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "verified", verified: true, inSeconds: null, outSeconds: null, inSet: false, outSet: false, inMethod: "unset", outMethod: "unset" },
+    });
+    expect(seq.getInPoint()).toBe("-400000");
+    expect(seq.getOutPoint()).toBe("-400000");
+  });
+
+  it("clears one point and leaves the other unchanged", async () => {
+    host(sequence({ inSeconds: 10, outSeconds: 20 }));
+    await expect(targeting.clear_sequence_in_out.handler({ clear_in: false })).resolves.toMatchObject({
+      success: true,
+      data: { inSeconds: 10, outSeconds: null, clearedIn: false, clearedOut: true },
+    });
+    host(sequence({ inSeconds: 10, outSeconds: 20 }));
+    await expect(targeting.clear_sequence_in_out.handler({ clear_out: false })).resolves.toMatchObject({
+      success: true,
+      data: { inSeconds: null, outSeconds: 20 },
+    });
+  });
+
+  it("falls back to the sequence bounds within half a frame when the host rejects the unset value", async () => {
+    // Live 26.5.2 reads an out point at the sequence end back rounded (1083.01525 for 1083.0152667).
+    const seq = Object.assign(sequence({ inSeconds: 10, outSeconds: 20 }), { zeroPoint: "0" });
+    seq.setInPoint = (seconds: number) => { if (seconds >= 0) (seq as any).__in = seconds; };
+    seq.getInPoint = () => String((seq as any).__in ?? 10);
+    seq.setOutPoint = (seconds: number) => { if (seconds >= 0) (seq as any).__out = seconds - 0.0000167; };
+    seq.getOutPoint = () => String((seq as any).__out ?? 20);
+    host(seq);
+    await expect(targeting.clear_sequence_in_out.handler({})).resolves.toMatchObject({
+      success: true,
+      data: { outcome: "verified", inMethod: "sequence_bounds", outMethod: "sequence_bounds", inSeconds: 0 },
+    });
+  });
+
+  it("fails when Premiere keeps the mark", async () => {
+    const seq = sequence({ inSeconds: 10, outSeconds: 20 });
+    seq.setInPoint = () => {};
+    host(seq);
+    const result = await targeting.clear_sequence_in_out.handler({}) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("did not clear the sequence in point");
+    expect(result.data).toMatchObject({ outcome: "failed", verified: false, inSeconds: 10, outSeconds: null });
   });
 });
 
