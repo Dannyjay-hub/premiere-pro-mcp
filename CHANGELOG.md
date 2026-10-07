@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `clear_sequence_in_out` now writes Premiere's unset value, so cleared points read back as unset like a new sequence, instead of writing 0 and the sequence end. On 26.5.2 the old method failed its own readback because the Out point is stored rounded to an audio sample. It reports each point after the change and leaves the point it was not asked to clear unchanged.
 
+- `replace_clip` checks, before removing the original clip, that the replacement accepts the source range, and refuses an item that also carries the other media type, because Premiere 26.5.2's `Track.overwriteClip` also places that media on the matching track and overwrites the clips there. A replacement at another frame rate now fills the span: item marks may land up to one media frame early, and the placed end is extended to the original end (`endCorrected`). `unnest_sequence` runs the same source-range check before removing the nested clip.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
