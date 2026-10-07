@@ -11,6 +11,7 @@
   // preflight/transaction/readback boundary per target.
   function createSlipWorkflowDefinitions(deps) {
     const ppro = deps.ppro;
+    const FrameTime = deps.FrameTime || (typeof require === "function" ? require("./frame-time.cjs") : globalThis.PremiereMcpFrameTime);
     const fallbackTails = new Map();
     const locks = deps.locks && typeof deps.locks.withTrackMutationLock === "function"
       ? deps.locks
@@ -54,6 +55,8 @@
       const requestedOffset = signedOffset(args.slipBySeconds);
       assertExpectedTarget(expected, target);
       const initial = await activeTarget(target, true);
+      const requestedSlip = await sequenceFrameTime(initial.sequence, requestedOffset);
+      const offset = requestedSlip.appliedSeconds;
       if (expected.projectGuid !== initial.projectGuid || expected.sequenceId !== initial.sequenceId) {
         throw commandError("UXP_STALE_TRACK_ITEM", "The active project or sequence no longer matches the reviewed slip snapshot");
       }
@@ -70,11 +73,11 @@
           throw commandError("UXP_STALE_TRACK_ITEM", "The active project or sequence changed before the slip transaction");
         }
         const before = await slipSnapshot(context);
-        if (!sameSnapshot(before, expected)) {
+        if (!sameSnapshot(before, expected, requestedSlip.ticksPerFrame)) {
           throw commandError("UXP_STALE_TRACK_ITEM", "The timeline item changed since the reviewed slip snapshot");
         }
         assertSlipSupported(before);
-        const desired = desiredSlip(before, requestedOffset);
+        const desired = desiredSlip(before, offset);
         // The complete asynchronous snapshot is captured immediately before
         // this synchronous action-creation boundary. The keyed tail prevents
         // another MCP slip from interleaving between this check and readback.
@@ -108,9 +111,9 @@
           // When the source points are right and both edges moved by the same amount, move the
           // item back by that measured amount in a second undoable transaction.
           const movedBy = after.startSeconds - before.startSeconds;
-          if (!sameSlipResult(before, after, desired) && sameSnapshotIdentity(before, after) &&
+          if (!sameSlipResult(before, after, desired, requestedSlip.ticksPerFrame) && sameSnapshotIdentity(before, after) &&
               afterContext.item && typeof afterContext.item.createMoveAction === "function" &&
-              numbersEqual(after.inSeconds, desired.inSeconds) && numbersEqual(after.outSeconds, desired.outSeconds) &&
+              FrameTime.withinHalfFrame(after.inSeconds, desired.inSeconds, requestedSlip.ticksPerFrame) && FrameTime.withinHalfFrame(after.outSeconds, desired.outSeconds, requestedSlip.ticksPerFrame) &&
               numbersEqual(after.endSeconds - before.endSeconds, movedBy) && !numbersEqual(movedBy, 0)) {
             let moved = false;
             afterContext.project.lockedAccess(function () {
@@ -126,7 +129,7 @@
             const restoredContext = await activeTarget(target, true);
             after = await slipSnapshot(restoredContext);
           }
-          if (!sameSlipResult(before, after, desired)) {
+          if (!sameSlipResult(before, after, desired, requestedSlip.ticksPerFrame)) {
             // The transaction already committed, so this is not a "nothing
             // happened" failure. Say what actually landed and forbid a retry:
             // re-issuing the slip would apply a second offset to a moved item.
@@ -141,7 +144,9 @@
             slipped: true,
             before,
             after,
-            slipBySeconds: requestedOffset,
+            slipBySeconds: offset,
+            requestedSlipBySeconds: requestedOffset,
+            appliedSlipBySeconds: offset,
             outcome: "verified",
             verificationBoundary: "track_item_source_and_timeline_readback",
             undoLabel: "Slip timeline item source",
@@ -154,8 +159,9 @@
         } catch (error) {
           return {
             slipped: false, committed: true, verified: false, partial: true,
-            outcome: "committed_unverified", before, after, slipBySeconds: requestedOffset,
-            timelineChanged: after ? !sameSnapshot(before, after) : null, rollbackPerformed: false,
+            outcome: "committed_unverified", before, after, slipBySeconds: offset,
+            requestedSlipBySeconds: requestedOffset, appliedSlipBySeconds: offset,
+            timelineChanged: after ? !sameSnapshot(before, after, requestedSlip.ticksPerFrame) : null, rollbackPerformed: false,
             ...(compensatingMoveSeconds === null ? {} : { compensatingMoveSeconds, undoSteps: 2 }),
             verificationBoundary: "committed_transaction_with_failed_readback",
             readbackError: error && error.message ? error.message : String(error),
@@ -248,14 +254,14 @@
       }
     }
 
-    function sameSlipResult(before, after, desired) {
+    function sameSlipResult(before, after, desired, ticksPerFrame) {
       return sameSnapshotIdentity(before, after) &&
-        numbersEqual(after.startSeconds, before.startSeconds) &&
-        numbersEqual(after.endSeconds, before.endSeconds) &&
-        numbersEqual(after.durationSeconds, before.durationSeconds) &&
+        FrameTime.withinHalfFrame(after.startSeconds, before.startSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(after.endSeconds, before.endSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(after.durationSeconds, before.durationSeconds, ticksPerFrame) &&
         numbersEqual(after.speed, before.speed) && after.reversed === before.reversed &&
-        numbersEqual(after.inSeconds, desired.inSeconds) && numbersEqual(after.outSeconds, desired.outSeconds) &&
-        numbersEqual(after.outSeconds - after.inSeconds, desired.sourceDuration);
+        FrameTime.withinHalfFrame(after.inSeconds, desired.inSeconds, ticksPerFrame) && FrameTime.withinHalfFrame(after.outSeconds, desired.outSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(after.outSeconds - after.inSeconds, desired.sourceDuration, ticksPerFrame);
     }
 
     function describeSlipDivergence(before, after, desired) {
@@ -284,13 +290,13 @@
       return (Math.round(value * 1000) / 1000) + "s";
     }
 
-    function sameSnapshot(left, right) {
+    function sameSnapshot(left, right, ticksPerFrame) {
       return sameSnapshotIdentity(left, right) &&
-        numbersEqual(left.startSeconds, right.startSeconds) &&
-        numbersEqual(left.endSeconds, right.endSeconds) &&
-        numbersEqual(left.inSeconds, right.inSeconds) &&
-        numbersEqual(left.outSeconds, right.outSeconds) &&
-        numbersEqual(left.durationSeconds, right.durationSeconds) &&
+        FrameTime.withinHalfFrame(left.startSeconds, right.startSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.endSeconds, right.endSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.inSeconds, right.inSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.outSeconds, right.outSeconds, ticksPerFrame) &&
+        FrameTime.withinHalfFrame(left.durationSeconds, right.durationSeconds, ticksPerFrame) &&
         numbersEqual(left.speed, right.speed) && left.reversed === right.reversed;
     }
 
@@ -316,6 +322,12 @@
       const action = creator(ppro.TickTime.createWithSeconds(seconds));
       if (!action) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create the " + label + " action");
       return action;
+    }
+
+    async function sequenceFrameTime(sequence, seconds) {
+      const timebase = String(await sequence.getTimebase());
+      if (!/^\d{1,18}$/.test(timebase) || BigInt(timebase) <= 0n) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a valid sequence ticksPerFrame timebase");
+      return { ...FrameTime.snapSeconds(seconds, timebase), ticksPerFrame: timebase };
     }
 
     function targetCoordinates(args) {

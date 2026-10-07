@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import type { UxpWebSocketBridge } from "../../src/bridge/uxp-websocket-bridge.js";
 import { getUxpTools } from "../../src/tools/uxp.js";
 
+function expectMatchesSchema(value: unknown, schema: Record<string, any>) {
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  if (types.includes("object")) {
+    expect(value).not.toBeNull(); expect(typeof value).toBe("object"); expect(Array.isArray(value)).toBe(false);
+    const record = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) expect(record).toHaveProperty(key);
+    if (schema.additionalProperties === false) expect(Object.keys(record).every((key) => key in (schema.properties ?? {}))).toBe(true);
+    for (const [key, child] of Object.entries(schema.properties ?? {})) if (key in record) expectMatchesSchema(record[key], child as Record<string, any>);
+  }
+  if (types.includes("array")) { expect(Array.isArray(value)).toBe(true); for (const child of value as unknown[]) expectMatchesSchema(child, schema.items); }
+  if (types.includes("string")) expect(typeof value).toBe("string");
+  if (types.includes("number")) expect(typeof value).toBe("number");
+  if (types.includes("integer")) expect(Number.isSafeInteger(value)).toBe(true);
+  if (types.includes("boolean")) expect(typeof value).toBe("boolean");
+}
+
 const ADVANCED_WORKFLOW_TOOLS = [
   "inspect_project_selection_uxp",
   "inspect_project_tree_uxp",
@@ -129,6 +145,62 @@ describe("advanced stable UXP workflow MCP catalog", () => {
         confirmDisableTimeVarying: true, operationId: "parameter-animation-op",
       }],
     ]);
+  });
+
+  it("returns every display-format and animation-mode guard in apply-ready form", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ sequence: { id: "sequence-1" }, displayFormats: { audioDisplayFormat: 1, videoDisplayFormat: 20 } })
+      .mockResolvedValueOnce({ updated: true })
+      .mockResolvedValueOnce({ projectId: "project-1", sequenceId: "sequence-1", componentId: "ADBE Opacity", paramName: "Opacity", timeVarying: true, keyframeTimesSeconds: [1, 2], keyframesLimited: false })
+      .mockResolvedValueOnce({ updated: true });
+    const tools = getUxpTools({ request, getState: vi.fn() } as unknown as UxpWebSocketBridge);
+    const display = await tools.manage_sequence_display_format_uxp.handler({ action: "inspect" });
+    const displayData = display.data as Record<string, unknown>;
+    expectMatchesSchema(displayData.expected_sequence_guid, tools.manage_sequence_display_format_uxp.parameters.properties.expected_sequence_guid);
+    expectMatchesSchema(displayData.expected_display_formats, tools.manage_sequence_display_format_uxp.parameters.properties.expected_display_formats);
+    await tools.manage_sequence_display_format_uxp.handler({
+      action: "update", expected_sequence_guid: displayData.expected_sequence_guid,
+      expected_display_formats: displayData.expected_display_formats, updates: { audio_display_format: 2 },
+    } as never);
+
+    const target = { media_type: "video", track_index: 0, clip_index: 1, component_index: 2, param_index: 3 };
+    const animation = await tools.automate_effect_parameters_uxp.handler({ action: "inspect_time_varying", ...target } as never);
+    const animationData = animation.data as Record<string, unknown>;
+    const animationTool = tools.automate_effect_parameters_uxp;
+    for (const key of ["expected_sequence_id", "expected_component_id", "expected_param_name", "expected_time_varying", "expected_keyframe_times_seconds"]) {
+      expectMatchesSchema(animationData[key], animationTool.parameters.properties[key]);
+    }
+    await animationTool.handler({
+      action: "set_time_varying", ...target,
+      expected_sequence_id: animationData.expected_sequence_id,
+      expected_component_id: animationData.expected_component_id,
+      expected_param_name: animationData.expected_param_name,
+      expected_time_varying: animationData.expected_time_varying,
+      expected_keyframe_times_seconds: animationData.expected_keyframe_times_seconds,
+      time_varying: false, confirm_disable_time_varying: true,
+    } as never);
+    expect(request).toHaveBeenNthCalledWith(2, "sequence.displayFormat.update", expect.objectContaining({
+      expectedSequenceGuid: "sequence-1", expectedDisplayFormats: { audioDisplayFormat: 1, videoDisplayFormat: 20 },
+    }));
+    expect(request).toHaveBeenNthCalledWith(4, "parameters.timeVarying.set", expect.objectContaining({
+      expectedSequenceId: "sequence-1", expectedComponentId: "ADBE Opacity", expectedParamName: "Opacity",
+      expectedTimeVarying: true, expectedKeyframeTimesSeconds: [1, 2],
+    }));
+  });
+
+  it("returns the inspected marker name as the optional update guard", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ ownerType: "sequence", markers: [{ guid: "marker-1", name: "Intro", startSeconds: 0, durationSeconds: 2 }] })
+      .mockResolvedValueOnce({ updated: true });
+    const tool = getUxpTools({ request, getState: vi.fn() } as unknown as UxpWebSocketBridge).manage_markers_uxp;
+    const inspected = await tool.handler({ action: "inspect", owner_type: "sequence", sequence_id: "sequence-1", marker_guid: "marker-1" } as never);
+    const expectedName = (inspected.data as Record<string, unknown>).expected_name;
+    expectMatchesSchema(expectedName, tool.parameters.properties.expected_name);
+    await tool.handler({
+      action: "update", owner_type: "sequence", sequence_id: "sequence-1", marker_guid: "marker-1",
+      expected_name: expectedName, name: "Opening", operation_id: "marker-guard-roundtrip",
+    } as never);
+    expect(request).toHaveBeenNthCalledWith(2, "markers.update", expect.objectContaining({ markerGuid: "marker-1", expectedName: "Intro" }));
   });
 
   it("maps guarded static PointF inspection and update actions to the exact UXP commands", async () => {

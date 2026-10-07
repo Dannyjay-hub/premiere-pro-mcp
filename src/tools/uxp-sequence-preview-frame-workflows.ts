@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 type PreviewFrameSnapshot = {
   project_guid: string;
@@ -24,6 +25,7 @@ const snapshotProperties = {
   preview_height: { type: "integer", minimum: 16, maximum: 8192 },
 } as const;
 const snapshotRequired = ["project_guid", "sequence_id", "preview_width", "preview_height"];
+const expectedSnapshotSchema = { properties: snapshotProperties };
 
 function invoke(bridge: UxpWebSocketBridge, command: string, args: Record<string, unknown>) {
   return bridge.request(command, args)
@@ -72,7 +74,7 @@ export function getUxpSequencePreviewFrameWorkflowTools(bridge: UxpWebSocketBrid
         ],
       },
       handler: async (args: PreviewFrameArgs) => {
-        if (args.action === "inspect") return invoke(bridge, "sequence.previewFrame.inspect", { sequenceId: args.sequence_id });
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "sequence.previewFrame.inspect", { sequenceId: args.sequence_id }), expectedSnapshotSchema);
         if (args.action === "update") return invoke(bridge, "sequence.previewFrame.update", {
           sequenceId: args.sequence_id,
           previewWidth: args.preview_width,
