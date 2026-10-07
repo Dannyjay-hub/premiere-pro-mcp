@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-06
+
+### Added
+
+- `ripple_remove_timeline_ranges` previews and then applies a multi-range ripple removal (up to 50 sorted ranges) across unlocked, sync-locked tracks. Apply needs a single-use preview confirmation token and the `edit` capability, cuts on Premiere's own sequence timecode, and verifies every resulting clip by readback. It uses the experimental QE razor; a timeout after Premiere accepts the edit is reported as `mutationOutcome: "unknown"`. Live Premiere verification was reported by the contributor on 25.2.3 and 26.5.2; it was not re-run for this release.
+
+- `set_footage_interpretation` accepts `field_type` (0 progressive, 1 upper field first, 2 lower field first) and reads it back (#806).
+- `import_folder` accepts `target_bin` and skips `Thumbs.db`, `desktop.ini` and `.DS_Store` (#807).
+- `get_encoder_presets` accepts `limit` and `offset`; the result adds `total` and `offset` (#808).
+- `import_fcp_xml` accepts `mode: "into_open_project"` (with optional `target_bin`) to import into the open project; it succeeds only when the sequence count grew, and `project_path` is required only in the default `new_project` mode (#811).
+
 ### Fixed
 
 - UXP tools on Premiere 26.5.2, found live on macOS:
@@ -19,8 +30,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Markers.** `manage_markers_uxp` `add` now forwards and applies `color_index` and verifies every requested field. Previously the colour was dropped while the add reported verified.
   - **Frame export.** `export_frame_uxp` retries with the file extension when Premiere rejects an extension-less name ("File Format is not supported"). It also waits up to 15 s for the PNG, which 26.5.2 writes after the call returns, and it checks for the file by walking the approved workspace folder: a plugin with request-only file access cannot open arbitrary `file:` URLs, so the old check reported a written frame as missing.
   - **Media health.** `maintain_media_health_uxp` treats a single `project_item_id` as a one-item list for inspect, refresh and set_offline.
+- `import_media` no longer reports an error when an `.xml`, `.aaf`, `.edl` or `.prproj` file imports correctly. Interchange files create sequences and bins rather than an item with the file's path, so they now return `outcome: "committed_unverified"` with `interchange: true`, which stops retries from duplicating the sequence (#805).
+
+- `duplicate_clip` no longer places a copy one frame short. Premiere can snap the source out point a frame early, so on Premiere 26.5.2 a 677-frame clip was copied as 676 frames, and the tool still reported `verified` because it allowed two frames of drift. It now trims each placed copy, and its linked partner, back to the original end, reports `endCorrected`, and verifies start, end and source in-point to within half a frame.
+
+- Effect parameter reads and writes use Premiere's lossless colour API for static colour controls, returning `[alpha, red, green, blue]` instead of a packed number. CEP refuses keyframed colour operations that cannot be read or written losslessly. Effect tools now refuse repeated property names with candidate indices or accept `property_index`; this applies to parameter reads, writes, keyframe operations, colour correction and built-in property workflows that resolve names.
 
 - `razor_all_tracks` and `split_clip` cut on the requested frame in drop-frame sequences. They built a non-drop `HH:MM:SS:FF` string, which Premiere reads as drop-frame timecode on 29.97/59.94 DF sequences, so cuts landed early by the dropped-frame count (2 frames after the first minute, 28 frames at 16 minutes, measured on 25.2.3) and `razor_all_tracks` still reported `verified: true`. Both now let Premiere format the timecode in the sequence's display format, snap the cut to a frame, and verify the new boundary within half a frame; `razor_all_tracks` reports a misplaced cut as `committed_unverified`.
+- Batched ripple-range previews now cap clip samples at 50 while retaining per-track counts and a confirmation fingerprint for the complete plan. Razor track spans are computed from one initial clip snapshot; cuts use Premiere's sequence-display timecode for fractional and drop-frame rates and refuse any resulting boundary more than half a frame from the snapped range edge. Frame-exact decimal ranges no longer appear as adjustments, and mutation receipts use the shared QE undo-stack reader.
 
 - `add_audio_keyframes` and `setup_ducking` can add the first keyframe to a clip again. On Premiere 25.2.3 a property with no keyframes returns `undefined` from `getKeys()` (with `isTimeVarying()` false), which the audio and shared keyframe readers treated as unreadable storage, so both tools refused every clip without existing Volume keys. That state now reads as an empty key list; `null`, malformed lists, and `undefined` on a time-varying property still refuse.
 
@@ -83,9 +100,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `clear_item_in_out` verifies a cleared Out mark against the item's `MediaDuration` and `MediaTimebase` (frames for video, samples for audio), so audio items verify too, and reports the In and Out results separately. Live on Premiere 25.2.3: a cleared Out reads the full media length, and `MediaTimebase` is `48000 Hz` for audio and `25.00 fps` for video. (#696)
 - An empty Source Monitor returns `undefined`, not `null`, on Premiere 25.2.3. The close and playback tools now treat a getter that returns `null` or `undefined` without throwing as an empty monitor; only a throwing getter is unreadable. Previously `close_all_source_clips` reported a genuinely empty monitor as `committed_unverified`. (#694)
 - `add_to_timeline` counts only clips that match the inserted source and start at the insertion time as inserted, and reports split remainders separately (`splitRemainders`). A same-source mid-clip insert on 25.2.3 previously reported `insertedTrackItems: 2` for one inserted clip. (#680)
+- Mutating bridge commands that time out after Premiere accepts them can report `mutationOutcome: unknown` and `timelineChanged: null`, with guidance to inspect before retrying.
 - `encode_project_item`, `encode_file`, and `manage_proxies` `create` no longer call `app.encoder.startBatch()` after queueing. That API starts every ready Adobe Media Encoder job, including unrelated jobs already in the queue. Batch start is now opt-in with `start_batch: true`, matching `add_to_render_queue`. Use `start_batch_encode` to start the queue later.
 - `ripple_delete`, ripple removal in `remove_from_timeline`, and rippling `apply_edit_plan` removals shift clips with `TrackItem.move()` and single-pass per-track lookups. The contributor measured one pause cut on Premiere 25.2.3 macOS dropping from about 31 minutes to about 3 on a 2-hour, 1,490-clip podcast sequence. Ripples that would move more than 400 clips refuse before mutation with a count and time estimate unless `allow_large_ripple` is set, host waits scale with the work without shortening a longer configured timeout, and an edit that times out after Premiere accepted it reports an unknown timeline state instead of a plain failure.
 - `trim_clip`, `set_clip_duration`, `slip_edit`, `roll_edit`, and `slide_edit` no longer refuse every unlinked clip by default. On Premiere 25.2.3 `getLinkedItems()` returns `null` (without throwing) for a clip with no linked partner, which these tools treated as unreadable linkage; it now means "no partners", while throwing or malformed collections still refuse. `roll_edit` and `slide_edit` also accept the numeric `0` that `isSpeedReversed()` returns for a forward clip on that host (`1`/`true` still refuse), so they no longer refuse every clip there.
+
+### Added
+
+- `ripple_remove_timeline_ranges` previews up to 50 frame-snapped pause ranges, then removes them in one guarded pass across unlocked sync-locked tracks, shifting each surviving clip once with a verified receipt.
 
 ## [1.19.0] - 2026-10-02
 

@@ -564,7 +564,14 @@ export function getInspectionTools(bridgeOptions: BridgeOptions) {
                   displayName: prop.displayName
                 };
                 try { propInfo.matchName = prop.matchName; } catch(e) {}
-                try { propInfo.value = prop.getValue(0, 0); } catch(e) {}
+                var colorValue = __readColorValue(prop);
+                if (colorValue) {
+                  propInfo.value = colorValue;
+                  propInfo.valueType = "color_argb";
+                  try { if (prop.isTimeVarying()) propInfo.note = "Animated colour: this is the current value, not a per-keyframe sample."; } catch (eColorAnimation) {}
+                } else {
+                  try { propInfo.value = prop.getValue(0, 0); } catch(e) {}
+                }
                 try { propInfo.isTimeVarying = prop.isTimeVarying(); } catch(e) {}
                 try { propInfo.keyframesSupported = prop.areKeyframesSupported(); } catch(e) {}
                 try {

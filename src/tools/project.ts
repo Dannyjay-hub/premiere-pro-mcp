@@ -907,7 +907,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
 
     import_fcp_xml: {
       description:
-        "Open a Final Cut Pro XML file as a new Premiere project. app.openFCPXML(path, projPath) requires a destination project path; it does not merge the XML into the currently open project. verified is true only when that destination exists as a file and Premiere has that exact path open.",
+        "Import a Final Cut Pro XML file. Default mode new_project opens it as a new Premiere project: app.openFCPXML(path, projPath) requires a destination project path, and verified is true only when that destination exists as a file and Premiere has that exact path open. Mode into_open_project instead imports the XML into the currently open project with project.importFiles and succeeds only when the sequence count grew; the XML also brings its own clips, which can duplicate existing items.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -918,14 +918,46 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
           project_path: {
             type: "string",
             description:
-              "Full path of the new .prproj file Premiere should create for the imported timeline. Required: app.openFCPXML takes both a source and a destination path.",
+              "Full path of the new .prproj file Premiere should create for the imported timeline. Required in new_project mode (app.openFCPXML takes both a source and a destination path); ignored in into_open_project mode.",
+          },
+          mode: {
+            type: "string",
+            enum: ["new_project", "into_open_project"],
+            description: "new_project (default) opens the XML as a new project saved at project_path. into_open_project imports it into the open project.",
+          },
+          target_bin: {
+            type: "string",
+            description: "into_open_project mode only: bin name or node ID to import into. Defaults to the project root.",
           },
         },
-        required: ["path", "project_path"],
+        required: ["path"],
       },
-      handler: async (args: { path: string; project_path: string }) => {
+      handler: async (args: { path: string; project_path?: string; mode?: "new_project" | "into_open_project"; target_bin?: string }) => {
         if (typeof args.path !== "string" || !args.path.trim()) {
           return { success: false, error: "path must be a non-empty path to an FCP XML file" };
+        }
+        if (args.mode !== undefined && args.mode !== "new_project" && args.mode !== "into_open_project") {
+          return { success: false, error: "mode must be new_project or into_open_project" };
+        }
+        if (args.mode === "into_open_project") {
+          const binLookup = args.target_bin
+            ? `var targetBin = __findProjectItem("${escapeForExtendScript(args.target_bin)}");
+               if (!targetBin) return __error("Bin not found: ${escapeForExtendScript(args.target_bin)}");`
+            : `var targetBin = app.project.rootItem;`;
+          const intoScript = buildToolScript(`
+            var xmlFile = new File("${escapeForExtendScript(args.path)}");
+            if (!xmlFile.exists) return __error("FCP XML file not found on disk: ${escapeForExtendScript(args.path)}");
+            if (!app.project) return __error("No open project to import into");
+            ${binLookup}
+            var sequencesBefore = app.project.sequences.numSequences;
+            var importReturned = app.project.importFiles([xmlFile.fsName], true, targetBin, false);
+            var sequencesAfter = app.project.sequences.numSequences;
+            if (!(sequencesAfter > sequencesBefore)) {
+              return __jsonStringify({ success: false, error: "Premiere did not add a sequence from the FCP XML; nothing verifiable was imported.", data: { importReturned: !!importReturned, sequencesBefore: sequencesBefore, sequencesAfter: sequencesAfter } });
+            }
+            return __result({ imported: true, verified: true, mode: "into_open_project", newSequences: sequencesAfter - sequencesBefore, sequenceCount: sequencesAfter, targetBin: targetBin.name });
+          `);
+          return sendCommand(intoScript, bridgeOptions);
         }
         if (typeof args.project_path !== "string" || !args.project_path.trim()) {
           return {

@@ -247,7 +247,14 @@ Examples:
                 matchName: ""
               };
               try { info.matchName = prop.matchName; } catch(e) {}
-              try { info.value = prop.getValue(0, 0); } catch(e) {}
+              var color = __readColorValue(prop);
+              if (color) {
+                info.value = color;
+                info.valueType = "color_argb";
+                try { if (prop.isTimeVarying()) info.note = "Animated colour: this is the current value, not a per-keyframe sample."; } catch (eColorAnimation) {}
+              } else {
+                try { info.value = prop.getValue(0, 0); } catch(e) {}
+              }
               try { info.isTimeVarying = prop.isTimeVarying(); } catch(e) {}
               try { info.keyframesSupported = prop.areKeyframesSupported(); } catch(e) {}
               props.push(info);

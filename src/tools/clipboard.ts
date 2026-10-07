@@ -303,13 +303,16 @@ function buildPasteClipAttributesScript(args: PasteClipAttributesArgs): string {
         return skip(base);
       }
       var targetAnimated = readTimeVarying(tgtProp);
+      if (targetAnimated) {
+        base.reason = "Target colour parameter is keyframed; CEP cannot update or verify colour keys losslessly, so the target was left unchanged.";
+        return skip(base);
+      }
       if (!targetAnimated && sameValue(current, color)) {
         base.status = "verified";
         base.action = "unchanged";
         return record(base);
       }
       try {
-        if (targetAnimated) tgtProp.setTimeVarying(false);
         tgtProp.setColorValue(color[0], color[1], color[2], color[3], true);
       } catch (eSetColor) {
         base.status = "failed";

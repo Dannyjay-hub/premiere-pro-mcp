@@ -401,10 +401,12 @@ function buildApplyScript(plan: SpotWorkflowPlan): string {
       }
       if (!motionComponent) return { applied: false, verified: false, reason: "Motion component was not available on the placed clip" };
       var scaleProperty = null;
+      var scaleIndices = [];
       for (var propertyIndex = 0; propertyIndex < motionComponent.properties.numItems; propertyIndex++) {
         var property = motionComponent.properties[propertyIndex];
-        if (__propertyNameMatches(property.displayName, "Scale", motionComponent)) { scaleProperty = property; break; }
+        if (__propertyNameMatches(property.displayName, "Scale", motionComponent)) { scaleProperty = property; scaleIndices.push(propertyIndex); }
       }
+      if (scaleIndices.length > 1) return { applied: false, verified: false, reason: "Motion Scale is ambiguous at property indices [" + scaleIndices.join(", ") + "]" };
       if (!scaleProperty) return { applied: false, verified: false, reason: "Motion Scale property was not available on the placed clip" };
       var base = __clipKeyframeBase(clip);
       if (!base.ok) return { applied: false, verified: false, reason: base.error };

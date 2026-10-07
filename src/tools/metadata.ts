@@ -456,12 +456,19 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Pixel aspect ratio (1.0 = square pixels)",
           },
+          field_type: {
+            type: "integer",
+            description: "Field order of interlaced footage: 0 = progressive, 1 = upper field first, 2 = lower field first",
+          },
         },
         required: ["item_id"],
       },
-      handler: async (args: { item_id: string; frame_rate?: number; pixel_aspect_ratio?: number }) => {
-        if (args.frame_rate === undefined && args.pixel_aspect_ratio === undefined) {
-          return { success: false, error: "Provide frame_rate, pixel_aspect_ratio, or both." };
+      handler: async (args: { item_id: string; frame_rate?: number; pixel_aspect_ratio?: number; field_type?: number }) => {
+        if (args.frame_rate === undefined && args.pixel_aspect_ratio === undefined && args.field_type === undefined) {
+          return { success: false, error: "Provide frame_rate, pixel_aspect_ratio, field_type, or a combination." };
+        }
+        if (args.field_type !== undefined && (!Number.isInteger(args.field_type) || args.field_type < 0 || args.field_type > 2)) {
+          return { success: false, error: "field_type must be 0 (progressive), 1 (upper field first), or 2 (lower field first)." };
         }
         for (const [name, value] of [["frame_rate", args.frame_rate], ["pixel_aspect_ratio", args.pixel_aspect_ratio]] as const) {
           if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
@@ -477,9 +484,11 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
           
           ${args.frame_rate !== undefined ? `interp.frameRate = ${args.frame_rate};` : ""}
           ${args.pixel_aspect_ratio !== undefined ? `interp.pixelAspectRatio = ${args.pixel_aspect_ratio};` : ""}
+          ${args.field_type !== undefined ? `interp.fieldType = ${args.field_type};` : ""}
           
           var wantedRate = ${args.frame_rate !== undefined ? args.frame_rate : "interp.frameRate"};
           var wantedPar = ${args.pixel_aspect_ratio !== undefined ? args.pixel_aspect_ratio : "interp.pixelAspectRatio"};
+          var wantedField = ${args.field_type !== undefined ? args.field_type : "interp.fieldType"};
           item.setFootageInterpretation(interp);
           // Live 25.2.3: writing the interpretation back can reset fields that
           // were not changed (a 2:1 pixel aspect returned to 1), so check both.
@@ -487,11 +496,12 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
           try { after = item.getFootageInterpretation(); } catch (eRead) {}
           var observedRate = after && typeof after.frameRate === "number" ? after.frameRate : NaN;
           var observedPar = after && typeof after.pixelAspectRatio === "number" ? after.pixelAspectRatio : NaN;
-          if (!isFinite(observedRate) || !isFinite(observedPar)) return __error("Footage interpretation was written but its stored fields are unreadable. Inspect before retrying.", { outcome: "committed_unverified", verified: false });
-          if (!(Math.abs(observedRate - wantedRate) < 0.001) || !(Math.abs(observedPar - wantedPar) < 0.0001)) {
-            return __jsonStringify({ success: false, error: "Premiere's footage interpretation reads " + observedRate + " fps, pixel aspect " + observedPar + " instead of " + wantedRate + " fps, " + wantedPar + ".", data: { frameRate: observedRate, pixelAspectRatio: observedPar } });
+          var observedField = after && typeof after.fieldType === "number" ? after.fieldType : NaN;
+          if (!isFinite(observedRate) || !isFinite(observedPar) || (${args.field_type !== undefined} && !isFinite(observedField))) return __error("Footage interpretation was written but its stored fields are unreadable. Inspect before retrying.", { outcome: "committed_unverified", verified: false });
+          if (!(Math.abs(observedRate - wantedRate) < 0.001) || !(Math.abs(observedPar - wantedPar) < 0.0001) || (${args.field_type !== undefined} && observedField !== wantedField)) {
+            return __jsonStringify({ success: false, error: "Premiere's footage interpretation reads " + observedRate + " fps, pixel aspect " + observedPar + (${args.field_type !== undefined} ? ", field type " + observedField : "") + " instead of " + wantedRate + " fps, " + wantedPar + (${args.field_type !== undefined} ? ", field type " + wantedField : "") + ".", data: { frameRate: observedRate, pixelAspectRatio: observedPar, fieldType: observedField } });
           }
-          return __result({ updated: true, verified: true, item: item.name, frameRate: observedRate, pixelAspectRatio: observedPar });
+          return __result({ updated: true, verified: true, item: item.name, frameRate: observedRate, pixelAspectRatio: observedPar, fieldType: observedField });
         `);
         return sendCommand(script, bridgeOptions);
       },
