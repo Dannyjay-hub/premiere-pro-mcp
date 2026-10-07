@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `add_transition` snaps `cut_point_seconds` to the sequence frame grid and uses the nearest clip edge within half a frame. It used to require the edge within one tick, so a cut point given to a few decimals (22.5892 s for the cut at 22.5892333 s at 29.97) was refused. The result reports the requested and applied cut seconds.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

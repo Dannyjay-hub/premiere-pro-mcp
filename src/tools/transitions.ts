@@ -67,7 +67,7 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
           },
           cut_point_seconds: {
             type: "number",
-            description: "Time position in seconds of the cut point where the transition should be placed",
+            description: "Time position in seconds of the cut point where the transition should be placed. Snapped to the sequence frame grid and matched to the nearest clip edge within half a frame.",
           },
           duration_seconds: {
             type: "number",
@@ -125,18 +125,35 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
 
           var domTrack = app.project.activeSequence.videoTracks[${args.track_index}];
           if (!domTrack) return __error("Track not found in the Premiere DOM");
-          var cutTicks = __secondsToTicks(${args.cut_point_seconds});
+          var seq = app.project.activeSequence;
+          var frameTicks = parseFloat(seq.timebase);
+          if (!frameTicks || isNaN(frameTicks)) return __error("The active sequence did not expose a valid timebase for transition duration.");
+          // Snap the requested time to the frame grid and take the nearest clip
+          // edge within half a frame: a cut point given to a few decimals (22.5892
+          // for frame 677 at 29.97) is never within one tick of the edge.
+          var requestedCutTicks = __secondsToTicks(${args.cut_point_seconds});
+          var cutTicks = __snapSequenceTicks(seq, requestedCutTicks);
           var outgoingClip = null;
           var incomingClip = null;
+          var edgeTicks = null;
+          var bestDistance = frameTicks / 2;
           for (var c = 0; c < domTrack.clips.numItems; c++) {
             var candidate = domTrack.clips[c];
-            if (Math.abs(parseFloat(candidate.end.ticks) - cutTicks) < 1) { outgoingClip = candidate; break; }
+            var endDistance = Math.abs(parseFloat(candidate.end.ticks) - cutTicks);
+            if (endDistance < bestDistance) { bestDistance = endDistance; edgeTicks = parseFloat(candidate.end.ticks); }
+            var startDistance = Math.abs(parseFloat(candidate.start.ticks) - cutTicks);
+            if (startDistance < bestDistance) { bestDistance = startDistance; edgeTicks = parseFloat(candidate.start.ticks); }
+          }
+          if (edgeTicks === null) return __error("No video clip edge exists within half a frame of the requested cut point, so no transition was attempted.");
+          cutTicks = edgeTicks;
+          for (var c1 = 0; c1 < domTrack.clips.numItems; c1++) {
+            var candidate1 = domTrack.clips[c1];
+            if (Math.abs(parseFloat(candidate1.end.ticks) - cutTicks) < 1) { outgoingClip = candidate1; break; }
           }
           for (var c2 = 0; c2 < domTrack.clips.numItems; c2++) {
             var candidate2 = domTrack.clips[c2];
             if (Math.abs(parseFloat(candidate2.start.ticks) - cutTicks) < 1) { incomingClip = candidate2; break; }
           }
-          if (!incomingClip && !outgoingClip) return __error("No video clip edge exists at the requested cut point, so no transition was attempted.");
           // Premiere 26.3.2 confirms arg 2 is the clip edge: true=head,
           // false=tail. Prefer the incoming head and fall back to the outgoing tail.
           var targetClip = incomingClip || outgoingClip;
@@ -146,9 +163,6 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             return __error("The target QE clip does not expose addTransition; no transition was attempted. The QE track itself is not the transition write surface.");
           }
 
-          var seq = app.project.activeSequence;
-          var frameTicks = parseFloat(seq.timebase);
-          if (!frameTicks || isNaN(frameTicks)) return __error("The active sequence did not expose a valid timebase for transition duration.");
           var durationFrames = Math.max(1, Math.round(__secondsToTicks(${duration}) / frameTicks));
           if (__newTransitionCovers(domTrack, {}, cutTicks, frameTicks)) {
             return __error("A transition already covers the cut at ${args.cut_point_seconds}s on this track; no transition was attempted.");
@@ -186,7 +200,8 @@ export function getTransitionsTools(bridgeOptions: BridgeOptions) {
             deviations: deviations,
             transition: transitionName,
             trackIndex: ${args.track_index},
-            atSeconds: ${args.cut_point_seconds},
+            atSeconds: __ticksToSeconds(String(cutTicks)),
+            requestedCutSeconds: ${args.cut_point_seconds},
             requestedDurationSeconds: ${duration},
             durationMatched: deviations === 0,
             verificationScope: "Placement and stored duration only; limited source handles may shorten or offset the transition. Rendered appearance is not verified.",
