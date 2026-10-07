@@ -754,14 +754,11 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
 
-          var originalIn = item.getInPoint(${mediaType});
-          var originalOut = item.getOutPoint(${mediaType});
-          var hadOriginalIn = !!originalIn;
-          var hadOriginalOut = !!originalOut;
-          var originalInSeconds = hadOriginalIn ? Number(originalIn.seconds) : 0;
-          var originalOutSeconds = hadOriginalOut ? Number(originalOut.seconds) : 0;
-          var originalInTicks = hadOriginalIn ? String(originalIn.ticks) : "";
-          var originalOutTicks = hadOriginalOut ? String(originalOut.ticks) : "";
+          var originalMarks = __itemMarksForRestore(item, ${mediaType});
+          if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
+          var hadOriginalIn = true, hadOriginalOut = true;
+          var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
+          var originalInTicks = originalMarks.inTicks, originalOutTicks = originalMarks.outTicks;
 
           function restoreOriginalMarks() {
             try {

@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `set_zero_point` writes the frame-snapped zero point and reads it back instead of always returning `set: true`. It reports the requested, applied, and previous seconds, and refuses a negative or non-finite `start_seconds` before contacting Premiere.
 
+- Temporary project-item mark writes and failed source-mark updates preserve soft-subclip ranges using private metadata when the DOM reports the whole media. Restore reads support fractional and drop-frame video timecodes and audio sample timecodes; unreadable ranges refuse before a write.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
