@@ -363,24 +363,35 @@ export function getStockTitleTools(bridgeOptions: BridgeOptions, catalog: () => 
             ${writes}
           }
           var durationCheck = __mogrtSetDuration(clip, ${trackIndex}, ${durationSeconds});
+          var appliedStartSeconds = null;
+          try {
+            var appliedStartTicks = parseFloat(clip.start.ticks);
+            if (isFinite(appliedStartTicks)) appliedStartSeconds = __ticksToSeconds(appliedStartTicks);
+          } catch (startReadError) {}
           return __result({
             clipName: clip.name,
             nodeId: clip.nodeId ? String(clip.nodeId) : null,
             textReadback: textReadback,
             textWriteError: textWriteError,
-            duration: durationCheck
+            duration: durationCheck,
+            appliedStartSeconds: appliedStartSeconds
           });
         `);
 
         const result = await sendCommand(script, bridgeOptions);
         if (!result.success) return result;
-        const { textReadback, textWriteError, duration, ...data } = (result.data ?? {}) as Record<string, unknown>;
+        const { textReadback, textWriteError, duration, appliedStartSeconds, ...data } = (result.data ?? {}) as Record<string, unknown>;
+        // Premiere snaps the placed graphic to the sequence frame grid, so report
+        // the start it stored rather than the one requested.
+        const appliedStart = typeof appliedStartSeconds === "number" && Number.isFinite(appliedStartSeconds) ? appliedStartSeconds : null;
         const base = {
           ...data,
           template: template.name,
           category: template.category,
           trackIndex,
-          startSeconds,
+          startSeconds: appliedStart ?? startSeconds,
+          requestedStartSeconds: startSeconds,
+          appliedStartSeconds: appliedStart,
           durationSeconds,
           duration,
         };

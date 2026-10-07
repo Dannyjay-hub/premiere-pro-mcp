@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `create_subclip` now returns the new subclip's `nodeId` and reads its stored range back. On Premiere 26.5.2 a soft-boundary subclip's `getInPoint`/`getOutPoint` read the whole media, so the range is read from the subclip's project metadata (`VideoInPoint`/`VideoOutPoint` timecode and frame rate). The result reports requested and observed in/out seconds, with `outcome: "verified"` when both are within one media frame of the request and `committed_unverified` otherwise or when the metadata cannot be read.
+- `add_title` reports the start Premiere stored for the placed graphic. Premiere snaps it to the frame grid (a requested 5 s lands at 5.005 s at 29.97 fps), so `startSeconds` and the new `appliedStartSeconds` come from the placed clip, and the request is kept as `requestedStartSeconds`.
+- `update_marker` reports the stored marker start as `timeSeconds` (for example 7.5075 s rather than the requested 7.5 s) and adds `requestedSeconds`.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

@@ -103,7 +103,7 @@ operation” when the tool has no enum-based mode.
 | `create_sequence_from_clips` | Default profile | Single operation | Create a new sequence by automatically placing project items in order |
 | `create_sequence_from_preset` | Default profile | Single operation | EXPERIMENTAL (undocumented QE DOM): create a new sequence from a specific preset file (.sqpreset) using qe.project.newSequence. Reports success only after a new sequence ID appears in the project collection; a same-name sequence that was already active is not treated as created. |
 | `create_smart_bin` | Default profile | Single operation | Create a smart bin (search bin) in the project panel |
-| `create_subclip` | Default profile | Single operation | Create a subclip from a project item with in/out points |
+| `create_subclip` | Default profile | Single operation | Create a subclip from a project item with in/out points. Returns the new item's nodeId and reads its stored range back from Premiere project metadata: outcome verified when the observed in/out seconds are within one media frame of the request, otherwise committed_unverified. |
 | `create_subsequence` | Default profile | Single operation | Create a separate subsequence from selected clips or a time range. This Premiere API does not replace the original timeline clips with a nested-sequence reference. |
 | `crop_clip` | Default profile | Single operation | Apply or update Premiere's Crop effect on one video clip and read back every requested value. Adding Crop uses the legacy QE catalog only when the clip does not already contain it. |
 | `delete_bin` | Default profile | Single operation | Delete a bin (folder) from the project panel |
