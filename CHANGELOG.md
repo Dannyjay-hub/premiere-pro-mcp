@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Claude Desktop extension starts when optional settings are left blank. Desktop can pass an unset `user_config` field through as the literal `${user_config.name}`; `PREMIERE_MCP_PROTOCOL_MODE` and `PREMIERE_UXP_TOKEN` now treat that, and blank values, as unset instead of failing startup with `PREMIERE_MCP_PROTOCOL_MODE must be either auto or legacy` (#828).
+
+- The UXP loopback port binds on the first request other than `server/discover`, so Desktop's disposable discover-only probe copy no longer takes port 7777 and pushes the real server to CEP-only tools. A busy port is retried every 3 seconds instead of abandoned, a non-port UXP startup failure is reported without taking the CEP tools down, and the server exits when the client closes stdin (#828).
+
+- A UXP bridge token with surrounding whitespace or a trailing newline (for example from `pbcopy`) is trimmed in the server and in the UXP panel instead of failing with an unexplained HTTP 401 (#828).
+
+- `--diagnose-cep` repair inside the `.mcpb` bundle, which omits `scripts/`, now says so and points to the signed `MCPBridgeCEP.zxp` or `npx -y premiere-pro-mcp --install-cep` instead of failing on a missing script (#828).
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

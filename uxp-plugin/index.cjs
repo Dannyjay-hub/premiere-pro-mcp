@@ -371,7 +371,7 @@ function connect() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   if (socket) try { socket.onclose = null; socket.close(); } catch (_) {}
   const configuredUrl = document.getElementById("bridge-url").value;
-  const token = document.getElementById("bridge-token").value;
+  const token = document.getElementById("bridge-token").value.trim();
   let url;
   try {
     url = WorkspaceSupport.validateLoopbackBridgeUrl(configuredUrl);
