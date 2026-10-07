@@ -71,7 +71,7 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
     },
 
     set_work_area: {
-      description: "Set the work area (bar) in and out points",
+      description: "Set and verify the work-area points, turning the bar on first through the public Sequence API when it is off. Fails when Premiere leaves the points unchanged (26.5.2 ignores these CEP writes; use the UXP set_work_area there) and turns the bar back off if this call turned it on. Unreadable or partial writes report committed_unverified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -87,6 +87,8 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
         required: ["in_seconds", "out_seconds"],
       },
       handler: async (args: { in_seconds: number; out_seconds: number }) => {
+        const invalid = nonNegativeSecondsError(args, ["in_seconds", "out_seconds"]);
+        if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -102,16 +104,65 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           var requestedIn = __ticksToSeconds(appliedInTicks);
           var requestedOut = __ticksToSeconds(appliedOutTicks);
           if (!(requestedOut > requestedIn)) return __error("out_seconds must be greater than in_seconds.");
-          seq.setWorkAreaInPoint(requestedIn);
-          seq.setWorkAreaOutPoint(requestedOut);
-          var observedIn = __workAreaSeconds(seq.getWorkAreaInPoint());
-          var observedOut = __workAreaSeconds(seq.getWorkAreaOutPoint());
-          var frameSeconds = __ticksToSeconds(frameTicks);
-          if (observedIn === null || observedOut === null ||
-              Math.abs(observedIn - requestedIn) > frameSeconds / 1000 || Math.abs(observedOut - requestedOut) > frameSeconds / 1000) {
-            return __error("Premiere did not apply the work area (read back " + observedIn + " to " + observedOut + " s). Use set_sequence_in_out_points to mark an export range instead.");
+          if (typeof seq.setWorkAreaInPoint !== "function" || typeof seq.setWorkAreaOutPoint !== "function" ||
+              typeof seq.getWorkAreaInPoint !== "function" || typeof seq.getWorkAreaOutPoint !== "function") {
+            return __error("Work-area point APIs are unavailable; no points were changed.", { outcome: "failed", verified: false });
           }
-          var payload = { workAreaIn: observedIn, workAreaOut: observedOut, verified: true };
+          var enabledBefore = __workAreaEnabled(seq);
+          var enableAttempted = false;
+          if (enabledBefore === null) return __error("Work-area enabled state could not be read. Turn on Work Area Bar in the Timeline panel menu and retry on a host with readable state.", { outcome: "failed", verified: false });
+          if (!enabledBefore) {
+            if (typeof seq.setWorkAreaEnabled !== "function") return __error("Work Area Bar is disabled and this host cannot enable it through the public API. Turn on Work Area Bar in the Timeline panel menu, then retry.", { outcome: "failed", verified: false, workAreaEnabled: false });
+            enableAttempted = true;
+            try { seq.setWorkAreaEnabled(true); } catch (enableError) {
+              return __result({ outcome: "committed_unverified", verified: false, workAreaEnabled: __workAreaEnabled(seq), warning: "Enabling Work Area Bar threw; its state may have changed. No point writes were attempted. Inspect the bar before retrying." });
+            }
+            var enabledAfter = __workAreaEnabled(seq);
+            if (enabledAfter !== true) {
+              if (enabledAfter === null) return __result({ outcome: "committed_unverified", verified: false, workAreaEnabled: null, warning: "Work Area Bar enable was attempted but its state is unreadable. No point writes were attempted." });
+              return __error("Work Area Bar remained disabled. Turn on Work Area Bar in the Timeline panel menu, then retry; no points were changed.", { outcome: "failed", verified: false, workAreaEnabled: false });
+            }
+          }
+          var beforeIn = null, beforeOut = null;
+          try { beforeIn = __workAreaSeconds(seq.getWorkAreaInPoint()); } catch (beforeInError) {}
+          try { beforeOut = __workAreaSeconds(seq.getWorkAreaOutPoint()); } catch (beforeOutError) {}
+          var observedIn = null, observedOut = null;
+          var writeError = null;
+          try {
+            seq.setWorkAreaInPoint(requestedIn);
+            seq.setWorkAreaOutPoint(requestedOut);
+          } catch (pointWriteError) { writeError = String(pointWriteError); }
+          try { observedIn = __workAreaSeconds(seq.getWorkAreaInPoint()); } catch (inReadError) {}
+          try { observedOut = __workAreaSeconds(seq.getWorkAreaOutPoint()); } catch (outReadError) {}
+          var enabledReadback = __workAreaEnabled(seq);
+          var frameSeconds = __ticksToSeconds(frameTicks);
+          var verified = !writeError && enabledReadback === true && observedIn !== null && observedOut !== null &&
+            Math.abs(observedIn - requestedIn) <= frameSeconds / 1000 && Math.abs(observedOut - requestedOut) <= frameSeconds / 1000;
+          var pointTolerance = frameSeconds / 1000;
+          // Live 26.5.2: setWorkAreaInPoint/OutPoint return without error and change nothing,
+          // even with the bar enabled. Unchanged readback is a definite failure, not an unknown.
+          var ignored = !verified && !writeError && beforeIn !== null && beforeOut !== null &&
+            observedIn !== null && observedOut !== null &&
+            Math.abs(observedIn - beforeIn) <= pointTolerance && Math.abs(observedOut - beforeOut) <= pointTolerance;
+          if (ignored) {
+            var failure = { outcome: "failed", verified: false, workAreaIn: observedIn, workAreaOut: observedOut, enabledByTool: false };
+            if (enableAttempted) {
+              var restoreError = null;
+              try { seq.setWorkAreaEnabled(false); } catch (disableError) { restoreError = String(disableError); }
+              var restoredState = __workAreaEnabled(seq);
+              failure.workAreaEnabled = restoredState;
+              failure.barRestored = !restoreError && restoredState === false;
+            } else {
+              failure.workAreaEnabled = enabledReadback;
+            }
+            return __error("Premiere ignored the work-area point writes; the stored points are unchanged." +
+              (enableAttempted ? (failure.barRestored ? " Work Area Bar was turned back off." : " Work Area Bar was turned on and could not be turned back off; turn it off in the Timeline panel menu if needed.") : "") +
+              " Use set_work_area through the UXP bridge, or set_sequence_in_out_points for an export range.", failure);
+          }
+          var payload = { workAreaIn: observedIn, workAreaOut: observedOut, workAreaEnabled: enabledReadback,
+            enabledByTool: enableAttempted && enabledReadback === true, verified: verified,
+            outcome: verified ? "verified" : "committed_unverified" };
+          if (!verified) payload.warning = "Premiere did not apply the work area with verified readback. Inspect the stored points before retrying; use set_sequence_in_out_points for an export range instead." + (writeError ? " " + writeError : "");
           var inSnap = __frameSnapReceipt(requestedInRaw, appliedInTicks, frameTicks, "requestedInSeconds", "appliedInSeconds");
           var outSnap = __frameSnapReceipt(requestedOutRaw, appliedOutTicks, frameTicks, "requestedOutSeconds", "appliedOutSeconds");
           if (inSnap.requestedInSeconds !== undefined) { payload.requestedInSeconds = inSnap.requestedInSeconds; payload.appliedInSeconds = inSnap.appliedInSeconds; }
@@ -129,15 +180,15 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var inPoint = seq.getWorkAreaInPoint();
-          var outPoint = seq.getWorkAreaOutPoint();
-          var enabled = null;
-          try { if (typeof seq.isWorkAreaEnabled === "function") enabled = !!seq.isWorkAreaEnabled(); } catch (enabledError) {}
+          var inPoint = null, outPoint = null;
+          try { inPoint = seq.getWorkAreaInPoint(); } catch (inReadError) {}
+          try { outPoint = seq.getWorkAreaOutPoint(); } catch (outReadError) {}
+          var enabled = __workAreaEnabled(seq);
           return __result({
             inSeconds: __workAreaSeconds(inPoint),
             outSeconds: __workAreaSeconds(outPoint),
-            rawIn: String(inPoint),
-            rawOut: String(outPoint),
+            rawIn: inPoint === null ? null : String(inPoint),
+            rawOut: outPoint === null ? null : String(outPoint),
             enabled: enabled
           });
         `);

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- CEP `set_work_area` turns on a disabled work-area bar through the public Sequence API before writing, and checks the bar state and stored points afterwards. Premiere 26.5.2 ignores the CEP work-area point setters; when the points read back unchanged, the tool now fails, turns the bar back off if it turned it on, and points to the UXP `set_work_area`. Unreadable or partial writes still report `committed_unverified`. Work-area reads keep an unreadable bar state as unknown instead of treating it as disabled.
+- `slide_edit` accepts source/timeline duration drift up to half a sequence frame or exactly one frame of host rounding, reports the signed drift, and continues to refuse larger or intermediate mismatches. Neighbour source and cut readback checks remain exact.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
