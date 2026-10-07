@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `link_selection` and `unlink_selection` read the clip links back instead of always reporting success. On Premiere 26.5.2 `unlinkSelection()` returns false and changes nothing unless every clip of the linked group is selected; `unlink_selection` now refuses such a selection before calling Premiere and names the partner clips to add. An already-unlinked selection is reported as `alreadyUnlinked`, and `link_selection` needs at least two selected clips.
 
+- `set_item_in_out` verifies a mark within one media frame and reports the requested and applied seconds. Premiere 26.5.2 snaps project-item video marks to the media's own frame grid, so 0.5 s on 23.976 media (applied 0.4588 s) used to fail with a partial-state error. `clear_item_in_out` now reads MediaDuration as nominal-rate timecode ("23.98 fps" is 24000/1001, and 29.97 media can use drop-frame `;` timecode), so clearing 23.976 and 29.97 media verifies instead of returning `committed_unverified`. `set_source_in_out` gets the same media-frame tolerance and reports applied seconds.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

@@ -140,6 +140,18 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
             return __error(message + " Marks may be in a partial state; use Undo instead of retrying.");
           }
 
+          // Live 26.5.2: Premiere floors video marks to the media's own frame
+          // grid (0.5 s on 23.976 media reads back as 0.4588 s), so accept a
+          // mark within one media frame.
+          var markToleranceSeconds = 0.000001;
+          try {
+            var mediaFps = parseFloat(item.getFootageInterpretation().frameRate);
+            if (mediaFps > 0) markToleranceSeconds = 1 / mediaFps;
+          } catch (rateErr) {}
+          function markMatches(observed, requestedSeconds) {
+            return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
+          }
+
           ${args.in_seconds !== undefined ? `
           var inTime = new Time();
           inTime.seconds = ${args.in_seconds};
@@ -149,7 +161,7 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
             return failAfterMarkUpdate("Premiere rejected the requested Source Monitor in point (" + setInErr.toString() + ").");
           }
           var observedIn = item.getInPoint(4);
-          if (!observedIn || String(observedIn.ticks) !== String(inTime.ticks)) {
+          if (!markMatches(observedIn, ${args.in_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested Source Monitor in point.");
           }
           ` : ""}
@@ -163,17 +175,20 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
             return failAfterMarkUpdate("Premiere rejected the requested Source Monitor out point (" + setOutErr.toString() + ").");
           }
           var observedOut = item.getOutPoint(4);
-          if (!observedOut || String(observedOut.ticks) !== String(outTime.ticks)) {
+          if (!markMatches(observedOut, ${args.out_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested Source Monitor out point.");
           }
           ` : ""}
 
-          return __result({
+          var sourceMarks = {
             item: item.name,
             inSet: ${args.in_seconds !== undefined},
             outSet: ${args.out_seconds !== undefined},
             verified: true
-          });
+          };
+          ${args.in_seconds !== undefined ? `sourceMarks.requestedInSeconds = ${args.in_seconds}; sourceMarks.appliedInSeconds = Number(item.getInPoint(4).seconds);` : ""}
+          ${args.out_seconds !== undefined ? `sourceMarks.requestedOutSeconds = ${args.out_seconds}; sourceMarks.appliedOutSeconds = Number(item.getOutPoint(4).seconds);` : ""}
+          return __result(sourceMarks);
         `);
         return sendCommand(script, bridgeOptions);
       },
