@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Effect writes, stabilization, smart-bin creation, proxy detachment, folder imports, sequence creation, marker deletion and clip selection now distinguish requested edits from host readback, report ignored writes as failures and unreadable results as `committed_unverified`. Selection counts describe applied states; stabilization does not claim a completed analysis. CEP selected-clip removal refuses ripple requests before deleting because clip absence cannot verify gap closure.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
