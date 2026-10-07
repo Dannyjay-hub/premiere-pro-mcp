@@ -238,14 +238,28 @@ export function getPlayheadTools(bridgeOptions: BridgeOptions) {
           }
           var previousIn = __sequencePointSeconds(seq.getInPoint());
           var previousOut = __sequencePointSeconds(seq.getOutPoint());
-          seq.setInPoint(appliedInSeconds);
-          seq.setOutPoint(appliedOutSeconds);
+          // Live 26.5.2: Premiere stores sequence marks floored to the audio
+          // sample grid, and an In/Out export renders from the frame holding the
+          // In up to the frame holding the Out. At 29.97 with 48 kHz audio, four
+          // in five frame starts sit between samples, so marks written on a frame
+          // were stored just before it and the export started and ended one frame
+          // early. Write each mark on the first sample at or after its frame start.
+          var sampleRate = null;
+          try { sampleRate = __sampleRateHz(seq.getSettings().audioSampleRate); } catch (sampleRateError) {}
+          var sampleSeconds = sampleRate ? 1 / sampleRate : 0;
+          function onOrAfterSample(seconds) {
+            return sampleRate ? (Math.ceil(seconds * sampleRate - 0.01) + 0.25) / sampleRate : seconds;
+          }
+          var inWriteSeconds = onOrAfterSample(appliedInSeconds);
+          var outWriteSeconds = onOrAfterSample(appliedOutSeconds);
+          seq.setInPoint(inWriteSeconds);
+          seq.setOutPoint(outWriteSeconds);
           var observedIn = __sequencePointSeconds(seq.getInPoint());
           var observedOut = __sequencePointSeconds(seq.getOutPoint());
-          var tolerance = 0.001;
+          var tolerance = frameSeconds / 1000 + sampleSeconds;
           if (observedIn === null || observedOut === null ||
-              Math.abs(observedIn - appliedInSeconds) > frameSeconds / 1000 ||
-              Math.abs(observedOut - appliedOutSeconds) > frameSeconds / 1000) {
+              Math.abs(observedIn - appliedInSeconds) > tolerance ||
+              Math.abs(observedOut - appliedOutSeconds) > tolerance) {
             return __jsonStringify({ success: false, error: "Premiere did not apply the requested sequence in/out points; they now read " + observedIn + " to " + observedOut + " seconds (unset reads as null).", data: { inSeconds: observedIn, outSeconds: observedOut, previousInSeconds: previousIn, previousOutSeconds: previousOut } });
           }
           var payload = { inSeconds: observedIn, outSeconds: observedOut, verified: true };

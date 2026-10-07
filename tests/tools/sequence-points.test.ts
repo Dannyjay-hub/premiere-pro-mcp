@@ -331,6 +331,28 @@ describe("set_sequence_in_out_points", () => {
     await expect(playhead.set_sequence_in_out_points.handler({ in_seconds: 25, out_seconds: 29 })).resolves.toMatchObject({ success: true, data: { inSeconds: 25, outSeconds: 29, verified: true } });
   });
 
+  it.each([1582, 1750, 2752, 2997, 3401])("stores both marks at or after their frame starts (In frame %i) when Premiere floors marks to audio samples", async (frame) => {
+    // Live 26.5.2: marks are floored to the 48 kHz grid, and an In stored just
+    // before a frame start made an In/Out export begin one frame early.
+    const frameTicks = TICKS * 1001 / 30000;
+    const frameSeconds = 1001 / 30000;
+    const seq = sequence({ frameTicks });
+    const stored = { in: -400000, out: -400000 };
+    const floorToSample = (seconds: number) => Math.floor(seconds * 48000) / 48000;
+    seq.getSettings = () => ({ videoDisplayFormat: 100, audioSampleRate: { ticks: "5292000" } }) as any;
+    seq.setInPoint = (seconds: number) => { stored.in = floorToSample(seconds); };
+    seq.setOutPoint = (seconds: number) => { stored.out = floorToSample(seconds); };
+    seq.getInPoint = () => String(stored.in);
+    seq.getOutPoint = () => String(stored.out);
+    host(seq);
+    const result = await playhead.set_sequence_in_out_points.handler({ in_seconds: frame * frameSeconds, out_seconds: (frame + 10) * frameSeconds }) as Result;
+    expect(result).toMatchObject({ success: true, data: { verified: true } });
+    expect(Math.floor(stored.in / frameSeconds + 1e-9)).toBe(frame);
+    expect(stored.in - frame * frameSeconds).toBeLessThan(1 / 48000 + 1e-12);
+    expect(Math.floor(stored.out / frameSeconds + 1e-9)).toBe(frame + 10);
+    expect(stored.out - (frame + 10) * frameSeconds).toBeLessThan(1 / 48000 + 1e-12);
+  });
+
   it("refuses an out-point before the in-point, keeping the existing points", async () => {
     const seq = sequence({ inSeconds: 5, outSeconds: 9 });
     host(seq);
