@@ -266,7 +266,7 @@ describe("duplicate_clip verification", () => {
   it("does not report success when a duplicate or linked partner is unverified", async () => {
     await timeline.duplicate_clip.handler({ node_id: "c1" });
     const script = mockedSendCommand.mock.calls[0][0];
-    expect(script).toContain('var duplicateVerified = drift < frameTicks / 2 && inDrift < frameTicks / 2 && linkedVerified');
+    expect(script).toContain('var duplicateVerified = drift < frameTicks / 2 && inDrift < inTolerance && linkedVerified');
     expect(script).toContain('if (!duplicateVerified) return __jsonStringify({ success: false');
     expect(script).toContain('outcome: "committed_unverified"');
     expect(script).toContain('var linkedVerified = !partner || (!!linkedCopy');
@@ -316,6 +316,82 @@ describe("duplicate_clip verification", () => {
     mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
     const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
     expect(result).toMatchObject({ success: false, data: { verified: false, outcome: "committed_unverified", timelineChanged: true } });
+  });
+
+  // Source In 19.9866 s (sequence frame 599 at 29.97). Premiere floors the
+  // project-item mark to the media's frame grid, then the placed copy's
+  // source in to the sequence grid, so a 23.976 copy lands at frame 598.
+  const ticksPerSecond = 254016000000;
+  function mediaRateHost(options: { mediaRate: number; inSettable: boolean; extraInFrames?: number }) {
+    const mediaFrame = ticksPerSecond / options.mediaRate;
+    const originalStart = 100 * frame;
+    const originalEnd = 200 * frame;
+    const originalIn = 599 * frame;
+    let markIn = 0;
+    const item = {
+      getInPoint: () => ({ ticks: "0", seconds: 0 }),
+      getOutPoint: (type: number) => type === 2 ? { ticks: "0", seconds: 0 } : { ticks: String(5000 * frame), seconds: (5000 * frame) / ticksPerSecond },
+      getFootageInterpretation: () => ({ frameRate: options.mediaRate }),
+      setInPoint: vi.fn((seconds: number) => { markIn = seconds; }),
+      setOutPoint: vi.fn(),
+    };
+    const clip = { nodeId: "c1", projectItem: item, start: { ticks: String(originalStart) }, end: { ticks: String(originalEnd) }, inPoint: { ticks: String(originalIn) } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown> };
+    let copy: { inPoint: { ticks: string }; outPoint: { ticks: string } } | undefined;
+    const sequence = {
+      timebase: String(frame),
+      videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: target },
+      audioTracks: { numTracks: 0 },
+      overwriteClip: (_item: unknown, startTicks: string) => {
+        const mediaIn = Math.floor((markIn * ticksPerSecond) / mediaFrame + 1e-9) * mediaFrame;
+        const placedIn = (Math.floor(mediaIn / frame + 1e-9) + (options.extraInFrames ?? 0)) * frame;
+        const placed = { nodeId: "copy", start: { ticks: startTicks }, end: { ticks: String(originalEnd) }, inTicks: String(placedIn), outTicks: String(placedIn + (originalEnd - originalStart)) };
+        for (const [key, field] of [["inPoint", "inTicks"], ["outPoint", "outTicks"]] as const) {
+          Object.defineProperty(placed, key, {
+            get: () => ({ ticks: placed[field] }),
+            set: (time: { ticks: string }) => { if (!options.inSettable) throw new Error(`${key} is read-only`); placed[field] = time.ticks; },
+          });
+        }
+        copy = placed as unknown as typeof copy;
+        target.clips = { numItems: 1, 0: copy };
+      },
+    };
+    class Time { ticks = "0"; }
+    return { context: { app: { project: { activeSequence: sequence } }, Time }, item, originalIn, mediaFrame, copy: () => copy };
+  }
+
+  it("lands a 23.976 copy in a 29.97 sequence on the original's source in", async () => {
+    const host = mediaRateHost({ mediaRate: 23.976, inSettable: true });
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
+    const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
+    expect(result).toMatchObject({ success: true, data: { verified: true, outcome: "verified", sourceIn: { corrected: true, snappedToMediaFrame: false } } });
+    expect(host.copy()?.inPoint.ticks).toBe(String(host.originalIn));
+    // The written mark carries a quarter media frame so the host's floor stays on the intended media frame.
+    expect(host.item.setInPoint.mock.calls[0][0]).toBeCloseTo((host.originalIn + host.mediaFrame / 4) / ticksPerSecond, 9);
+    expect(host.item.setInPoint.mock.calls.at(-1)).toEqual([0, 4]);
+  });
+
+  it("keeps same-rate marks unbiased and uncorrected", async () => {
+    const host = mediaRateHost({ mediaRate: 30000 / 1001, inSettable: true });
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
+    const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
+    expect(result).toMatchObject({ success: true, data: { verified: true, outcome: "verified", sourceIn: { corrected: false, snappedToMediaFrame: false } } });
+    expect(host.item.setInPoint.mock.calls[0][0]).toBe(host.originalIn / ticksPerSecond);
+    expect(host.copy()?.inPoint.ticks).toBe(String(host.originalIn));
+  });
+
+  it.each([
+    { label: "the host refuses the source in write", inSettable: false, extraInFrames: 0 },
+    { label: "the copy is more than a media frame off", inSettable: true, extraInFrames: 5 },
+  ])("reports requested vs applied source in as committed_unverified when $label", async ({ inSettable, extraInFrames }) => {
+    const host = mediaRateHost({ mediaRate: 23.976, inSettable, extraInFrames });
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, host.context))));
+    const result = await timeline.duplicate_clip.handler({ node_id: "c1" });
+    const appliedIn = Number(host.copy()?.inPoint.ticks);
+    expect(appliedIn).not.toBe(host.originalIn);
+    expect(result).toMatchObject({ success: false, data: { verified: false, outcome: "committed_unverified", timelineChanged: true, sourceIn: {
+      requestedSeconds: host.originalIn / ticksPerSecond, appliedSeconds: appliedIn / ticksPerSecond, corrected: false, snappedToMediaFrame: false,
+    } } });
   });
 });
 
