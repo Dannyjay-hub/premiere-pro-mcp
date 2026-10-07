@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `lift_selection` and `extract_selection` no longer cut one extra frame. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid, so at 29.97 an In on a frame was stored just before it: video lost the frame before the range and Extract rippled one frame short. Inexact marks are re-written on their exact frame through QE first (`marksRewritten`), and coverage and ripple checks now allow half a frame instead of a full frame, so a lost frame is reported instead of verified.
+- `set_sequence_in_out_points` writes each mark on the first audio sample at or after its frame start. Premiere 26.5.2 stores sequence marks floored to the 48 kHz sample grid and renders an In/Out export from the frame holding the In to the frame holding the Out, so at 29.97 an export of a marked range started and ended one frame early on four of every five frames.
 
 ## [1.20.0] - 2026-10-06
 
