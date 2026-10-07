@@ -109,14 +109,11 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           var item = app.sourceMonitor.getProjectItem();
           if (!item) return __error("No clip open in Source Monitor");
 
-          var originalIn = item.getInPoint(4);
-          var originalOut = item.getOutPoint(4);
-          var hadOriginalIn = !!originalIn;
-          var hadOriginalOut = !!originalOut;
-          var originalInSeconds = hadOriginalIn ? Number(originalIn.seconds) : 0;
-          var originalOutSeconds = hadOriginalOut ? Number(originalOut.seconds) : 0;
-          var originalInTicks = hadOriginalIn ? String(originalIn.ticks) : "";
-          var originalOutTicks = hadOriginalOut ? String(originalOut.ticks) : "";
+          var originalMarks = __itemMarksForRestore(item, 4);
+          if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
+          var hadOriginalIn = true, hadOriginalOut = true;
+          var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
+          var originalInTicks = originalMarks.inTicks, originalOutTicks = originalMarks.outTicks;
 
           function restoreOriginalMarks() {
             try {

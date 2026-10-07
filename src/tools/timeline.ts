@@ -1283,10 +1283,9 @@ export function getTimelineTools(
           var beforeVideo = videoTarget >= 0 ? idsOn(seq.videoTracks[videoTarget]) : {};
           var beforeAudio = audioTarget >= 0 ? idsOn(seq.audioTracks[audioTarget]) : {};
 
-          var originalIn = item.getInPoint(4);
-          var originalOut = item.getOutPoint(4);
-          var originalInSeconds = originalIn ? Number(originalIn.seconds) : 0;
-          var originalOutSeconds = originalOut ? Number(originalOut.seconds) : 0;
+          var originalMarks = __itemMarksForRestore(item, 4);
+          if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
+          var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
           var placeError = null;
           try {
             item.setInPoint(copyIn, 4);
@@ -1296,6 +1295,10 @@ export function getTimelineTools(
             placeError = overwriteError.toString();
           }
           try { item.setInPoint(originalInSeconds, 4); item.setOutPoint(originalOutSeconds, 4); } catch (restoreError) {}
+          var marksRestored = false;
+          try { marksRestored = Math.abs(parseFloat(item.getInPoint(4).ticks) - Number(originalMarks.inTicks)) <= __TICK_MATCH_TOL &&
+            Math.abs(parseFloat(item.getOutPoint(4).ticks) - Number(originalMarks.outTicks)) <= __TICK_MATCH_TOL; } catch (restoreReadError) {}
+          if (!marksRestored) return __error("Duplicate was attempted but the project-item marks could not be restored. Inspect the source range before retrying.", { outcome: "committed_unverified", verified: false, marksRestored: false, timelineChanged: null });
           if (placeError) return __error("Premiere rejected the duplicate: " + placeError);
 
           var newVideo = videoTarget >= 0 ? newClipOn(seq.videoTracks[videoTarget], beforeVideo) : null;
