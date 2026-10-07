@@ -16,6 +16,8 @@ import {
   renderDoctorHuman,
 } from "./diagnostics.js";
 import { applyDoctorRepairPlan } from "./doctor-repairs.js";
+import { readEnvValue } from "./env-config.js";
+import { createLazyUxpStart, LazyUxpStart } from "./uxp-lazy-start.js";
 import { compareVersions, fetchLatestNpmVersion } from "./update.js";
 import { parseClientConfigAction, renderClientConfig } from "./client-config.js";
 
@@ -35,8 +37,9 @@ function debugLog(message: string): void {
 type McpProtocolMode = "auto" | "legacy";
 
 function readMcpProtocolMode(value = process.env.PREMIERE_MCP_PROTOCOL_MODE): McpProtocolMode {
-  if (value === undefined || value === "" || value === "auto") return "auto";
-  if (value === "legacy") return "legacy";
+  const mode = readEnvValue(value);
+  if (mode === undefined || mode === "auto") return "auto";
+  if (mode === "legacy") return "legacy";
   throw new Error("PREMIERE_MCP_PROTOCOL_MODE must be either auto or legacy.");
 }
 
@@ -345,24 +348,30 @@ async function main() {
   cleanupTempDir(bridgeOptions);
 
   let uxpBridge: UxpWebSocketBridge | undefined;
-  if (process.env.PREMIERE_UXP_TOKEN) {
+  let lazyUxp: LazyUxpStart | undefined;
+  const uxpToken = readEnvValue(process.env.PREMIERE_UXP_TOKEN);
+  if (uxpToken) {
     const bridge = new UxpWebSocketBridge({
-      token: process.env.PREMIERE_UXP_TOKEN,
+      token: uxpToken,
       port: process.env.PREMIERE_UXP_PORT
         ? parseInt(process.env.PREMIERE_UXP_PORT, 10)
         : undefined,
     });
-    try {
-      await bridge.start();
-      uxpBridge = bridge;
-      const address = bridge.address();
-      debugLog(`UXP bridge listening on ws://${address.host}:${address.port}${address.path}`);
-    } catch (error) {
-      if (!isLoopbackPortInUse(error)) throw error;
-      console.error(
-        "[premiere-pro-mcp] UXP bridge unavailable because its loopback port is already in use; continuing with CEP-only tools.",
-      );
-    }
+    // The tools register against the bridge now; the loopback port binds on the
+    // first real request so Claude Desktop's discover-only probe never holds it.
+    uxpBridge = bridge;
+    lazyUxp = createLazyUxpStart({
+      start: () => bridge.start(),
+      isPortInUse: isLoopbackPortInUse,
+      onStarted: () => {
+        const address = bridge.address();
+        debugLog(`UXP bridge listening on ws://${address.host}:${address.port}${address.path}`);
+      },
+      onBusy: () => console.error(
+        "[premiere-pro-mcp] UXP loopback port is busy; UXP tools stay unavailable and the bind is retried until it frees up.",
+      ),
+      onError: (error) => console.error("[premiere-pro-mcp] UXP bridge failed to start:", error),
+    });
   }
 
   const serverHandle = protocolMode === "legacy"
@@ -385,14 +394,19 @@ async function main() {
       },
     );
   if (protocolMode === "auto") debugLog("Server connected and ready");
+  // Attached after the transport so the SDK reader owns the stream first.
+  if (lazyUxp) process.stdin.on("data", lazyUxp.observe);
 
   const shutdown = async () => {
+    lazyUxp?.stop();
     if (uxpBridge) await uxpBridge.stop();
     await serverHandle.close();
     await telemetry.shutdown();
   };
   process.once("SIGINT", () => void shutdown().finally(() => process.exit(0)));
   process.once("SIGTERM", () => void shutdown().finally(() => process.exit(0)));
+  // A client that closes stdin is gone; do not linger and hold the UXP port.
+  process.stdin.once("end", () => void shutdown().finally(() => process.exit(0)));
 }
 
 main().catch((err) => {

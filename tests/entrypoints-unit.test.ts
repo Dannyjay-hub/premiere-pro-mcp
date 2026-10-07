@@ -152,6 +152,8 @@ afterEach(() => {
   process.argv = originalArgv;
   process.env = { ...env };
   vi.restoreAllMocks();
+  process.stdin.removeAllListeners("data");
+  process.stdin.removeAllListeners("end");
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     for (const listener of process.listeners(signal)) {
       if (!originalSignalListeners[signal].has(listener)) process.removeListener(signal, listener);
@@ -324,18 +326,40 @@ describe("stdio CLI entry point", () => {
     );
   });
 
-  it("starts the authenticated UXP bridge and emits debug readiness details", async () => {
+  it("treats an unsubstituted Claude Desktop protocol-mode placeholder as auto", async () => {
+    process.argv = [process.execPath, "index.js"];
+    process.env.PREMIERE_MCP_PROTOCOL_MODE = "${user_config.premiere_mcp_protocol_mode}";
+    await import("../src/index.js");
+    await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
+    expect(mocks.stdioServerTransport).not.toHaveBeenCalled();
+  });
+
+  it("starts the authenticated UXP bridge on the first real request and emits debug readiness details", async () => {
     process.argv = [process.execPath, "index.js"];
     process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
     process.env.PREMIERE_UXP_PORT = "7788";
     process.env.PREMIERE_MCP_DEBUG = "true";
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     await import("../src/index.js");
+    await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
+    expect(mocks.uxpStart).not.toHaveBeenCalled();
+    process.stdin.emit("data", '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
     await vi.waitFor(() => expect(mocks.uxpStart).toHaveBeenCalledOnce());
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("UXP bridge listening"));
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringContaining("UXP bridge listening")));
   });
 
-  it("continues with CEP-only tools when another MCP instance owns the UXP loopback port", async () => {
+  it("leaves the UXP port unbound for a discover-only probe", async () => {
+    process.argv = [process.execPath, "index.js"];
+    process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await import("../src/index.js");
+    await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
+    process.stdin.emit("data", '{"jsonrpc":"2.0","id":1,"method":"server/discover"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mocks.uxpStart).not.toHaveBeenCalled();
+  });
+
+  it("keeps serving CEP tools and retries when another instance owns the UXP loopback port", async () => {
     process.argv = [process.execPath, "index.js"];
     process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
     mocks.uxpStart.mockRejectedValueOnce(Object.assign(new Error("address already in use"), { code: "EADDRINUSE" }));
@@ -344,11 +368,12 @@ describe("stdio CLI entry point", () => {
     await import("../src/index.js");
 
     await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
+    process.stdin.emit("data", '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringContaining("retried until it frees up")));
     expect(mocks.connect).toHaveBeenCalledOnce();
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("continuing with CEP-only tools"));
   });
 
-  it("keeps non-port UXP startup failures fatal", async () => {
+  it("reports non-port UXP startup failures without taking the CEP tools down", async () => {
     process.argv = [process.execPath, "index.js"];
     process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
     mocks.uxpStart.mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code: "EACCES" }));
@@ -357,12 +382,13 @@ describe("stdio CLI entry point", () => {
 
     await import("../src/index.js");
 
-    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
-    expect(mocks.serveStdio).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(
-      "[premiere-pro-mcp] Fatal error:",
+    await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
+    process.stdin.emit("data", '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(
+      "[premiere-pro-mcp] UXP bridge failed to start:",
       expect.objectContaining({ message: "permission denied" }),
-    );
+    ));
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it("reports a fatal stdio startup failure", async () => {

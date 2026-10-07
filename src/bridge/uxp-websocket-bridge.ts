@@ -91,11 +91,13 @@ export class UxpWebSocketBridge extends EventEmitter {
 
   constructor(options: UxpBridgeOptions) {
     super();
-    if (!options.token || options.token.length < 16) {
+    // A token pasted from a clipboard often carries a trailing newline.
+    const token = options.token?.trim();
+    if (!token || token.length < 16) {
       throw new Error("PREMIERE_UXP_TOKEN must contain at least 16 characters");
     }
     this.options = {
-      token: options.token,
+      token,
       port: validPort(options.port ?? 7777),
       path: options.path ?? "/uxp",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
