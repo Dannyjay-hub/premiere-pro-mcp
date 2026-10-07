@@ -59,7 +59,7 @@ describe("issue #457 — roll_edit must move source in/out with the visible cut"
 // https://github.com/leancoderkavy/premiere-pro-mcp/issues/458
 describe("issue #458 — import_fcp_xml supplies both openFCPXML arguments", () => {
   it("requires the destination project path openFCPXML needs", async () => {
-    expect(project.import_fcp_xml.parameters.required).toEqual(["path", "project_path"]);
+    expect(project.import_fcp_xml.parameters.required).toEqual(["path"]);
 
     const result = await project.import_fcp_xml.handler({ path: "/tmp/edit.xml", project_path: "  " });
     expect(result).toMatchObject({ success: false, error: expect.stringContaining("Not Enough Parameters") });

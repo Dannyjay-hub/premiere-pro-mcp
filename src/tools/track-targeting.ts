@@ -1611,9 +1611,22 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             description:
               "Filter by container/format (e.g. 'H.264', 'mp4', 'QuickTime', 'WAV') or preset name (e.g. 'ProRes', 'Proxy'). Presets whose format matches come first. Omit to list all.",
           },
+          limit: {
+            type: "integer",
+            description: "Maximum presets to return, applied after the filter and ordering. Omit to return all; the result's total is the unpaged count.",
+          },
+          offset: {
+            type: "integer",
+            description: "Number of presets to skip before returning, for paging with limit. Default 0.",
+          },
         },
       },
-      handler: async (args: { format?: string }) => {
+      handler: async (args: { format?: string; limit?: number; offset?: number }) => {
+        for (const [name, value, min] of [["limit", args.limit, 1], ["offset", args.offset, 0]] as const) {
+          if (value !== undefined && (!Number.isInteger(value) || value < min)) {
+            return { success: false as const, error: `${name} must be an integer >= ${min}.` };
+          }
+        }
         const script = buildToolScript(`
           var presets = __collectAllPresets();
           if (!presets.length) {
@@ -1634,7 +1647,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           // (e.g. "H264 ..." presets that write QuickTime) follow.
           presets = [...byFormat, ...byName];
         }
-        return { success: true, data: { count: presets.length, presets } };
+        const total = presets.length;
+        const offset = args.offset ?? 0;
+        const page = args.limit === undefined && offset === 0 ? presets : presets.slice(offset, args.limit === undefined ? undefined : offset + args.limit);
+        return { success: true, data: { count: page.length, total, offset, presets: page } };
       },
     },
 

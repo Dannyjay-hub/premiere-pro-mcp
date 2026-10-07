@@ -94,6 +94,12 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
             for (var a = 0; a < added.length; a++) if (added[a].mediaPath && new File(added[a].mediaPath).fsName === wantedPath) { found = true; break; }
             if (!found) notImported.push(filePaths[f]);
           }
+          // Interchange files (XML/AAF/EDL/project) create sequences and bins, not an item with the file's own path.
+          var interchangeOnly = notImported.length > 0;
+          for (var n = 0; n < notImported.length; n++) if (!/[.](xml|aaf|edl|prproj)$/i.test(notImported[n])) interchangeOnly = false;
+          if (interchangeOnly && importSuccess && added.length > 0) {
+            return __result({ imported: filePaths.length, verified: false, outcome: "committed_unverified", interchange: true, items: added, files: filePaths });
+          }
           if (notImported.length) {
             return __jsonStringify({ success: false, error: notImported.length + " file(s) produced no new project item: " + notImported.join(", "), data: { importReturned: !!importSuccess, imported: added, notImported: notImported } });
           }
@@ -112,10 +118,14 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Path to the folder to import",
           },
+          target_bin: {
+            type: "string",
+            description: "Optional bin name or node ID to import into. Defaults to the project root.",
+          },
         },
         required: ["folder_path"],
       },
-      handler: async (args: { folder_path: string }) => {
+      handler: async (args: { folder_path: string; target_bin?: string }) => {
         // Reject an invalid folder before contacting Premiere.
         if (typeof args.folder_path !== "string" || !args.folder_path.trim()) {
           return { success: false as const, error: "folder_path must be a non-empty directory path" };
@@ -128,23 +138,28 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
         } catch {
           return { success: false as const, error: `Could not inspect folder: ${resolvedFolder} — nothing was imported.` };
         }
+        const folderBinLookup = args.target_bin
+          ? `var targetBin = __findProjectItem("${escapeForExtendScript(args.target_bin)}");
+             if (!targetBin) return __error("Bin not found: ${escapeForExtendScript(args.target_bin)}");`
+          : `var targetBin = app.project.rootItem;`;
         const script = buildToolScript(`
+          ${folderBinLookup}
           var folder = new Folder("${escapeForExtendScript(resolvedFolder)}");
           if (!folder.exists) return __error("Folder not found: ${escapeForExtendScript(args.folder_path)}");
           
           var files = folder.getFiles();
           var filePaths = [];
           for (var i = 0; i < files.length; i++) {
-            if (files[i] instanceof File) {
+            if (files[i] instanceof File && !/^(thumbs[.]db|desktop[.]ini|[.]ds_store)$/i.test(files[i].name)) {
               filePaths.push(files[i].fsName);
             }
           }
           
           if (filePaths.length === 0) return __error("No files found in folder");
           
-          var importSuccess = app.project.importFiles(filePaths, true, app.project.rootItem, false);
+          var importSuccess = app.project.importFiles(filePaths, true, targetBin, false);
           if (!importSuccess) return __error("Import failed");
-          return __result({ imported: filePaths.length, folder: "${escapeForExtendScript(args.folder_path)}" });
+          return __result({ imported: filePaths.length, folder: "${escapeForExtendScript(args.folder_path)}", targetBin: targetBin.name });
         `);
         return sendCommand(script, bridgeOptions);
       },
