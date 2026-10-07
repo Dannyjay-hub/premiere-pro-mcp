@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readEnvValue } from "./env-config.js";
 import path from "node:path";
 
 /**
@@ -172,7 +173,7 @@ export function collectLocalDoctor(options: LocalDoctorOptions = {}): LocalDocto
   const exists = options.exists ?? existsSync;
   const manifest = cepManifestPath(platform, environment);
   const connectorInstalled = manifest ? exists(manifest) : false;
-  const uxpConfigured = Boolean(environment.PREMIERE_UXP_TOKEN);
+  const uxpConfigured = Boolean(readEnvValue(environment.PREMIERE_UXP_TOKEN));
   const nodeVersion = options.nodeVersion ?? process.version;
   const now = options.now ?? (() => new Date());
 
