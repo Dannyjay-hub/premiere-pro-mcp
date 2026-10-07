@@ -366,7 +366,7 @@ function __resolveProperty(component, wanted, propertyIndex) {
     if (__propertyNameMatches(component.properties[i].displayName, wanted, component)) matches.push(i);
   }
   if (matches.length > 1) {
-    return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index." };
+    return { property: null, index: null, candidates: matches, error: "Property name '" + wanted + "' is ambiguous at property indices [" + matches.join(", ") + "]; pass property_index. Available properties: " + __availablePropertyNames(component) + "." };
   }
   if (!matches.length) return { property: null, index: null, candidates: [], error: "Property name '" + wanted + "' not found. Available properties: " + __availablePropertyNames(component) + "." };
   return { property: component.properties[matches[0]], index: matches[0], candidates: matches, error: null };

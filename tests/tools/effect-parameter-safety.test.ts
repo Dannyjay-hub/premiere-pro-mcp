@@ -104,7 +104,10 @@ describe("lossless colour and duplicate effect parameters", () => {
     const second = parameter("Saturation", { value: 100, color: [255, 10, 20, 30] });
     host([first, second]);
     const ambiguous = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: "Lumetri Color", property_name: "Saturation", value: 120 }) as any;
-    expect(ambiguous).toMatchObject({ success: false, error: expect.stringContaining("property indices [0, 1]") });
+    expect(ambiguous).toMatchObject({
+      success: false,
+      error: expect.stringContaining("property indices [0, 1]; pass property_index. Available properties: Saturation (property_index 0), Saturation (property_index 1)."),
+    });
     expect(first.setValue).not.toHaveBeenCalled();
     expect(second.setColorValue).not.toHaveBeenCalled();
 
