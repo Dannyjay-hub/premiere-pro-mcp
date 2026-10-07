@@ -86,6 +86,8 @@ function buildReadScript(args: ComputeMaskFitArgs, maskEffect: string): string {
       return String(text).replace(/[\\u0000-\\u001f\\u007f"\\\\]/g, " ").substring(0, 200);
     }
     function __mfValue(prop) {
+      var color = __readColorValue(prop);
+      if (color) return color;
       var raw;
       try { raw = prop.getValue(); } catch (eValue) { return null; }
       if (typeof raw === "number") return isFinite(raw) ? raw : null;
@@ -105,7 +107,7 @@ function buildReadScript(args: ComputeMaskFitArgs, maskEffect: string): string {
       var props = [];
       for (var p = 0; p < component.properties.numItems && p < 64; p++) {
         var prop = component.properties[p];
-        var entry = { name: __mfClean(prop.displayName), value: __mfValue(prop) };
+        var entry = { index: p, name: __mfClean(prop.displayName), value: __mfValue(prop) };
         try { entry.timeVarying = prop.isTimeVarying() ? true : false; } catch (eTv) {}
         props.push(entry);
       }

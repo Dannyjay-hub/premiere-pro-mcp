@@ -365,7 +365,7 @@ operation” when the tool has no enum-based mode.
 | `set_clips_volume` | Default profile | Single operation | Set the volume (in dB) on every audio clip of a track, or on a list of clip indices. One round trip instead of one call per clip - essential for sequences with dozens of clips. |
 | `set_color_label` | Default profile | Single operation | Set the color label on a project item or clip and read it back |
 | `set_color_value` | Default profile | Single operation | Set a color value on an effect property (e.g., tint color, fill color) |
-| `set_effect_property` | Default profile | Single operation | Set the value of a specific effect property on a clip. Accepts scalar, boolean, string, array-shaped vector values (for example Motion > Position as [x, y]), and MOGRT JSON objects or strings, and verifies the readback component by component. |
+| `set_effect_property` | Default profile | Single operation | Set one effect property. Duplicate names require property_index from get_effect_properties. Colour values use [alpha, red, green, blue] and the lossless colour API; keyframed colour writes are refused. |
 | `set_footage_interpretation` | Default profile | Single operation | Set footage interpretation settings for a project item and read them back, including fields that were not meant to change |
 | `set_frame_blend` | Default profile | Single operation | Enable or disable frame blending on a clip. Uses QE DOM. |
 | `set_graphics_white_luminance` | Default profile | Single operation | Set the graphics white luminance value (HDR setting) for the project |

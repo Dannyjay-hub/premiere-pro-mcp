@@ -182,6 +182,20 @@ describe("set_clip_properties verification", () => {
     expect(stored).toBe(110);
   });
 
+  it("refuses duplicate intrinsic property names with indices before writing", async () => {
+    const first = { displayName: "Opacity", getValue: () => 100, setValue: vi.fn() };
+    const second = { displayName: "Opacity", getValue: () => 80, setValue: vi.fn() };
+    const clip = { nodeId: "c1", name: "Clip", components: { numItems: 1, 0: { displayName: "Opacity", matchName: "AE.ADBE Opacity", properties: { numItems: 2, 0: first, 1: second } } } };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { activeSequence: { videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: clip } } }, audioTracks: { numTracks: 0 } } } },
+    }))));
+    await expect(timeline.set_clip_properties.handler({ node_id: "c1", opacity: 50 })).resolves.toMatchObject({
+      success: false, error: expect.stringContaining("Opacity is ambiguous at property indices [0, 1]"),
+    });
+    expect(first.setValue).not.toHaveBeenCalled();
+    expect(second.setValue).not.toHaveBeenCalled();
+  });
+
   it("preflights requested properties and reads them back after writing", async () => {
     await timeline.set_clip_properties.handler({ node_id: "c1", opacity: 50, scale: 110, position_x: 100, rotation: 10 });
     const script = mockedSendCommand.mock.calls[0][0];

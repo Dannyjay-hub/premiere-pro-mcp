@@ -448,9 +448,11 @@ export function getCompetitorGapTools(
           for (i = 0; i < requests.length; i++) {
             var request = requests[i];
             var property = null;
+            var candidates = [];
             for (var p = 0; p < crop.properties.numItems; p++) {
-              if (String(crop.properties[p].displayName) === request.name) { property = crop.properties[p]; break; }
+              if (String(crop.properties[p].displayName) === request.name) { property = crop.properties[p]; candidates.push(p); }
             }
+            if (candidates.length > 1) return __error("Crop property '" + request.name + "' is ambiguous at property indices [" + candidates.join(", ") + "]; no crop values were written.");
             if (!property) return __error("Crop does not expose the '" + request.name + "' property on this host. No requested crop value was written.");
             resolved.push({ name: request.name, requested: request.value, property: property });
           }
@@ -952,9 +954,12 @@ export function getCompetitorGapTools(
             for (var ci = 0; ci < clip.components.numItems; ci++) {
               var component = clip.components[ci];
               if (!component || (component.displayName !== componentName && component.matchName !== matchName)) continue;
+              var matches = [];
               for (var pi = 0; pi < component.properties.numItems; pi++) {
-                if (__propertyNameMatches(component.properties[pi].displayName, propertyName, component)) return component.properties[pi];
+                if (__propertyNameMatches(component.properties[pi].displayName, propertyName, component)) matches.push({ property: component.properties[pi], index: pi });
               }
+              if (matches.length > 1) throw new Error(componentName + " " + propertyName + " is ambiguous at property indices [" + matches.map(function (match) { return match.index; }).join(", ") + "]");
+              if (matches.length === 1) return matches[0].property;
             }
             return null;
           }

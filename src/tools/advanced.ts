@@ -1644,8 +1644,9 @@ export function getAdvancedTools(
           },
           property_name: {
             type: "string",
-            description: "Name of the color property",
+            description: "Name of the color property; duplicate names require property_index from get_effect_properties.",
           },
+          property_index: { type: "integer", minimum: 0, description: "Optional exact property index from get_effect_properties; required if the name is repeated." },
           alpha: {
             type: "number",
             description: "Alpha (0-255)",
@@ -1677,6 +1678,7 @@ export function getAdvancedTools(
         node_id: string;
         component_name: string;
         property_name: string;
+        property_index?: number;
         alpha: number;
         red: number;
         green: number;
@@ -1700,16 +1702,15 @@ export function getAdvancedTools(
           }
           if (!targetComp) return __error("Component not found");
           
-          var targetProp = null;
-          for (var j = 0; j < targetComp.properties.numItems; j++) {
-            if (__propertyNameMatches(targetComp.properties[j].displayName, "${escapeForExtendScript(args.property_name)}", targetComp)) {
-              targetProp = targetComp.properties[j];
-              break;
-            }
-          }
+          var resolvedProperty = __resolveProperty(targetComp, "${escapeForExtendScript(args.property_name)}", ${args.property_index === undefined ? "null" : args.property_index});
+          if (resolvedProperty.error) return __error(resolvedProperty.error);
+          var targetProp = resolvedProperty.property;
           if (!targetProp) return __error("Property not found");
           
           if (typeof targetProp.setColorValue !== "function") return __error("That property is not a colour parameter");
+          var colorIsTimeVarying = false;
+          try { colorIsTimeVarying = !!targetProp.isTimeVarying(); } catch (eColorTime) { return __error("Colour animation state could not be read; nothing was changed."); }
+          if (colorIsTimeVarying) return __error("Keyframed colour writes are not supported because CEP has no lossless time-specific colour setter; nothing was changed.");
           targetProp.setColorValue(${args.alpha}, ${args.red}, ${args.green}, ${args.blue}, true);
           var applied = null;
           try { applied = targetProp.getColorValue(); } catch (eRead) {}
@@ -1723,6 +1724,7 @@ export function getAdvancedTools(
           return __result({
             set: true,
             verified: true,
+            propertyIndex: resolvedProperty.index,
             color: { alpha: Number(applied[0]), red: Number(applied[1]), green: Number(applied[2]), blue: Number(applied[3]) }
           });
         `);
@@ -1838,10 +1840,19 @@ export function getAdvancedTools(
           var params = [];
           for (var i = 0; i < mgtComp.properties.numItems; i++) {
             var p = mgtComp.properties[i];
-            params.push({
+            var parameter = {
+              index: i,
               displayName: p.displayName,
-              value: p.getValue()
-            });
+              value: null
+            };
+            var colorValue = __readColorValue(p);
+            if (colorValue) {
+              parameter.value = colorValue;
+              parameter.valueType = "color_argb";
+            } else {
+              try { parameter.value = p.getValue(); } catch (eValue) { parameter.readError = String(eValue); }
+            }
+            params.push(parameter);
           }
           
           return __result({ clipName: result.clip.name, parameters: params });
