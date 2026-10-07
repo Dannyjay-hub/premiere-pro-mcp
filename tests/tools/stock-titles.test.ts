@@ -239,7 +239,7 @@ describe("add_title", () => {
   it("documents the baked-copy location and preserves the path in the result", () => {
     expect(tools.add_title.description).toContain("~/Library/Application Support/premiere-pro-mcp/titles");
     expect(tools.add_title.description).toContain("templateFile");
-    expect(tools.add_title.description).toContain("Do not delete copies automatically");
+    expect(tools.add_title.description).toContain("newest 50 baked copies");
   });
 
   it("imports the default template on V2, writes the text, trims to duration, and verifies both", async () => {

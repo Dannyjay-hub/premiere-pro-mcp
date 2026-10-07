@@ -1,3 +1,4 @@
+import { setProjectItemStartTime } from "./project-item-start-time.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { existsSync, statSync } from "node:fs";
@@ -788,22 +789,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
         },
         required: ["item_id", "start_seconds"],
       },
-      handler: async (args: { item_id: string; start_seconds: number }) => {
-        const script = buildToolScript(`
-          var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
-          
-          var ticks = __secondsToTicks(${args.start_seconds}).toString();
-          item.setStartTime(ticks);
-          var observedStart = NaN;
-          try { observedStart = Number(item.startTime().seconds); } catch (startReadError) {}
-          if (!isFinite(observedStart) || Math.abs(observedStart - ${args.start_seconds}) > 0.001) {
-            return __error("Premiere did not apply the start time; read back " + observedStart + " s.");
-          }
-          return __result({ set: true, verified: true, item: item.name, startSeconds: observedStart });
-        `);
-        return sendCommand(script, bridgeOptions);
-      },
+      handler: (args: { item_id: string; start_seconds: number }) => setProjectItemStartTime(args, bridgeOptions),
     },
   };
 }

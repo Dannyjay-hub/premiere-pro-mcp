@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Still-image mark clearing now identifies unreadable still duration explicitly; `set_clip_start_time` shares the verified implementation of `set_start_time` and is documented as its alias. Colour selection states that it uses the source project item label because CEP has no timeline clip-label getter. Baked title-cache cleanup retains the newest 50 matching files and leaves unrelated directory entries untouched.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
@@ -18,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `import_fcp_xml` accepts `mode: "into_open_project"` (with optional `target_bin`) to import into the open project; it succeeds only when the sequence count grew, and `project_path` is required only in the default `new_project` mode (#811).
 
 ### Fixed
+
 
 - `import_media` no longer reports an error when an `.xml`, `.aaf`, `.edl` or `.prproj` file imports correctly. Interchange files create sequences and bins rather than an item with the file's path, so they now return `outcome: "committed_unverified"` with `interchange: true`, which stops retries from duplicating the sequence (#805).
 
