@@ -1306,12 +1306,27 @@ export function getTimelineTools(
 
           var primary = isVideo ? newVideo : newAudio;
           if (!primary) return __jsonStringify({ success: false, error: "Premiere did not place the duplicate on the expected track, and the final timeline change state is unknown. Inspect the timeline before retrying.", data: { outcome: "committed_unverified", verified: false, timelineChanged: null } });
-          var drift = Math.abs(parseFloat(primary.start.ticks) - startTicks) + Math.abs(parseFloat(primary.end.ticks) - endTicks);
+          // Premiere can snap the source out point a frame early, so a copy lands
+          // one frame short. Trim each placed copy back to the original's end.
+          var endCorrected = false;
+          function correctEnd(placed) {
+            if (!placed) return;
+            if (Math.abs(parseFloat(placed.start.ticks) - startTicks) >= frameTicks / 2) return;
+            if (Math.abs(parseFloat(placed.end.ticks) - endTicks) < frameTicks / 2) return;
+            var endTime = new Time();
+            endTime.ticks = String(endTicks);
+            try { placed.end = endTime; endCorrected = true; } catch (endError) {}
+          }
+          correctEnd(newVideo);
+          correctEnd(newAudio);
+          var linkedCopy = isVideo ? newAudio : newVideo;
+          var drift = Math.max(Math.abs(parseFloat(primary.start.ticks) - startTicks), Math.abs(parseFloat(primary.end.ticks) - endTicks));
           var inDrift = Math.abs(parseFloat(primary.inPoint.ticks) - inTicks);
+          var linkedVerified = !partner || (!!linkedCopy && Math.abs(parseFloat(linkedCopy.end.ticks) - endTicks) < frameTicks / 2);
           function describe(c, type, index) {
             return c ? { nodeId: String(c.nodeId), trackType: type, trackIndex: index, startSeconds: __ticksToSeconds(c.start.ticks), endSeconds: __ticksToSeconds(c.end.ticks), inSeconds: __ticksToSeconds(c.inPoint.ticks) } : null;
           }
-          var duplicateVerified = drift <= 2 * frameTicks && inDrift <= frameTicks && (!partner || !!(isVideo ? newAudio : newVideo));
+          var duplicateVerified = drift < frameTicks / 2 && inDrift < frameTicks / 2 && linkedVerified;
           if (!duplicateVerified) return __jsonStringify({ success: false, error: "Premiere placed a duplicate, but its timing, source in-point, or linked partner did not verify. Inspect the timeline or use Undo.", data: {
             duplicated: false,
             verified: false,
@@ -1328,6 +1343,7 @@ export function getTimelineTools(
             clipName: clip.name,
             copy: describe(primary, result.trackType, isVideo ? videoTarget : audioTarget),
             linkedCopy: isVideo ? describe(newAudio, "audio", audioTarget) : describe(newVideo, "video", videoTarget),
+            endCorrected: endCorrected,
             timelineChanged: true
           });
         `);
