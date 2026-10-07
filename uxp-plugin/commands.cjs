@@ -388,7 +388,12 @@
           ...(ticks.outPoint ? { outSeconds: ticks.outPoint.appliedSeconds } : {}),
           ...(ticks.zeroPoint ? { zeroPointSeconds: ticks.zeroPoint.appliedSeconds } : {}),
         };
-        const desired = { ...before.range, ...appliedUpdates };
+        const desired = {
+          ...before.range,
+          ...appliedUpdates,
+          ...(ticks.inPoint ? { inSet: true } : {}),
+          ...(ticks.outPoint ? { outSet: true } : {}),
+        };
         assertValidSequenceRange(desired, "requested sequence range");
         let committed = false;
         context.project.lockedAccess(() => {
@@ -986,9 +991,13 @@
       const [inPoint, outPoint, zeroPoint, endPoint] = await Promise.all([
         sequence.getInPoint(), sequence.getOutPoint(), sequence.getZeroPoint(), sequence.getEndTime()
       ]);
+      const inSeconds = tickSecondsOptional(inPoint, "sequence in point");
+      const outSeconds = tickSecondsOptional(outPoint, "sequence out point");
       const range = {
-        inSeconds: tickSecondsRequired(inPoint, "sequence in point"),
-        outSeconds: tickSecondsRequired(outPoint, "sequence out point"),
+        inSeconds,
+        outSeconds,
+        inSet: inSeconds !== null,
+        outSet: outSeconds !== null,
         zeroPointSeconds: tickSecondsRequired(zeroPoint, "sequence zero point"),
         endSeconds: tickSecondsRequired(endPoint, "sequence end point")
       };
@@ -1155,14 +1164,26 @@
     }
     function validateExpectedSequenceRange(value, name) {
       assertObject(value);
-      assertOnlyKeys(value, ["inSeconds", "outSeconds", "zeroPointSeconds", "endSeconds"]);
+      assertOnlyKeys(value, ["inSeconds", "outSeconds", "inSet", "outSet", "zeroPointSeconds", "endSeconds"]);
       const result = {};
       for (const key of ["inSeconds", "outSeconds", "zeroPointSeconds", "endSeconds"]) {
         if (value[key] == null) {
+          if (value[key] === null && ((key === "inSeconds" && value.inSet === false) || (key === "outSeconds" && value.outSet === false))) {
+            result[key] = null;
+            continue;
+          }
           throw commandError("UXP_INVALID_ARGUMENT", name + "." + key + " is required");
         }
         result[key] = boundedSeconds(value[key], name + "." + key);
       }
+      if (typeof value.inSet !== "boolean" || value.inSet !== (result.inSeconds !== null)) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + ".inSet must match inSeconds" );
+      }
+      if (typeof value.outSet !== "boolean" || value.outSet !== (result.outSeconds !== null)) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + ".outSet must match outSeconds" );
+      }
+      result.inSet = value.inSet;
+      result.outSet = value.outSet;
       return result;
     }
     function validateSequenceRangeUpdates(value) {
@@ -1175,23 +1196,30 @@
       return result;
     }
     function assertExpectedSequenceRange(actual, expected) {
-      if (!sameSeconds(actual.inSeconds, expected.inSeconds) || !sameSeconds(actual.outSeconds, expected.outSeconds) ||
+      if (!sameOptionalSeconds(actual.inSeconds, expected.inSeconds) || actual.inSet !== expected.inSet ||
+        !sameOptionalSeconds(actual.outSeconds, expected.outSeconds) || actual.outSet !== expected.outSet ||
         !sameSeconds(actual.zeroPointSeconds, expected.zeroPointSeconds) || !sameSeconds(actual.endSeconds, expected.endSeconds)) {
         throw commandError("UXP_STALE_RANGE", "The sequence range changed before the update; inspect the current range and retry");
       }
     }
     function assertValidSequenceRange(range, name) {
-      const inSeconds = boundedSeconds(range.inSeconds, name + ".inSeconds");
-      const outSeconds = boundedSeconds(range.outSeconds, name + ".outSeconds");
+      const inSeconds = range.inSet ? boundedSeconds(range.inSeconds, name + ".inSeconds") : null;
+      const outSeconds = range.outSet ? boundedSeconds(range.outSeconds, name + ".outSeconds") : null;
       const endSeconds = boundedSeconds(range.endSeconds, name + ".endSeconds");
       boundedSeconds(range.zeroPointSeconds, name + ".zeroPointSeconds");
-      if (inSeconds > outSeconds || outSeconds > endSeconds) {
+      const effectiveInSeconds = inSeconds == null ? 0 : inSeconds;
+      const effectiveOutSeconds = outSeconds == null ? endSeconds : outSeconds;
+      if (effectiveInSeconds > effectiveOutSeconds || effectiveOutSeconds > endSeconds) {
         throw commandError("UXP_INVALID_ARGUMENT", name + " must satisfy inSeconds <= outSeconds <= endSeconds");
       }
     }
     function sameSequenceRange(actual, expected) {
-      return sameSeconds(actual.inSeconds, expected.inSeconds) && sameSeconds(actual.outSeconds, expected.outSeconds) &&
+      return sameOptionalSeconds(actual.inSeconds, expected.inSeconds) && actual.inSet === expected.inSet &&
+        sameOptionalSeconds(actual.outSeconds, expected.outSeconds) && actual.outSet === expected.outSet &&
         sameSeconds(actual.zeroPointSeconds, expected.zeroPointSeconds) && sameSeconds(actual.endSeconds, expected.endSeconds);
+    }
+    function sameOptionalSeconds(left, right) {
+      return left === null || right === null ? left === right : sameSeconds(left, right);
     }
     function sameSeconds(left, right) {
       return typeof left === "number" && typeof right === "number" && Math.abs(left - right) <= 0.000001;
@@ -1201,6 +1229,12 @@
         throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a valid " + name);
       }
       return value.seconds;
+    }
+    function tickSecondsOptional(value, name) {
+      if (!value || typeof value.seconds !== "number" || !Number.isFinite(value.seconds)) {
+        throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a valid " + name);
+      }
+      return value.seconds < 0 ? null : boundedSeconds(value.seconds, name);
     }
     function boundedSeconds(value, name) {
       if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 86400) {

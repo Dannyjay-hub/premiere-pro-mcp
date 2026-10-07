@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applySnapshotFrom, withApplySnapshot } from "../../src/tools/uxp-apply-snapshot.js";
+import { applySnapshotFrom, withApplyGuards, withApplySnapshot } from "../../src/tools/uxp-apply-snapshot.js";
 
 describe("UXP inspect snapshots round-trip into apply schemas", () => {
   it("converts the camelCase work-area result into an unchanged schema-valid expected object", async () => {
@@ -29,4 +29,19 @@ describe("UXP inspect snapshots round-trip into apply schemas", () => {
     });
     expect(applySnapshotFrom({ guid: "m1", startSeconds: -1, pixelAspectRatio: { numerator: 4, denominator: 3 } }, schema)).toBeNull();
   });
+  it("keeps valid guards without inventing guards for unreadable or invalid state", async () => {
+    const schema = { type: "array", minItems: 1, maxItems: 2, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 10 } };
+    for (const times of [[], [1, 1], [1, 2, 3], [-1], [11], [NaN]]) {
+      const result = await withApplyGuards(Promise.resolve({ success: true, data: { result: { sequenceId: "s1", times } } }), {
+        expected_sequence_id: { schema: { type: "string", pattern: "^[a-z0-9]+$" }, sourceKey: "sequenceId" },
+        expected_times: { schema, sourceKey: "times" },
+      });
+      expect(result.data).toHaveProperty("expected_sequence_id", "s1");
+      expect(result.data).not.toHaveProperty("expected_times");
+      expect(applySnapshotFrom(times, schema)).toBeNull();
+    }
+    const failed = { success: false, error: "Unavailable" };
+    expect(await withApplyGuards(Promise.resolve(failed), {})).toBe(failed);
+  });
+
 });

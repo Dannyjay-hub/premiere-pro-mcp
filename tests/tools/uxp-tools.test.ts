@@ -22,7 +22,7 @@ function expectMatchesSchema(value: unknown, schema: Record<string, any>) {
     for (const child of value as unknown[]) expectMatchesSchema(child, schema.items);
   }
   if (types.includes("string")) expect(typeof value).toBe("string");
-  if (types.includes("number")) expect(typeof value).toBe("number");
+  if (types.includes("number")) expect(typeof value === "number" || (types.includes("null") && value === null)).toBe(true);
   if (types.includes("integer")) expect(Number.isSafeInteger(value)).toBe(true);
   if (types.includes("boolean")) expect(typeof value).toBe("boolean");
   if (schema.enum) expect(schema.enum).toContain(value);
@@ -276,7 +276,7 @@ describe("UXP MCP tools", () => {
         expected_range: {
           type: "object",
           additionalProperties: false,
-          required: ["in_seconds", "out_seconds", "zero_point_seconds", "end_seconds"],
+          required: ["in_seconds", "out_seconds", "in_set", "out_set", "zero_point_seconds", "end_seconds"],
         },
         updates: { type: "object", additionalProperties: false },
         operation_id: { type: "string" },
@@ -524,10 +524,13 @@ describe("UXP MCP tools", () => {
     const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
     const tools = getUxpTools(bridge);
     const inspected = await tools.manage_timeline_selection_uxp.handler({ action: "inspect_targets", selection_targets: [{ media_type: "video", track_index: 1, clip_index: 2 }] } as never);
+    const sequenceGuid = (inspected.data as Record<string, unknown>).expected_sequence_guid;
     const selectionItems = (inspected.data as Record<string, unknown>).selection_items;
+    expect(sequenceGuid).toBe("sequence-1");
+    expectMatchesSchema(sequenceGuid, tools.manage_timeline_selection_uxp.parameters.properties.expected_sequence_guid);
     expect(selectionItems).toEqual([{ media_type: "video", track_index: 1, clip_index: 2, expected_project_item_id: "source-1", expected_start_seconds: 5, expected_end_seconds: 9 }]);
     expectMatchesSchema(selectionItems, tools.manage_timeline_selection_uxp.parameters.properties.selection_items);
-    await tools.manage_timeline_selection_uxp.handler({ action: "replace", expected_sequence_guid: "sequence-1", selection_items: selectionItems } as never);
+    await tools.manage_timeline_selection_uxp.handler({ action: "replace", expected_sequence_guid: sequenceGuid, selection_items: selectionItems } as never);
     expect(request).toHaveBeenNthCalledWith(2, "selection.update", expect.objectContaining({
       items: [{ mediaType: "video", trackIndex: 1, clipIndex: 2, expectedProjectItemId: "source-1", expectedStartSeconds: 5, expectedEndSeconds: 9 }],
     }));
@@ -538,11 +541,55 @@ describe("UXP MCP tools", () => {
     const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
     const tools = getUxpTools(bridge);
     const inspected = await tools.manage_work_area_uxp.handler({ action: "inspect" });
+    const sequenceGuid = (inspected.data as Record<string, unknown>).expected_sequence_guid;
     const expected = (inspected.data as Record<string, unknown>).expected_work_area;
+    expect(sequenceGuid).toBe("sequence-1");
+    expectMatchesSchema(sequenceGuid, tools.manage_work_area_uxp.parameters.properties.expected_sequence_guid);
     expectMatchesSchema(expected, tools.manage_work_area_uxp.parameters.properties.expected_work_area);
-    await tools.manage_work_area_uxp.handler({ action: "set", expected_sequence_guid: "sequence-1", expected_work_area: expected, in_seconds: 5, out_seconds: 30 } as never);
+    await tools.manage_work_area_uxp.handler({ action: "set", expected_sequence_guid: sequenceGuid, expected_work_area: expected, in_seconds: 5, out_seconds: 30 } as never);
     expect(request).toHaveBeenNthCalledWith(2, "workArea.set", expect.objectContaining({
       expectedWorkArea: { inSeconds: 2.4, outSeconds: 40 },
+    }));
+  });
+
+  it("returns every sequence-range guard in the apply schema, including unset points", async () => {
+    const request = vi.fn().mockResolvedValueOnce({
+      sequenceGuid: "sequence-1",
+      range: { inSeconds: null, outSeconds: 40, inSet: false, outSet: true, zeroPointSeconds: 0, endSeconds: 80 },
+    }).mockResolvedValueOnce({ updated: true });
+    const tools = getUxpTools({ request, getState: vi.fn() } as unknown as UxpWebSocketBridge);
+    const inspected = await tools.manage_sequence_range_uxp.handler({ action: "inspect" });
+    const data = inspected.data as Record<string, unknown>;
+    const expectedGuid = data.expected_sequence_guid;
+    const expectedRange = data.expected_range;
+    expectMatchesSchema(expectedGuid, tools.manage_sequence_range_uxp.parameters.properties.expected_sequence_guid);
+    expectMatchesSchema(expectedRange, tools.manage_sequence_range_uxp.parameters.properties.expected_range);
+    expect(expectedRange).toEqual({
+      in_seconds: null, out_seconds: 40, in_set: false, out_set: true, zero_point_seconds: 0, end_seconds: 80,
+    });
+    await tools.manage_sequence_range_uxp.handler({
+      action: "update", expected_sequence_guid: expectedGuid, expected_range: expectedRange,
+      updates: { in_seconds: 2 }, operation_id: "range-roundtrip",
+    } as never);
+    expect(request).toHaveBeenNthCalledWith(2, "sequence.range.update", expect.objectContaining({
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: null, outSeconds: 40, inSet: false, outSet: true, zeroPointSeconds: 0, endSeconds: 80 },
+    }));
+  });
+
+  it("returns both playhead guards ready to pass unchanged to set", async () => {
+    const request = vi.fn().mockResolvedValueOnce({ sequenceGuid: "sequence-1", positionSeconds: 3 }).mockResolvedValueOnce({ positioned: true });
+    const tools = getUxpTools({ request, getState: vi.fn() } as unknown as UxpWebSocketBridge);
+    const inspected = await tools.manage_sequence_playhead_uxp.handler({ action: "inspect" });
+    const data = inspected.data as Record<string, unknown>;
+    expectMatchesSchema(data.expected_sequence_guid, tools.manage_sequence_playhead_uxp.parameters.properties.expected_sequence_guid);
+    expectMatchesSchema(data.expected_position_seconds, tools.manage_sequence_playhead_uxp.parameters.properties.expected_position_seconds);
+    await tools.manage_sequence_playhead_uxp.handler({
+      action: "set", expected_sequence_guid: data.expected_sequence_guid,
+      expected_position_seconds: data.expected_position_seconds, position_seconds: 8,
+    } as never);
+    expect(request).toHaveBeenNthCalledWith(2, "sequence.playhead.set", expect.objectContaining({
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3,
     }));
   });
 

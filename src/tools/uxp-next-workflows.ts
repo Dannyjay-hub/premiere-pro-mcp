@@ -1,5 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
-import { withApplySnapshot } from "./uxp-apply-snapshot.js";
+import { withApplyGuards, withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 const WAIT_RESPONSE_BUFFER_MS = 5_000;
 
@@ -159,12 +159,20 @@ function eventQuery(args: EventArgs, includeTimeout: boolean) {
 }
 
 export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
+  const ownerIdentityGuardSchema = { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" };
+  const booleanGuardSchema = { type: "boolean" };
   const sourceTimingSnapshotSchema = { properties: {
     start_seconds: { type: "number" }, duration_seconds: { type: "number" },
   } };
   const sourceOverridesSnapshotSchema = { properties: {
     project_guid: { type: "string" }, frame_rate: { type: "number" }, pixel_aspect_ratio: { type: "number" },
   } };
+  const sourceClipSnapshotSchema = { type: "array", minItems: 1, maxItems: 64, items: { type: "object", additionalProperties: false, properties: {
+    project_item_id: { type: "string", minLength: 1, maxLength: 512 },
+    media_type: { type: "string", enum: ["video", "audio"] },
+    expected_in_seconds: { type: "number", minimum: 0, maximum: 86400000, sourceKey: "inSeconds" },
+    expected_out_seconds: { type: "number", minimum: 0, maximum: 86400000, sourceKey: "outSeconds" },
+  }, required: ["project_item_id", "media_type", "expected_in_seconds", "expected_out_seconds"] } };
   return {
     inspect_premiere_events_uxp: {
       description: "List or briefly wait for bounded, redacted Premiere host-event receipts without polling the complete project state. Compatible hosts can also emit timeline.snap.* receipts plus operation.clip.extend.reached and coalesced operation.effect.drag.over receipts for documented root notifications; raw event payloads are never returned.",
@@ -206,7 +214,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         properties: {
           action: { type: "string", enum: ["snapshot", "analysis", "operation"] },
           sequence_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
-          expected_sequence_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
+          expected_sequence_id: ownerIdentityGuardSchema,
           operation_type: { type: "string", enum: ["import", "export", "effect_drop", "generative_extend"] },
           after_revision: {
             type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER,
@@ -357,7 +365,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           action: { type: "string", enum: ["has", "get", "set", "clear"] },
           owner: { type: "string", enum: ["project", "sequence"] },
           sequence_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
-          expected_owner_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
+          expected_owner_id: { ...ownerIdentityGuardSchema, description: "The expected_owner_id returned by has or get, passed unchanged." },
           name: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$" },
           value_type: { type: "string", enum: ["string", "int", "float", "bool"] },
           value: { type: ["string", "number", "boolean"], maxLength: 8192 },
@@ -373,10 +381,12 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           ...(args.expected_owner_id !== undefined ? { expectedOwnerId: args.expected_owner_id } : {}),
           name: args.name,
         };
-        if (args.action === "has") return invoke(bridge, "checkpoint.has", common);
-        if (args.action === "get") return invoke(bridge, "checkpoint.get", {
-          ...common, ...(args.value_type !== undefined ? { valueType: args.value_type } : {}),
+        if (args.action === "has") return withApplyGuards(invoke(bridge, "checkpoint.has", common), {
+          expected_owner_id: { schema: ownerIdentityGuardSchema, sourceKey: "ownerId" },
         });
+        if (args.action === "get") return withApplyGuards(invoke(bridge, "checkpoint.get", {
+          ...common, ...(args.value_type !== undefined ? { valueType: args.value_type } : {}),
+        }), { expected_owner_id: { schema: ownerIdentityGuardSchema, sourceKey: "ownerId" } });
         if (args.action === "set") return invoke(bridge, "checkpoint.set", {
           ...common,
           ...(args.value_type !== undefined ? { valueType: args.value_type } : {}),
@@ -402,7 +412,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
             items: { type: "string", minLength: 1, maxLength: 512 },
           },
           project_item_id: { type: "string", minLength: 1, maxLength: 512, description: "One project item ID. find_by_media_path uses it as the item to match; the other actions treat it as a one-item project_item_ids." },
-          expected_offline: { type: "boolean" },
+          expected_offline: { ...booleanGuardSchema, description: "The expected_offline returned by inspect, passed unchanged. Mixed or unreadable states require separate item inspections." },
           confirm_set_offline: { type: "boolean" },
           match_path: { type: "string", minLength: 1, maxLength: 4096 },
           ignore_subclips: { type: "boolean" },
@@ -420,10 +430,20 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           }
           args = { ...args, project_item_ids: [args.project_item_id] };
         }
-        if (args.action === "inspect") return invoke(bridge, "media.health.inspect", {
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "media.health.inspect", {
           ...(args.project_item_ids !== undefined ? { projectItemIds: args.project_item_ids } : {}),
           ...(args.include_paths !== undefined ? { includePaths: args.include_paths } : {}),
           ...(args.include_media_timing !== undefined ? { includeMediaTiming: args.include_media_timing } : {}),
+        }), {
+          expected_offline: {
+            schema: booleanGuardSchema,
+            sourceValue: (record) => {
+              const items = record.items;
+              if (!Array.isArray(items) || items.length === 0) return undefined;
+              const offline = (items[0] as Record<string, unknown>)?.offline;
+              return items.every((item) => item && typeof item === "object" && (item as Record<string, unknown>).offline === offline) ? offline : undefined;
+            },
+          },
         });
         if (args.action === "refresh") return invoke(bridge, "media.health.refresh", {
           ...(args.project_item_ids !== undefined ? { projectItemIds: args.project_item_ids } : {}),
@@ -560,14 +580,14 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         properties: {
           action: { type: "string", enum: ["inspect", "set_mute"] },
           sequence_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
-          expected_sequence_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
+          expected_sequence_id: ownerIdentityGuardSchema,
           media_type: { type: "string", enum: ["all", "video", "audio", "caption"] },
           track_indices: {
             type: "array", minItems: 1, maxItems: 64, uniqueItems: true,
             items: { type: "integer", minimum: 0, maximum: 1023 },
           },
           muted: { type: "boolean" },
-          expected_muted: { type: "boolean" },
+          expected_muted: { ...booleanGuardSchema, description: "The expected_muted returned by inspect, passed unchanged. Mixed or unreadable states require separate track inspections." },
           operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
         },
         required: ["action"],
@@ -579,7 +599,18 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           ...(args.media_type !== undefined ? { mediaType: args.media_type } : {}),
           ...(args.track_indices !== undefined ? { trackIndices: args.track_indices } : {}),
         };
-        if (args.action === "inspect") return invoke(bridge, "track.state.inspect", common);
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "track.state.inspect", common), {
+          expected_sequence_id: { schema: ownerIdentityGuardSchema, sourceKey: "sequenceId" },
+          expected_muted: {
+            schema: booleanGuardSchema,
+            sourceValue: (record) => {
+              const tracks = record.tracks;
+              if (!Array.isArray(tracks) || tracks.length === 0) return undefined;
+              const muted = (tracks[0] as Record<string, unknown>)?.muted;
+              return tracks.every((track) => track && typeof track === "object" && (track as Record<string, unknown>).muted === muted) ? muted : undefined;
+            },
+          },
+        });
         if (args.action === "set_mute") return invoke(bridge, "track.state.set", {
           ...common,
           ...(args.muted !== undefined ? { muted: args.muted } : {}),
@@ -603,8 +634,8 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
               properties: {
                 project_item_id: { type: "string", minLength: 1, maxLength: 512 },
                 media_type: { type: "string", enum: ["video", "audio"] },
-                expected_in_seconds: { type: "number", minimum: 0, maximum: 86400000 },
-                expected_out_seconds: { type: "number", minimum: 0, maximum: 86400000 },
+                expected_in_seconds: sourceClipSnapshotSchema.items.properties.expected_in_seconds,
+                expected_out_seconds: sourceClipSnapshotSchema.items.properties.expected_out_seconds,
                 in_seconds: { type: "number", minimum: 0, maximum: 86400000 },
                 out_seconds: { type: "number", minimum: 0, maximum: 86400000 },
                 clear_in_out: { type: "boolean" },
@@ -628,7 +659,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           ...(item.clear_in_out !== undefined ? { clearInOut: item.clear_in_out } : {}),
           ...(item.scale_to_frame !== undefined ? { scaleToFrame: item.scale_to_frame } : {}),
         }));
-        if (args.action === "inspect") return invoke(bridge, "source.clip.inspect", { items });
+        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "source.clip.inspect", { items }), sourceClipSnapshotSchema, "items", "items");
         if (args.action === "update") return invoke(bridge, "source.clip.update", {
           items,
           ...(args.operation_id !== undefined ? { operationId: args.operation_id } : {}),

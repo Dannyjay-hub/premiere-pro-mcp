@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- UXP inspect snapshots now include every expected guard needed by their matching apply or update action, including sequence identity, selection, display-format, work-area, playhead, and parameter animation state. Sequence-range inspection treats Premiere's negative In/Out sentinels as unset and returns explicit set flags so an unset range can be reviewed and updated safely.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

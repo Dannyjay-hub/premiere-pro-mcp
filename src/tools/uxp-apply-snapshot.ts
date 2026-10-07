@@ -1,5 +1,6 @@
-type JsonSchemaObject = { type?: string | string[]; properties?: Record<string, unknown>; items?: JsonSchemaObject; sourceKey?: string; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number };
+type JsonSchemaObject = { type?: string | string[]; properties?: Record<string, unknown>; items?: JsonSchemaObject; sourceKey?: string; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; pattern?: string; minItems?: number; maxItems?: number; uniqueItems?: boolean };
 type ToolResult = { success: boolean; data?: unknown; error?: string };
+type ApplyGuard = { schema: JsonSchemaObject; sourceKey?: string; sourceValue?: (record: Record<string, unknown>) => unknown };
 
 function camelKey(snakeKey: string): string {
   return snakeKey.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
@@ -14,12 +15,10 @@ function camelKey(snakeKey: string): string {
 export function applySnapshotFrom(value: unknown, schema: JsonSchemaObject): Record<string, unknown> | null {
   if (Array.isArray(value)) {
     if (!schema.items) return null;
+    if ((schema.minItems !== undefined && value.length < schema.minItems) || (schema.maxItems !== undefined && value.length > schema.maxItems)) return null;
+    if (schema.uniqueItems && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) return null;
     if (schema.items.type && !schema.items.properties) {
-      const expectedType = schema.items.type;
-      return value.every((item) => expectedType === "number" ? typeof item === "number" && Number.isFinite(item)
-        : expectedType === "integer" ? typeof item === "number" && Number.isSafeInteger(item)
-          : expectedType === "string" ? typeof item === "string"
-            : expectedType === "boolean" ? typeof item === "boolean" : false)
+      return value.every((item) => matchesSchemaValue(item, schema.items!))
         ? value as unknown as Record<string, unknown> : null;
     }
     const mapped = value.map((item) => applySnapshotFrom(item, schema.items!));
@@ -58,15 +57,39 @@ export async function withApplySnapshot(
   targetKey = "expected_snapshot",
   sourceKey?: string,
 ): Promise<ToolResult> {
+  return withApplyGuards(result, { [targetKey]: { schema, sourceKey: sourceKey ?? "" } });
+}
+
+/** Attach every apply guard described by its schema, using the panel's inspect fields as sources. */
+export async function withApplyGuards(
+  result: Promise<ToolResult>,
+  guards: Record<string, ApplyGuard>,
+): Promise<ToolResult> {
   const settled = await result;
   if (!settled.success || !settled.data || typeof settled.data !== "object") return settled;
   const data = settled.data as Record<string, unknown>;
   const panelResult = data.result;
-  const source = sourceKey
-    ? panelResult && typeof panelResult === "object" ? (panelResult as Record<string, unknown>)[sourceKey] : undefined
-    : panelResult;
-  const expected = applySnapshotFrom(source, schema);
-  return expected ? { ...settled, data: { ...data, [targetKey]: expected } } : settled;
+  if (!panelResult || typeof panelResult !== "object" || Array.isArray(panelResult)) return settled;
+  const record = panelResult as Record<string, unknown>;
+  const expected: Record<string, unknown> = {};
+  for (const [targetKey, guard] of Object.entries(guards)) {
+    const source = guard.sourceValue ? guard.sourceValue(record) : guard.sourceKey ? readPath(record, guard.sourceKey) : record;
+    const value = applyValueFrom(source, guard.schema);
+    if (value === undefined) continue;
+    expected[targetKey] = value;
+  }
+  return { ...settled, data: { ...data, ...expected } };
+}
+
+function applyValueFrom(value: unknown, schema: JsonSchemaObject): unknown | undefined {
+  if (schema.properties) return applySnapshotFrom(value, schema) ?? undefined;
+  if (schema.items && Array.isArray(value)) {
+    if ((schema.minItems !== undefined && value.length < schema.minItems) || (schema.maxItems !== undefined && value.length > schema.maxItems)) return undefined;
+    if (schema.uniqueItems && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) return undefined;
+    const mapped = value.map((item) => applyValueFrom(item, schema.items!));
+    return mapped.some((item) => item === undefined) ? undefined : mapped;
+  }
+  return matchesSchemaValue(value, schema) ? value : undefined;
 }
 
 function matchesSchemaValue(value: unknown, schema: JsonSchemaObject): boolean {
@@ -74,6 +97,7 @@ function matchesSchemaValue(value: unknown, schema: JsonSchemaObject): boolean {
   const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
   if (!types.length) return true;
   const matchesType = types.some((type) => type === "string" ? typeof value === "string"
+    : type === "null" ? value === null
     : type === "number" ? typeof value === "number" && Number.isFinite(value)
       : type === "integer" ? typeof value === "number" && Number.isSafeInteger(value)
         : type === "boolean" ? typeof value === "boolean"
@@ -82,5 +106,8 @@ function matchesSchemaValue(value: unknown, schema: JsonSchemaObject): boolean {
   if (!matchesType) return false;
   if (typeof value === "number" && ((schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum))) return false;
   if (typeof value === "string" && ((schema.minLength !== undefined && value.length < schema.minLength) || (schema.maxLength !== undefined && value.length > schema.maxLength))) return false;
+  if (typeof value === "string" && schema.pattern && !new RegExp(schema.pattern).test(value)) return false;
+  if (Array.isArray(value) && ((schema.minItems !== undefined && value.length < schema.minItems) || (schema.maxItems !== undefined && value.length > schema.maxItems))) return false;
+  if (Array.isArray(value) && schema.uniqueItems && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) return false;
   return true;
 }

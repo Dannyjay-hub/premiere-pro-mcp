@@ -1,6 +1,6 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
 import { planDerivedSilenceRemoval } from "./silence-removal.js";
-import { withApplySnapshot } from "./uxp-apply-snapshot.js";
+import { withApplyGuards, withApplySnapshot } from "./uxp-apply-snapshot.js";
 
 const WAIT_RESPONSE_BUFFER_MS = 5_000;
 
@@ -166,18 +166,31 @@ const timelinePositionProperties = {
 };
 
 export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
+  const guardSchemas = {
+    name: { type: "string", maxLength: 255 },
+    parentId: { type: "string", maxLength: 512 },
+    sequenceId: { type: "string", minLength: 1, maxLength: 128 },
+    componentId: { type: "string", minLength: 1, maxLength: 256 },
+    timeVarying: { type: "boolean" },
+    keyframeTimes: { type: "array", maxItems: 256, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 86400 } },
+    timelineSeconds: { type: "number", minimum: 0, maximum: 86400 },
+  };
   const markerRemovalSnapshotSchema = {
+    minItems: 1, maxItems: 128,
     items: { properties: {
       marker_guid: { type: "string", sourceKey: "guid" },
-      expected_name: { type: "string", sourceKey: "name" },
-      expected_start_seconds: { type: "number", sourceKey: "startSeconds" },
+      expected_name: { ...guardSchemas.name, sourceKey: "name" },
+      expected_start_seconds: { ...guardSchemas.timelineSeconds, sourceKey: "startSeconds" },
       expected_duration_seconds: { type: "number", sourceKey: "durationSeconds" },
     } },
   };
-  const displayFormatSnapshotSchema = { properties: {
-    audio_display_format: { type: "integer", sourceKey: "audioDisplayFormat" },
-    video_display_format: { type: "integer", sourceKey: "videoDisplayFormat" },
-  } };
+  const displayFormatSnapshotSchema = {
+    type: "object", additionalProperties: false,
+    properties: {
+      audio_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE, sourceKey: "audioDisplayFormat" },
+      video_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE, sourceKey: "videoDisplayFormat" },
+    }, required: ["audio_display_format", "video_display_format"],
+  };
   const parameterSnapshotSchema = (leaf: "point" | "color") => ({ properties: {
     project_id: { type: "string" }, sequence_id: { type: "string" }, media_type: { type: "string" },
     track_index: { type: "integer" }, clip_index: { type: "integer" }, component_index: { type: "integer" },
@@ -237,7 +250,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           sequence_id: sequenceId,
           project_item_id: projectItemId,
           marker_guid: { type: "string", minLength: 1, maxLength: 128 },
-          expected_name: { type: "string", maxLength: 255, description: "Optional stale-marker guard for update/remove." },
+          expected_name: { ...guardSchemas.name, description: "Optional stale-marker guard for update/remove; pass the expected_name returned by inspect unchanged when marker_guid was inspected." },
           name: { type: "string", minLength: 1, maxLength: 255 },
           marker_type: { type: "string", minLength: 1, maxLength: 128 },
           start_seconds: { type: "number", minimum: 0, maximum: 86400 },
@@ -254,8 +267,8 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
               additionalProperties: false,
               properties: {
                 marker_guid: { type: "string", minLength: 1, maxLength: 128 },
-                expected_name: { type: "string", maxLength: 255 },
-                expected_start_seconds: { type: "number", minimum: 0, maximum: 86400 },
+                expected_name: { ...guardSchemas.name, maxLength: 255 },
+                expected_start_seconds: { ...guardSchemas.timelineSeconds, maximum: 86400 },
                 expected_duration_seconds: { type: "number", minimum: 0, maximum: 86400 },
               },
               required: ["marker_guid", "expected_name", "expected_start_seconds", "expected_duration_seconds"],
@@ -279,7 +292,17 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
             expectedName: args.expected_name,
           }),
         };
-        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "markers.inspect", common), markerRemovalSnapshotSchema, "marker_snapshots", "markers");
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "markers.inspect", common), {
+          marker_snapshots: { schema: markerRemovalSnapshotSchema, sourceKey: "markers" },
+          ...(typeof args.marker_guid === "string" ? {
+            expected_name: {
+              schema: guardSchemas.name,
+              sourceValue: (record) => Array.isArray(record.markers)
+                ? (record.markers.find((marker) => marker && typeof marker === "object" && (marker as Record<string, unknown>).guid === args.marker_guid) as Record<string, unknown> | undefined)?.name
+                : undefined,
+            },
+          } : {}),
+        });
         if (args.action === "add") return invoke(bridge, "markers.add", { ...common, ...compact({
           name: args.name, markerType: args.marker_type, startSeconds: args.start_seconds,
           durationSeconds: args.duration_seconds, comments: args.comments, colorIndex: args.color_index,
@@ -381,8 +404,8 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           parent_bin_id: projectItemId,
           destination_bin_id: projectItemId,
           project_item_id: projectItemId,
-          expected_name: { type: "string", maxLength: 255 },
-          expected_parent_id: { type: "string", maxLength: 512 },
+          expected_name: { ...guardSchemas.name, maxLength: 255 },
+          expected_parent_id: { ...guardSchemas.parentId, description: "The expected_parent_id returned by inspect_bin, passed unchanged." },
           name: { type: "string", minLength: 1, maxLength: 255 },
           make_unique: { type: "boolean" },
           search_query: { type: "string", minLength: 1, maxLength: 4000 },
@@ -392,7 +415,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: AdvancedArgs) => {
-        if (args.action === "inspect_bin") return invoke(bridge, "bins.inspect", compact({ binId: args.bin_id }));
+        if (args.action === "inspect_bin") return withApplyGuards(invoke(bridge, "bins.inspect", compact({ binId: args.bin_id })), {
+          expected_name: { schema: guardSchemas.name, sourceKey: "bin.name" },
+          expected_parent_id: { schema: guardSchemas.parentId, sourceKey: "bin.parentId" },
+        });
         if (args.action === "create_bin") return invoke(bridge, "bins.create", { ...compact({ parentBinId: args.parent_bin_id, name: args.name, makeUnique: args.make_unique }), ...operation(args) });
         if (args.action === "create_smart_bin") return invoke(bridge, "bins.createSmart", { ...compact({ parentBinId: args.parent_bin_id, name: args.name, searchQuery: args.search_query }), ...operation(args) });
         if (args.action === "rename") return invoke(bridge, "bins.rename", { ...compact({ projectItemId: args.project_item_id, expectedName: args.expected_name, name: args.name }), ...operation(args) });
@@ -464,16 +490,11 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           action: { type: "string", enum: ["inspect", "update"] },
           sequence_id: sequenceId,
           expected_sequence_guid: {
-            type: "string", minLength: 1, maxLength: 128,
-            description: "Required for update; copy sequence.guid from inspect. The update targets this GUID even if the active sequence changes.",
+            ...guardSchemas.sequenceId,
+            description: "Required for update; the expected_sequence_guid returned by inspect, passed unchanged. The update targets this GUID even if the active sequence changes.",
           },
           expected_display_formats: {
-            type: "object", additionalProperties: false,
-            properties: {
-              audio_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
-              video_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
-            },
-            required: ["audio_display_format", "video_display_format"],
+            ...displayFormatSnapshotSchema,
             description: "Required for update; the expected_display_formats object returned by inspect, passed unchanged.",
           },
           updates: {
@@ -489,7 +510,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: AdvancedArgs) => {
-        if (args.action === "inspect") return withApplySnapshot(invoke(bridge, "sequence.displayFormat.inspect", compact({ sequenceId: args.sequence_id })), displayFormatSnapshotSchema, "expected_display_formats", "displayFormats");
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "sequence.displayFormat.inspect", compact({ sequenceId: args.sequence_id })), {
+          expected_sequence_guid: { schema: guardSchemas.sequenceId, sourceKey: "sequence.id" },
+          expected_display_formats: { schema: displayFormatSnapshotSchema, sourceKey: "displayFormats" },
+        });
         if (args.action !== "update") return invalidAction(args.action);
         if (typeof args.expected_sequence_guid !== "string" || !args.expected_sequence_guid.trim() || args.expected_sequence_guid.length > 128) {
           return { success: false, error: "update requires expected_sequence_guid from inspect" };
@@ -553,8 +577,8 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           ...timelineTargetProperties,
           component_index: { type: "integer", minimum: 0 },
           param_index: { type: "integer", minimum: 0 },
-          expected_component_id: { type: "string", minLength: 1, maxLength: 256 },
-          expected_param_name: { type: "string", maxLength: 255 },
+          expected_component_id: { ...guardSchemas.componentId, maxLength: 256 },
+          expected_param_name: { ...guardSchemas.name, maxLength: 255 },
           value: { type: ["number", "string", "boolean"] },
           point: {
             type: "object", additionalProperties: false,
@@ -634,9 +658,9 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           end_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Required with inspect_keyframe direction nearest as the documented native outTime, inspect_point_displacement as the strictly later PointF sample, and used as the inclusive end for remove_keyframe_range." },
           interpolation: { type: "string", enum: ["linear", "hold", "bezier", "time"] },
           keyframe_direction: { type: "string", enum: ["at", "next", "previous", "nearest"], description: "Required for inspect_keyframe. nearest requires end_seconds greater than or equal to time_seconds and passes both documented native lookup bounds to Premiere." },
-          expected_sequence_id: { type: "string", minLength: 1, maxLength: 128, description: "Required for set_time_varying; exact sequence ID from inspect_time_varying." },
-          expected_time_varying: { type: "boolean", description: "Required for set_time_varying; exact animation-mode value from inspect_time_varying." },
-          expected_keyframe_times_seconds: { type: "array", maxItems: 256, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 86400 }, description: "Required for set_time_varying; the expected_keyframe_times_seconds array returned by inspect, passed unchanged." },
+          expected_sequence_id: { ...guardSchemas.sequenceId, description: "Required for set_time_varying; the expected_sequence_id returned by inspect_time_varying, passed unchanged." },
+          expected_time_varying: { ...guardSchemas.timeVarying, description: "Required for set_time_varying; the expected_time_varying value returned by inspect_time_varying, passed unchanged." },
+          expected_keyframe_times_seconds: { ...guardSchemas.keyframeTimes, description: "Required for set_time_varying; the expected_keyframe_times_seconds array returned by inspect, passed unchanged." },
           time_varying: { type: "boolean", description: "Requested parameter animation mode for set_time_varying." },
           confirm_disable_time_varying: { type: "boolean", description: "Required true when set_time_varying disables animation, because Premiere can discard its editable animation state." },
           operation_id: operationId,
@@ -665,11 +689,20 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           return invoke(bridge, commands[args.action], { ...common, ...compact({ direction: args.keyframe_direction, endSeconds: args.end_seconds }) });
         }
         if (args.action === "inspect_time_varying") {
-          return withApplySnapshot(invoke(bridge, commands[args.action], compact({
+          return withApplyGuards(invoke(bridge, commands[args.action], compact({
             mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
             componentIndex: args.component_index, paramIndex: args.param_index,
             expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
-          })), { items: { type: "number" } }, "expected_keyframe_times_seconds", "keyframeTimesSeconds");
+          })), {
+            expected_sequence_id: { schema: guardSchemas.sequenceId, sourceKey: "sequenceId" },
+            expected_component_id: { schema: guardSchemas.componentId, sourceKey: "componentId" },
+            expected_param_name: { schema: guardSchemas.name, sourceKey: "paramName" },
+            expected_time_varying: { schema: guardSchemas.timeVarying, sourceKey: "timeVarying" },
+            expected_keyframe_times_seconds: {
+              schema: guardSchemas.keyframeTimes,
+              sourceValue: (record) => record.keyframesLimited === false ? record.keyframeTimesSeconds : undefined,
+            },
+          });
         }
         if (args.action === "set_time_varying") {
           return invoke(bridge, commands[args.action], {
@@ -757,8 +790,8 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         properties: {
           action: { type: "string", enum: ["inspect", "update"] },
           ...timelineTargetProperties,
-          expected_start_seconds: { type: "number", minimum: 0, maximum: 86400 },
-          expected_end_seconds: { type: "number", minimum: 0, maximum: 86400 },
+          expected_start_seconds: { ...guardSchemas.timelineSeconds, description: "The expected_start_seconds returned by inspect, passed unchanged." },
+          expected_end_seconds: { ...guardSchemas.timelineSeconds, description: "The expected_end_seconds returned by inspect, passed unchanged." },
           move_by_seconds: { type: "number", minimum: -86400, maximum: 86400 },
           start_seconds: { type: "number", minimum: 0, maximum: 86400 },
           end_seconds: { type: "number", minimum: 0, maximum: 86400 },
@@ -777,7 +810,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           moveBySeconds: args.move_by_seconds, startSeconds: args.start_seconds, endSeconds: args.end_seconds,
           inSeconds: args.in_seconds, outSeconds: args.out_seconds, disabled: args.disabled, name: args.name,
         });
-        if (args.action === "inspect") return invoke(bridge, "trackItem.inspect", values);
+        if (args.action === "inspect") return withApplyGuards(invoke(bridge, "trackItem.inspect", values), {
+          expected_start_seconds: { schema: guardSchemas.timelineSeconds, sourceKey: "startSeconds" },
+          expected_end_seconds: { schema: guardSchemas.timelineSeconds, sourceKey: "endSeconds" },
+        });
         if (args.action === "update") return invoke(bridge, "trackItem.update", { ...values, ...operation(args) });
         return invalidAction(args.action);
       },
@@ -790,7 +826,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         additionalProperties: false,
         properties: {
           sequence_id: { type: "string", minLength: 1, maxLength: 128 },
-          expected_sequence_id: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable sequence ID from a prior UXP snapshot. Rejects an active-sequence request if it changed." },
+          expected_sequence_id: { ...guardSchemas.sequenceId, description: "Optional stable sequence ID from a prior UXP snapshot. Rejects an active-sequence request if it changed." },
           media_type: { type: "string", enum: ["all", "video", "audio"] },
           track_indices: {
             type: "array", minItems: 1, maxItems: 64, uniqueItems: true,
@@ -890,7 +926,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         properties: {
           action: { type: "string", enum: ["inspect", "create_from_media", "clone", "subsequence", "activate", "open", "close", "delete"] },
           sequence_id: sequenceId,
-          expected_name: { type: "string", maxLength: 255 },
+          expected_name: { ...guardSchemas.name, maxLength: 255 },
           name: { type: "string", minLength: 1, maxLength: 255 },
           project_item_ids: { type: "array", minItems: 1, maxItems: 64, items: projectItemId },
           target_bin_id: projectItemId,
