@@ -162,8 +162,8 @@ describe("real-host social sequence regressions", () => {
 
   it("sets and reads sequence in/out points in seconds with verification", async () => {
     const setScript = await scriptFor(playhead.set_sequence_in_out_points, { in_seconds: 0, out_seconds: 60 });
-    expect(setScript).toContain("seq.setInPoint(appliedInSeconds)");
-    expect(setScript).toContain("seq.setOutPoint(appliedOutSeconds)");
+    expect(setScript).toContain("seq.setInPoint(inWriteSeconds)");
+    expect(setScript).toContain("seq.setOutPoint(outWriteSeconds)");
     expect(setScript).toContain("requestedOutTicks = __secondsToTicks(60)");
     expect(setScript).toContain("Math.abs(observedOut - appliedOutSeconds)");
 
