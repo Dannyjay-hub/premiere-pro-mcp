@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `set_sequence_display_format` writes Premiere's display codes (video 100-113, audio 200-201) and maps the older 0-11 / 0-1 inputs onto them. Premiere 26.5.2 stores and reads back any number, so the old values "verified" but did not select the format (2 formatted as non-drop timecode, 102 as drop-frame). `set_sequence_frame_rate` now reports the clips Premiere re-snaps to the new frame grid (`clipsMoved`, `maxShiftSeconds`, `movedClips`) with a warning that changing back does not restore them.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added
