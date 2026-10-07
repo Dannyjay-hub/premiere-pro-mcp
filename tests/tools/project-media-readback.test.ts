@@ -116,7 +116,7 @@ describe("project item writes read back", () => {
     const { interp } = host({ resetParOnInterp: true });
     interp.pixelAspectRatio = 2;
     await expect(run(metadata.set_footage_interpretation, { item_id: "i1", frame_rate: 24 })).resolves.toMatchObject({ success: false, data: { frameRate: 24, pixelAspectRatio: 1 } });
-    await expect(run(metadata.set_footage_interpretation, { item_id: "i1" })).resolves.toMatchObject({ success: false, error: "Provide frame_rate, pixel_aspect_ratio, or both." });
+    await expect(run(metadata.set_footage_interpretation, { item_id: "i1" })).resolves.toMatchObject({ success: false, error: "Provide frame_rate, pixel_aspect_ratio, field_type, or a combination." });
   });
 
   it("set_override_frame_rate refuses 0 and verifies the rate", async () => {

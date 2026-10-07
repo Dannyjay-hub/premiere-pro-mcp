@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `set_footage_interpretation` accepts `field_type` (0 progressive, 1 upper field first, 2 lower field first) and reads it back (#806).
+- `import_folder` accepts `target_bin` and skips `Thumbs.db`, `desktop.ini` and `.DS_Store` (#807).
+- `get_encoder_presets` accepts `limit` and `offset`; the result adds `total` and `offset` (#808).
+- `import_fcp_xml` accepts `mode: "into_open_project"` (with optional `target_bin`) to import into the open project; it succeeds only when the sequence count grew, and `project_path` is required only in the default `new_project` mode (#811).
+
 ### Fixed
+
+- `import_media` no longer reports an error when an `.xml`, `.aaf`, `.edl` or `.prproj` file imports correctly. Interchange files create sequences and bins rather than an item with the file's path, so they now return `outcome: "committed_unverified"` with `interchange: true`, which stops retries from duplicating the sequence (#805).
 
 - `razor_all_tracks` and `split_clip` cut on the requested frame in drop-frame sequences. They built a non-drop `HH:MM:SS:FF` string, which Premiere reads as drop-frame timecode on 29.97/59.94 DF sequences, so cuts landed early by the dropped-frame count (2 frames after the first minute, 28 frames at 16 minutes, measured on 25.2.3) and `razor_all_tracks` still reported `verified: true`. Both now let Premiere format the timecode in the sequence's display format, snap the cut to a frame, and verify the new boundary within half a frame; `razor_all_tracks` reports a misplaced cut as `committed_unverified`.
 
