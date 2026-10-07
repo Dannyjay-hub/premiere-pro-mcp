@@ -117,6 +117,20 @@ describe("add_transition readback", () => {
     await expect(add(6)).resolves.toMatchObject({ success: true, data: { verified: true } });
   });
 
+  it("matches a cut point given to a few decimals to the clip edge in the same frame", async () => {
+    // Live 26.5.2: 22.5892 for the cut at frame 677 (22.5892333 s) at 29.97 was refused.
+    const host = hostWith((cut) => [cut - 0.5, cut + 0.5]);
+    const result = await add(6.013);
+    expect(result).toMatchObject({ success: true, data: { verified: true, atSeconds: 6, requestedCutSeconds: 6.013 } });
+    expect(host.calls()).toBe(1);
+  });
+
+  it("refuses a cut point more than half a frame from any clip edge", async () => {
+    const host = hostWith((cut) => [cut - 0.5, cut + 0.5]);
+    await expect(add(6.03)).resolves.toMatchObject({ success: false, error: expect.stringContaining("within half a frame") });
+    expect(host.calls()).toBe(0);
+  });
+
   it("verifies a transition pushed entirely to one side of the cut (no handles)", async () => {
     hostWith((cut) => [cut - 1, cut]);
     await expect(add(12)).resolves.toMatchObject({ success: true, data: { verified: true } });
