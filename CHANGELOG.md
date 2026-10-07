@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `set_zero_point` writes the frame-snapped zero point and reads it back instead of always returning `set: true`. It reports the requested, applied, and previous seconds, and refuses a negative or non-finite `start_seconds` before contacting Premiere.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

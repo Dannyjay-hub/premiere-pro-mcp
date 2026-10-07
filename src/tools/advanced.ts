@@ -1201,7 +1201,7 @@ export function getAdvancedTools(
     },
 
     set_zero_point: {
-      description: "Set the starting timecode (zero point) of a sequence",
+      description: "Set the starting timecode (zero point) of a sequence and read it back. The value is snapped to the sequence frame grid; for drop-frame 29.97, 01;00;00;00 is 3599.9964 s, and for non-drop 29.97 it is 3603.6 s.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1212,7 +1212,7 @@ export function getAdvancedTools(
           },
           start_seconds: {
             type: "number",
-            description: "Start time in seconds for the timecode origin",
+            description: "Start time in seconds for the timecode origin (0 or more)",
           },
         },
         required: ["start_seconds"],
@@ -1221,15 +1221,40 @@ export function getAdvancedTools(
         sequence_id?: string;
         start_seconds: number;
       }) => {
+        if (!Number.isFinite(args.start_seconds) || args.start_seconds < 0) {
+          return { success: false, error: "start_seconds must be a finite, non-negative number of seconds." };
+        }
         const seqLookup = args.sequence_id
           ? `var seq = __findSequence("${escapeForExtendScript(args.sequence_id)}"); if (!seq) return __error("Sequence not found");`
           : `var seq = app.project.activeSequence; if (!seq) return __error("No active sequence");`;
 
         const script = buildToolScript(`
           ${seqLookup}
-          var ticks = __secondsToTicks(${args.start_seconds}).toString();
-          seq.setZeroPoint(ticks);
-          return __result({ set: true, startSeconds: ${args.start_seconds} });
+          // Premiere keeps the zero point on the frame grid (live 26.5.2: 3600 s
+          // at 29.97 is stored as 3599.9964 s, frame 107892), so write the
+          // snapped value and verify it.
+          var requestedTicks = __secondsToTicks(${args.start_seconds});
+          var appliedTicks = __snapSequenceTicks(seq, requestedTicks);
+          var previousTicks = String(seq.zeroPoint);
+          try { seq.setZeroPoint(String(appliedTicks)); } catch (zeroError) {
+            return __error("Premiere rejected the zero point: " + zeroError.toString());
+          }
+          var observedTicks = parseFloat(seq.zeroPoint);
+          var zeroResult = {
+            startSeconds: __ticksToSeconds(String(observedTicks)),
+            requestedSeconds: ${args.start_seconds},
+            appliedSeconds: __ticksToSeconds(String(appliedTicks)),
+            previousSeconds: __ticksToSeconds(previousTicks)
+          };
+          if (!(Math.abs(observedTicks - appliedTicks) <= __TICK_MATCH_TOL)) {
+            zeroResult.outcome = "failed";
+            zeroResult.verified = false;
+            return __error("Premiere did not apply the zero point; it reads " + zeroResult.startSeconds + " s.", zeroResult);
+          }
+          zeroResult.set = true;
+          zeroResult.outcome = "verified";
+          zeroResult.verified = true;
+          return __result(zeroResult);
         `);
         return sendCommand(script, bridgeOptions);
       },
