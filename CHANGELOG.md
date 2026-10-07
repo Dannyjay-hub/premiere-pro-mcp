@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `link_selection` and `unlink_selection` read the clip links back instead of always reporting success. On Premiere 26.5.2 `unlinkSelection()` returns false and changes nothing unless every clip of the linked group is selected; `unlink_selection` now refuses such a selection before calling Premiere and names the partner clips to add. An already-unlinked selection is reported as `alreadyUnlinked`, and `link_selection` needs at least two selected clips.
+
 ## [1.20.0] - 2026-10-06
 
 ### Added

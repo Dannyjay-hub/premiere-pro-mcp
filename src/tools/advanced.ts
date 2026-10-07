@@ -9,6 +9,32 @@ import { SPEED_UNAVAILABLE_DESCRIPTION, SPEED_UNAVAILABLE_ERROR } from "./timeli
 import { probeMediaDurationTicks } from "./media-evidence.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
 
+// Selected clips plus link readers shared by link_selection and unlink_selection.
+// getLinkedItems() returns null for an unlinked clip and includes the clip itself.
+const SELECTION_LINK_PREAMBLE = `
+          var seq = app.project.activeSequence;
+          if (!seq) return __error("No active sequence");
+          var selection = null;
+          try { selection = seq.getSelection(); } catch (selectionError) {}
+          if (!selection || !selection.length) return __error("No clips are selected. Select clips first (for example with set_clip_selection). Nothing was changed.");
+          function linkedIds(clip) {
+            var linked = null;
+            try { linked = clip.getLinkedItems(); } catch (linkedError) { return null; }
+            var ids = [];
+            for (var li = 0; linked && li < linked.numItems; li++) ids.push(String(linked[li].nodeId));
+            return ids;
+          }
+          function contains(list, value) {
+            for (var ci = 0; ci < list.length; ci++) if (list[ci] === value) return true;
+            return false;
+          }
+          function describeSelection() {
+            var out = [];
+            for (var di = 0; di < selection.length && di < 50; di++) out.push({ nodeId: String(selection[di].nodeId), name: selection[di].name });
+            return out;
+          }
+`;
+
 export function getAdvancedTools(
   bridgeOptions: BridgeOptions,
   dependencies: { probeMediaDurationSeconds?: (path: string) => Promise<number | null>; probeMediaDurationTicks?: (path: string) => Promise<number | null> } = {},
@@ -929,14 +955,25 @@ export function getAdvancedTools(
 
     link_selection: {
       description:
-        "Link the currently selected video and audio clips in the active sequence",
+        "Link the currently selected video and audio clips in the active sequence, then read the links back. Needs at least two selected clips; verified only when every selected clip is linked to every other.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          seq.linkSelection();
-          return __result({ linked: true });
+          ${SELECTION_LINK_PREAMBLE}
+          if (selection.length < 2) return __error("Select at least two clips to link. Nothing was changed.");
+          var hostResult = null;
+          try { hostResult = seq.linkSelection(); } catch (linkError) { return __error("Premiere rejected linking the selection: " + linkError.toString()); }
+          var notLinked = [];
+          for (var n = 0; n < selection.length; n++) {
+            var ids = linkedIds(selection[n]);
+            var missing = !ids;
+            for (var m = 0; !missing && m < selection.length; m++) if (!contains(ids, String(selection[m].nodeId))) missing = true;
+            if (missing) notLinked.push(String(selection[n].nodeId));
+          }
+          if (notLinked.length) {
+            return __jsonStringify({ success: false, error: "Premiere did not link the selected clips; " + notLinked.length + " of " + selection.length + " are not linked to all the others.", data: { outcome: "failed", verified: false, hostReturned: hostResult, notLinked: notLinked, clips: describeSelection() } });
+          }
+          return __result({ linked: true, verified: true, outcome: "verified", hostReturned: hostResult, clips: describeSelection() });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -944,14 +981,42 @@ export function getAdvancedTools(
 
     unlink_selection: {
       description:
-        "Unlink the currently selected video and audio clips in the active sequence",
+        "Unlink the currently selected video and audio clips in the active sequence, then read the links back. Premiere only unlinks when every clip of a linked group is selected, so a selection missing a linked partner is refused before anything changes.",
       parameters: {},
       handler: async () => {
         const script = buildToolScript(`
-          var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          seq.unlinkSelection();
-          return __result({ unlinked: true });
+          ${SELECTION_LINK_PREAMBLE}
+          var selectedIds = {};
+          for (var s = 0; s < selection.length; s++) selectedIds[String(selection[s].nodeId)] = true;
+          var anyLinked = false;
+          var unselectedPartners = [];
+          for (var p = 0; p < selection.length; p++) {
+            var ids = linkedIds(selection[p]);
+            if (!ids) return __error("Could not read the links of a selected clip. Nothing was changed.");
+            for (var q = 0; q < ids.length; q++) {
+              if (ids[q] === String(selection[p].nodeId)) continue;
+              anyLinked = true;
+              if (!selectedIds[ids[q]] && !contains(unselectedPartners, ids[q])) unselectedPartners.push(ids[q]);
+            }
+          }
+          if (!anyLinked) return __result({ unlinked: false, alreadyUnlinked: true, verified: true, outcome: "verified", clips: describeSelection() });
+          // Live 26.5.2: unlinkSelection() returns false and changes nothing
+          // unless every clip of the linked group is selected.
+          if (unselectedPartners.length) {
+            return __jsonStringify({ success: false, error: "Premiere only unlinks when every linked clip is selected. Also select the linked partner clip(s) " + unselectedPartners.join(", ") + " (for example with set_clip_selection), then retry. Nothing was changed.", data: { unselectedPartners: unselectedPartners } });
+          }
+          var hostResult = null;
+          try { hostResult = seq.unlinkSelection(); } catch (unlinkError) { return __error("Premiere rejected unlinking the selection: " + unlinkError.toString()); }
+          var stillLinked = [];
+          for (var r = 0; r < selection.length; r++) {
+            var after = linkedIds(selection[r]);
+            if (!after) { stillLinked.push(String(selection[r].nodeId)); continue; }
+            for (var t = 0; t < after.length; t++) if (after[t] !== String(selection[r].nodeId)) { stillLinked.push(String(selection[r].nodeId)); break; }
+          }
+          if (stillLinked.length) {
+            return __jsonStringify({ success: false, error: "Premiere did not unlink " + stillLinked.length + " of the " + selection.length + " selected clips.", data: { outcome: "failed", verified: false, hostReturned: hostResult, stillLinked: stillLinked, clips: describeSelection() } });
+          }
+          return __result({ unlinked: true, verified: true, outcome: "verified", hostReturned: hostResult, clips: describeSelection() });
         `);
         return sendCommand(script, bridgeOptions);
       },
