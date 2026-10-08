@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `--diagnose-cep` repair inside the `.mcpb` bundle, which omits `scripts/`, now says so and points to the signed `MCPBridgeCEP.zxp` or `npx -y premiere-pro-mcp --install-cep` instead of failing on a missing script (#828).
 - Effect writes, stabilization, smart-bin creation, proxy detachment, folder imports, sequence creation, marker deletion and clip selection now distinguish requested edits from host readback, report ignored writes as failures and unreadable results as `committed_unverified`. Selection counts describe applied states; stabilization does not claim a completed analysis. CEP selected-clip removal refuses ripple requests before deleting because clip absence cannot verify gap closure.
+- `set_sequence_display_format` writes Premiere's display codes (video 100-113, audio 200-201) and maps the older 0-11 / 0-1 inputs onto them. Premiere 26.5.2 stores and reads back any number, so the old values "verified" but did not select the format (2 formatted as non-drop timecode, 102 as drop-frame). `set_sequence_frame_rate` now reports the clips Premiere re-snaps to the new frame grid (`clipsMoved`, `maxShiftSeconds`, `movedClips`) with a warning that changing back does not restore them.
 
 ## [1.20.0] - 2026-10-06
 
