@@ -275,7 +275,7 @@ export function getSelectionTools(bridgeOptions: BridgeOptions) {
     },
 
     select_clips_by_color: {
-      description: "Select all clips whose source project item has a specific color label.",
+      description: "Select clips by their source project item color label. CEP exposes no timeline track-item label getter, so timeline-specific labels cannot be matched.",
       parameters: {
         type: "object" as const,
         properties: {
