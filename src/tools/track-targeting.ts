@@ -1557,18 +1557,20 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_selected_clips: {
-      description: "Remove all currently selected clips from the timeline.",
+      description: "Remove all currently selected clips and verify their absence. Ripple requests are refused because the CEP removal call cannot reliably close gaps; use a guarded ripple-range tool instead.",
       parameters: {
         type: "object" as const,
         properties: {
           ripple: {
             type: "boolean",
             description:
-              "If true, close the gap after removing (ripple delete). Default: false",
+              "Ripple removal is unsupported and refused before editing. Default: false",
           },
         },
       },
       handler: async (args: { ripple?: boolean }) => {
+        if (args.ripple !== undefined && typeof args.ripple !== "boolean") return { success: false, error: "ripple must be a boolean" };
+        if (args.ripple) return { success: false, error: "CEP selected-clip removal cannot reliably ripple. Nothing was removed; use a guarded ripple-range tool.", data: { removed: 0, ripple: false, requestedRipple: true, verified: false, outcome: "not_applied", timelineChanged: false } };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -1599,10 +1601,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             if (__findClip(ids[r])) remaining.push(ids[r]); else removed++;
           }
           if (remaining.length) {
-            return __jsonStringify({ success: false, error: remaining.length + " selected clip(s) are still on the timeline.", data: { removed: removed, remainingNodeIds: remaining, timelineChanged: removed > 0 } });
+            return __jsonStringify({ success: false, error: remaining.length + " selected clip(s) are still on the timeline.", data: { removed: removed, remainingNodeIds: remaining, timelineChanged: removed > 0, verified: false, outcome: "failed", requestedRipple: false, ripple: false } });
           }
 
-          return __result({ removed: removed, ripple: ${args.ripple ? "true" : "false"}, verified: true });
+          return __result({ removed: removed, ripple: false, requestedRipple: false, verified: true, outcome: "verified" });
         `);
         return sendCommand(script, bridgeOptions);
       },

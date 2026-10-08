@@ -46,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A UXP bridge token with surrounding whitespace or a trailing newline (for example from `pbcopy`) is trimmed in the server and in the UXP panel instead of failing with an unexplained HTTP 401 (#828).
 
 - `--diagnose-cep` repair inside the `.mcpb` bundle, which omits `scripts/`, now says so and points to the signed `MCPBridgeCEP.zxp` or `npx -y premiere-pro-mcp --install-cep` instead of failing on a missing script (#828).
+- Effect writes, stabilization, smart-bin creation, proxy detachment, folder imports, sequence creation, marker deletion and clip selection now distinguish requested edits from host readback, report ignored writes as failures and unreadable results as `committed_unverified`. Selection counts describe applied states; stabilization does not claim a completed analysis. CEP selected-clip removal refuses ripple requests before deleting because clip absence cannot verify gap closure.
 
 ## [1.20.0] - 2026-10-06
 
