@@ -301,7 +301,9 @@ export function inspectWindowsBridgeDirectoryAcl(
       encoding: "utf8",
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 5000,
+      // A cold PowerShell start can take over 5 s on a busy machine (seen on
+      // GitHub's windows-latest runners), which failed the ACL check outright.
+      timeout: 15000,
       maxBuffer: 64 * 1024,
       env: {
         ...process.env,
