@@ -337,7 +337,8 @@ export function getMarkerTools(bridgeOptions: BridgeOptions) {
             verified: __markerUnverified.length === 0,
             unverifiedFields: __markerUnverified,
             guid: __markerGuid(marker),
-            timeSeconds: ${args.time_seconds},
+            timeSeconds: __ticksToSeconds(marker.start.ticks),
+            requestedSeconds: ${args.time_seconds},
             name: marker.name,
             comments: marker.comments
           }));
