@@ -6,13 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-10-11
+
+### Added
+
+- 41 bounded core tools and five guided workflow routes from the [52-item Filmcraft implementation ledger](docs/filmcraft-improvements.md). The source catalog now declares 434 core tools, 432 under default authority and 528 with 96 capability-gated UXP additions.
+- Guarded execution and recovery with a private shared host lease, expected project/sequence targets, structured mutation receipts, cancellation/progress context, durable hashed UXP replay reservations and versioned command/receipt contracts. UXP writes require native cryptographic entropy and compatible durable replay storage; older unversioned panels remain read-only.
+- Exact tick/rate timeline models, typed compound edit previews, sync and stacked-camera planning, transcript/caption/music/scene review, provenance, checkpoints and bounded edit-property fixtures.
+- Bounded OTIO/XML inspection and loss reports, ALE/CSV adapters and audio-post turnover plans. Unsupported native round trips and opaque serializers remain explicit rather than being reported as completed exports.
+- Verified delivery, checksum-pinned review artifacts, local job inspection/cancellation, rendered scopes and actual multi-frame RGB/ROI/PCM evidence tools, plus opt-in analysis caching, performance diagnostics and licensed-host fixture/report helpers.
+
 ### Fixed
+
+- Folder imports now verify Premiere project-item readback instead of treating an accepted import call as proof that all requested media was imported. Counts and partial outcomes describe the observed project state.
+- Caption imports validate supported formats before dispatch, preserve mutation readback and reject counts outside the safe integer range.
 
 - Registered tools accept optional request-scoped `expected_project_path`; generated CEP commands refuse a different, missing or unsaved active project before the tool body. UXP and After Effects refuse this CEP-only guard. Omitting the guard preserves existing behavior.
 
 - `unnest_sequence` now refuses, before removing the nested clip, any inner item that also carries the other media type. Premiere 26.5.2's `Track.overwriteClip` places that media on the matching track and overwrites the clips there. Same guard as `replace_clip`. Unnest a nest of video-only or audio-only items, or use Premiere's Unnest command.
 - Shared project-item mark restore after `replace_clip`, `unnest_sequence`, and other `Track.overwriteClip` helpers now writes the quarter-frame-biased seconds from `__itemMarksForRestore`. Writing the exact tick boundary as seconds can floor one media frame early on Premiere 26.5.2 (a soft-subclip Out of `00:00:29:22` stored as `00:00:29:21`), shrinking the source item. `duplicate_clip` and `set_item_in_out` already used those seconds.
 - `export_sequence` without `preset_path` no longer exports at proxy resolution when Media Encoder is not installed. Preset discovery only searched Premiere's `Settings/IngestPresets`, so the default became `IngestPresets/Proxy/00_1024x540 H.264.epr` and a 1080x1920 sequence was exported at 1024x540 while reporting `verified: true` (Premiere 24.0, macOS). Preset discovery now also searches Premiere's own `MediaIO/systempresets` when no Media Encoder presets exist, and the default never comes from `IngestPresets`; if no other H.264 preset is found, the tool asks for `preset_path`.
+
+### Compatibility and evidence
+
+CEP remains the production bridge; failed UXP mutations never fall back to CEP or QE. Recovery preserves unknown and partial outcomes. Native multicam switching, nonlinear/nested retime mapping, DSP music rendering, OCR and accepted-native-job cancellation remain unsupported. Local decoder tests establish artifact behavior, while licensed Premiere playback, Undo/reopen and native round-trip validation remain `not_run`.
 
 ## [1.22.0] - 2026-10-08
 

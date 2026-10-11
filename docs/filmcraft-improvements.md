@@ -11,8 +11,9 @@ Filmcraft codecs, renderer, UI or project internals.
 
 There are 41 new core tools and five guided workflow routes. Development source
 now declares 434 core tools, 432 under default authority and 528 with the 96 UXP
-additions. Package version and published v1.22.0 artifact counts are unchanged;
-this ledger is source-checkout evidence, not a publication receipt.
+additions. Current development version is tracked in `release-metadata.json`;
+published npm facts are tracked separately in the README and versioned website
+facts. This ledger describes implementation evidence, not a publication receipt.
 
 Package implementations are bounded deliberately. Pure models predict supported
 subsets, unknown native fields remain unknown, and undocumented or unmeasured
