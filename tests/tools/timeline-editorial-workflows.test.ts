@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFileSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir, makeTempDir } from "../helpers/temp-dir.js";
 import { getTimelineEditorialTools, timelineSnapshotScript, stackedCameraApplyScript } from "../../src/tools/timeline-editorial.js";
 import { getExtendedEditPlanTools, validateExtendedEditPlan } from "../../src/tools/extended-edit-plans.js";
 import { getSceneReviewWorkflowTools } from "../../src/tools/scene-review-workflow.js";
@@ -14,7 +14,8 @@ import { buildToolScript } from "../../src/bridge/script-builder.js";
 import { resolveCapabilities } from "../../src/security/capabilities.js";
 
 afterEach(cleanupTempDirs);
-const workspace = () => makePrivateBridgeTempDir("timeline-editorial-");
+const workspace = () => makeTempDir("timeline-editorial-");
+const privateWorkspace = () => makePrivateBridgeTempDir("timeline-editorial-");
 const time = secondsToTicks;
 function snapshot(): TimelineSnapshot {
   const s: TimelineSnapshot = { schema_version: 1, backend: "cep", project_id: "p", sequence_id: "s", session_id: "session", revision: "", frame_rate: { numerator: 24, denominator: 1 }, display_start_ticks: "0", tracks: [{ id: "video:0", type: "video", index: 0, locked: false, sync_locked: true, targeted: true, muted: false }, { id: "audio:0", type: "audio", index: 0, locked: false, sync_locked: true, targeted: false, muted: false }], clips: [{ id: "clip", source_id: "source", track_id: "video:0", start_ticks: "0", end_ticks: time(2), in_ticks: time(1), out_ticks: time(3), source_duration_ticks: time(60), speed: { numerator: 1, denominator: 1 }, reversed: false, enabled: true, linked_ids: [], identity: "host", effects: [], nested: false }], completeness: { clips: true, links: true, locks: true, effects: true, transitions: true, markers: true }, transitions: [], markers: [], pagination: { offset: 0, total: 1, next_offset: null } };
@@ -67,7 +68,7 @@ describe("reachable timeline/editorial contracts", () => {
     await expect(tools.build_project_handoff_manifest.handler({ approved_workspace_path: root, dependencies: [{ ...dependencies[0], relative_path: "../escape" }], inventory_complete: true })).rejects.toThrow("escapes");
   });
   it("persists private checkpoint states across restart with no replay or schema upgrade", async () => {
-    const root = workspace(), tools = getTimelineEditorialTools({ tempDir: root }); const checkpoint = { schema_version: 1, project_id: "p", sequence_id: "s", snapshot_revision: "r", backup_reference: null, sequence_checkpoint_reference: null, operations: [{ operation_id: "o", tool: "trim_clip", state: "unknown", receipt_digest: null }] };
+    const root = privateWorkspace(), tools = getTimelineEditorialTools({ tempDir: root }); const checkpoint = { schema_version: 1, project_id: "p", sequence_id: "s", snapshot_revision: "r", backup_reference: null, sequence_checkpoint_reference: null, operations: [{ operation_id: "o", tool: "trim_clip", state: "unknown", receipt_digest: null }] };
     const saved = await tools.save_workflow_checkpoint.handler({ checkpoint }); const id = saved.data.checkpoint_id;
     const restarted = getTimelineEditorialTools({ tempDir: root }); expect(await restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: id })).toMatchObject({ data: { checkpoint: { automatic_replay: false, recovery_required: true } } });
     writeFileSync(path.join(root, `workflow-checkpoint-${id}.json`), JSON.stringify({ checkpoint: { ...checkpoint, schema_version: 2 } })); await expect(restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: id })).rejects.toThrow("version");
@@ -77,7 +78,7 @@ describe("reachable timeline/editorial contracts", () => {
 });
 
 describe("native transcript readiness orchestration", () => {
-  function fixture() { const root = workspace(); let present = false, json = '{"segments":[]}', calls = 0; const start = vi.fn(async () => { calls++; return success({ accepted: true }); }); const catalog = { has_transcript_uxp: { handler: async () => success({ result: { hasTranscript: present, projectGuid: "project" } }) }, get_clip_transcript_uxp: { handler: async () => success({ result: { json, projectGuid: "project" } }) }, transcribe_clip_uxp: { handler: start } }; const dependencies = { getToolCatalog: () => catalog, sleep: async () => {} }; const tools = () => getTimelineEditorialTools({ tempDir: root }, dependencies); return { tools, start, catalog, set: (p: boolean, text = json) => { present = p; json = text; }, count: () => calls }; }
+  function fixture() { const root = privateWorkspace(); let present = false, json = '{"segments":[]}', calls = 0; const start = vi.fn(async () => { calls++; return success({ accepted: true }); }); const catalog = { has_transcript_uxp: { handler: async () => success({ result: { hasTranscript: present, projectGuid: "project" } }) }, get_clip_transcript_uxp: { handler: async () => success({ result: { json, projectGuid: "project" } }) }, transcribe_clip_uxp: { handler: start } }; const dependencies = { getToolCatalog: () => catalog, sleep: async () => {} }; const tools = () => getTimelineEditorialTools({ tempDir: root }, dependencies); return { tools, start, catalog, set: (p: boolean, text = json) => { present = p; json = text; }, count: () => calls }; }
   it("starts once, preserves consumed start state after restart, and waits for actual segment text", async () => {
     const f = fixture(), args = { project_item_id: "source", operation_id: "operation", start_if_missing: true, confirm_destructive: true };
     expect(await f.tools().prepare_transcript_workflow.handler(args)).toMatchObject({ data: { state: "accepted" } });

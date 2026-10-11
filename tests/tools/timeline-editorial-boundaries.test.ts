@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { rmSync, writeFileSync, mkdirSync, symlinkSync, statSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir, makeTempDir } from "../helpers/temp-dir.js";
 import { getTimelineEditorialTools } from "../../src/tools/timeline-editorial.js";
 import { getExtendedEditPlanTools, validateExtendedEditPlan } from "../../src/tools/extended-edit-plans.js";
 import { getSceneReviewWorkflowTools } from "../../src/tools/scene-review-workflow.js";
@@ -12,7 +12,8 @@ import { secondsToTicks } from "../../src/ai/exact-time.js";
 import { resolveCapabilities } from "../../src/security/capabilities.js";
 import { inspectWindowsBridgeDirectoryAcl } from "../../src/bridge/file-bridge.js";
 
-const workspace = () => makePrivateBridgeTempDir("editorial-boundary-");
+const workspace = () => makeTempDir("editorial-boundary-");
+const privateWorkspace = () => makePrivateBridgeTempDir("editorial-boundary-");
 afterEach(cleanupTempDirs);
 const ok = (data: unknown) => ({ success: true, data });
 const no = (error: string) => ({ success: false, error });
@@ -43,7 +44,7 @@ describe("local tool evidence boundaries", () => {
     for (const input of [ { approved_workspace_path: "relative", dependencies: [], inventory_complete: true }, { approved_workspace_path: path.join(root, "edit.prproj"), dependencies: [], inventory_complete: true }, { approved_workspace_path: root, dependencies: [dep, dep], inventory_complete: true }, { approved_workspace_path: root, dependencies: [{ ...dep, expected_bytes: "-1" }], inventory_complete: true }, { approved_workspace_path: root, dependencies: [{ ...dep, kind: "unknown" }], inventory_complete: true }, { approved_workspace_path: root, dependencies: [{ ...dep, relative_path: "/absolute" }], inventory_complete: true } ]) await expect(tools.build_project_handoff_manifest.handler(input)).rejects.toThrow();
   });
   it("keeps checkpoints private and refuses symlinked or oversized records", async () => {
-    const root = workspace(), tools = getTimelineEditorialTools({ tempDir: root }); const checkpoint = { schema_version: 1, project_id: "p", sequence_id: "s", snapshot_revision: "r", backup_reference: "backup", sequence_checkpoint_reference: null, operations: [{ operation_id: "done", tool: "enable_disable_clip", state: "completed", receipt_digest: null }] };
+    const root = privateWorkspace(), tools = getTimelineEditorialTools({ tempDir: root }); const checkpoint = { schema_version: 1, project_id: "p", sequence_id: "s", snapshot_revision: "r", backup_reference: "backup", sequence_checkpoint_reference: null, operations: [{ operation_id: "done", tool: "enable_disable_clip", state: "completed", receipt_digest: null }] };
     const saved = await tools.save_workflow_checkpoint.handler({ checkpoint }), file = path.join(root, `workflow-checkpoint-${saved.data.checkpoint_id}.json`);
     // Node's POSIX mode bits cannot describe the inherited Windows file ACL.
     if (process.platform === "win32") {
@@ -110,7 +111,7 @@ describe("source-scene recovery boundaries", () => {
 
 describe("transcript evidence and recovery bounds", () => {
   it("refuses malformed receipts and oversized/changed project evidence without starting", async () => {
-    const root = workspace(), start = vi.fn(), catalog: any = { has_transcript_uxp: { handler: async () => ok({ result: { hasTranscript: true, projectGuid: "p" } }) }, get_clip_transcript_uxp: { handler: async () => ok({ result: { json: JSON.stringify({ segments: [{ text: "Hello" }] }), projectGuid: "different" } }) }, transcribe_clip_uxp: { handler: start } }, tools = getTimelineEditorialTools({ tempDir: root }, { getToolCatalog: () => catalog, sleep: async () => {} }); const args = { project_item_id: "source", operation_id: "op", start_if_missing: true, confirm_destructive: true };
+    const root = privateWorkspace(), start = vi.fn(), catalog: any = { has_transcript_uxp: { handler: async () => ok({ result: { hasTranscript: true, projectGuid: "p" } }) }, get_clip_transcript_uxp: { handler: async () => ok({ result: { json: JSON.stringify({ segments: [{ text: "Hello" }] }), projectGuid: "different" } }) }, transcribe_clip_uxp: { handler: start } }, tools = getTimelineEditorialTools({ tempDir: root }, { getToolCatalog: () => catalog, sleep: async () => {} }); const args = { project_item_id: "source", operation_id: "op", start_if_missing: true, confirm_destructive: true };
     expect(await tools.prepare_transcript_workflow.handler(args)).toMatchObject({ data: { state: "unknown", readiness_error: expect.stringContaining("Project changed") } });
     catalog.get_clip_transcript_uxp.handler = async () => ok({ result: { json: "x".repeat(1024 * 1024 + 1) } }); expect(await tools.prepare_transcript_workflow.handler(args)).toMatchObject({ data: { state: "pending" } });
     catalog.get_clip_transcript_uxp.handler = async () => no("host pending"); expect(await tools.prepare_transcript_workflow.handler(args)).toMatchObject({ data: { state: "pending", readiness_error: "host pending" } });
@@ -119,7 +120,7 @@ describe("transcript evidence and recovery bounds", () => {
     delete catalog.has_transcript_uxp; await expect(tools.prepare_transcript_workflow.handler(args)).rejects.toThrow("unavailable");
   });
   it("polls accepted native work to ready and never starts through missing edit authority", async () => {
-    const root = workspace(); let present = false, reads = 0; const start = vi.fn(async () => { present = true; return ok({ accepted: true }); }); const catalog: any = { has_transcript_uxp: { handler: async () => ok({ result: { hasTranscript: present, projectGuid: "p" } }) }, get_clip_transcript_uxp: { handler: async () => { reads++; return ok({ result: { json: JSON.stringify({ segments: [{ text: reads === 1 ? "" : "Ready" }] }) } }); } }, transcribe_clip_uxp: { handler: start } }, tools = getTimelineEditorialTools({ tempDir: root }, { getToolCatalog: () => catalog, sleep: async () => {} }); const args = { project_item_id: "source", operation_id: "op", start_if_missing: true, confirm_destructive: true, language: "en", wait_seconds: 1 };
+    const root = privateWorkspace(); let present = false, reads = 0; const start = vi.fn(async () => { present = true; return ok({ accepted: true }); }); const catalog: any = { has_transcript_uxp: { handler: async () => ok({ result: { hasTranscript: present, projectGuid: "p" } }) }, get_clip_transcript_uxp: { handler: async () => { reads++; return ok({ result: { json: JSON.stringify({ segments: [{ text: reads === 1 ? "" : "Ready" }] }) } }); } }, transcribe_clip_uxp: { handler: start } }, tools = getTimelineEditorialTools({ tempDir: root }, { getToolCatalog: () => catalog, sleep: async () => {} }); const args = { project_item_id: "source", operation_id: "op", start_if_missing: true, confirm_destructive: true, language: "en", wait_seconds: 1 };
     expect(await tools.prepare_transcript_workflow.handler(args)).toMatchObject({ data: { state: "ready", native_receipt: { success: true } } }); expect(start).toHaveBeenCalledWith(expect.objectContaining({ language: "en" })); expect(start).toHaveBeenCalledTimes(1); expect(reads).toBe(2);
     present = false; await expect(getTimelineEditorialTools({ tempDir: root }, { capabilities: resolveCapabilities("inspect,filesystem"), getToolCatalog: () => catalog }).prepare_transcript_workflow.handler({ ...args, operation_id: "new" })).rejects.toThrow("edit"); expect(start).toHaveBeenCalledTimes(1);
   });
