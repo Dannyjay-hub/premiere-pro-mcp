@@ -97,15 +97,18 @@ describe("guarded documented UXP sequence preview-frame workflow", () => {
   });
 
   it("requires authority, a complete fresh snapshot, a bounded rectangle, and a bounded sequence collection", async () => {
-    const value = previewFrameHost();
     const update = { ...target, previewWidth: 1920, previewHeight: 1080, expectedSnapshot, operationId: "preview-frame-guard" };
-    await expect(value.registry.dispatch("sequence.previewFrame.update", update)).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
-    await expect(value.registry.dispatch("sequence.previewFrame.update", {
-      ...update, expectedSnapshot: { ...expectedSnapshot, previewWidth: 641 }, confirmSetPreviewFrame: true,
-    })).rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE_PREVIEW_FRAME" });
-    await expect(value.registry.dispatch("sequence.previewFrame.update", {
-      ...update, previewWidth: 10241, confirmSetPreviewFrame: true,
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    const attempts = [
+      { args: update, code: "UXP_CONFIRMATION_REQUIRED" },
+      { args: { ...update, expectedSnapshot: { ...expectedSnapshot, previewWidth: 641 }, confirmSetPreviewFrame: true, operationId: "preview-frame-stale" }, code: "UXP_STALE_SEQUENCE_PREVIEW_FRAME" },
+      { args: { ...update, previewWidth: 10241, confirmSetPreviewFrame: true, operationId: "preview-frame-bounds" }, code: "UXP_INVALID_ARGUMENT" },
+    ];
+    for (const attempt of attempts) {
+      const value = previewFrameHost();
+      await expect(value.registry.dispatch("sequence.previewFrame.update", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    }
+    const value = previewFrameHost();
     await expect(value.registry.dispatch("sequence.previewFrame.inspect", { sequenceId: "missing" })).rejects.toMatchObject({ code: "UXP_TARGET_NOT_FOUND" });
     await expect(previewFrameHost({ sequenceCount: 1025 }).registry.dispatch("sequence.previewFrame.inspect", target)).rejects.toMatchObject({ code: "UXP_TARGET_TOO_LARGE" });
     expect(value.project.executeTransaction).not.toHaveBeenCalled();

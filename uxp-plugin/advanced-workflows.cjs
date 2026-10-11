@@ -2166,9 +2166,13 @@
       assertObject(args); assertOnlyKeys(args, ["sequenceId", "exportType", "outputFile", "presetFile", "exportFull", "confirmExternalWrite", "operationId"]);
       requireExternalWrite(args.confirmExternalWrite);
       const project = await activeProject(false), sequence = await resolveSequence(project, args.sequenceId), manager = encoderManager(), output = await allowedPath(args.outputFile, "outputFile", "file"), preset = await allowedPath(args.presetFile, "presetFile", "file");
-      const job = beginEncoderJob("sequence", args.operationId);
+      const full = optionalBoolean(args.exportFull, true, "exportFull");
+      const job = beginEncoderJob("sequence", args.operationId, {
+        schemaVersion: "premiere-mcp.encoder-lineage.v1", projectId: guidString(project.guid), sequenceId: guidString(sequence.guid), projectItemId: null,
+        inputFile: null, outputFile: output, presetFile: preset, exportType: args.exportType || "queueToAme", range: await sequenceEncodeRange(sequence, full)
+      });
       const accepted = await runTrackedEncode(job, function () {
-        return manager.exportSequence(sequence, exportType(args.exportType), output, preset, optionalBoolean(args.exportFull, true, "exportFull"));
+        return manager.exportSequence(sequence, exportType(args.exportType), output, preset, full);
       }, "Premiere rejected sequence export");
       return withAmeQueueNote(externalWriteResult({ queued: true, kind: "sequence", sequence: await sequenceSnapshot(sequence), outputFile: output, encodeJob: accepted }), args.exportType === "queueToAme");
     }
@@ -2177,9 +2181,13 @@
       assertObject(args); assertOnlyKeys(args, ["projectItemId", "outputFile", "presetFile", "workArea", "removeUponCompletion", "startQueueImmediately", "confirmExternalWrite", "operationId"]);
       requireExternalWrite(args.confirmExternalWrite);
       const project = await activeProject(false), clip = asClip(await resolveProjectItem(project, args.projectItemId, true), "projectItemId"), manager = encoderManager(), output = await allowedPath(args.outputFile, "outputFile", "file"), preset = await allowedPath(args.presetFile, "presetFile", "file");
-      const job = beginEncoderJob("projectItem", args.operationId);
+      const workArea = boundedInt(args.workArea == null ? 0 : args.workArea, "workArea", 0, 16), removeUponCompletion = optionalBoolean(args.removeUponCompletion, false, "removeUponCompletion"), startQueueImmediately = optionalBoolean(args.startQueueImmediately, true, "startQueueImmediately");
+      const job = beginEncoderJob("projectItem", args.operationId, {
+        schemaVersion: "premiere-mcp.encoder-lineage.v1", projectId: guidString(project.guid), sequenceId: null, projectItemId: await projectItemId(clip),
+        inputFile: null, outputFile: output, presetFile: preset, exportType: "queueToAme", range: { mode: "project_item_work_area", inTicks: null, outTicks: null, workArea, endPolicy: "native_range_unverified" }, removeUponCompletion, startQueueImmediately
+      });
       const accepted = await runTrackedEncode(job, function () {
-        return manager.encodeProjectItem(clip, output, preset, boundedInt(args.workArea == null ? 0 : args.workArea, "workArea", 0, 16), optionalBoolean(args.removeUponCompletion, false, "removeUponCompletion"), optionalBoolean(args.startQueueImmediately, true, "startQueueImmediately"));
+        return manager.encodeProjectItem(clip, output, preset, workArea, removeUponCompletion, startQueueImmediately);
       }, "Premiere rejected project-item encode");
       return withAmeQueueNote(externalWriteResult({ queued: true, kind: "projectItem", projectItemId: await projectItemId(clip), outputFile: output, encodeJob: accepted }), true);
     }
@@ -2189,9 +2197,14 @@
       requireExternalWrite(args.confirmExternalWrite);
       const manager = encoderManager(), input = await allowedPath(args.filePath, "filePath", "file"), output = await allowedPath(args.outputFile, "outputFile", "file"), preset = await allowedPath(args.presetFile, "presetFile", "file"), start = finiteNumber(args.inSeconds, "inSeconds", 0, 86400), end = finiteNumber(args.outSeconds, "outSeconds", 0, 86400);
       if (end <= start) throw commandError("UXP_INVALID_ARGUMENT", "outSeconds must be greater than inSeconds");
-      const job = beginEncoderJob("file", args.operationId);
+      const inTime = tick(start), outTime = tick(end), workArea = boundedInt(args.workArea == null ? 0 : args.workArea, "workArea", 0, 16), removeUponCompletion = optionalBoolean(args.removeUponCompletion, false, "removeUponCompletion"), startQueueImmediately = optionalBoolean(args.startQueueImmediately, true, "startQueueImmediately");
+      const project = await ppro.Project.getActiveProject();
+      const job = beginEncoderJob("file", args.operationId, {
+        schemaVersion: "premiere-mcp.encoder-lineage.v1", projectId: project ? guidString(project.guid) : null, sequenceId: null, projectItemId: null,
+        inputFile: input, outputFile: output, presetFile: preset, exportType: "queueToAme", range: { mode: "file_range", inTicks: encodeTickString(inTime), outTicks: encodeTickString(outTime), inSeconds: start, outSeconds: end, workArea, endPolicy: "native_range_unverified" }, removeUponCompletion, startQueueImmediately
+      });
       const accepted = await runTrackedEncode(job, function () {
-        return manager.encodeFile(input, output, preset, tick(start), tick(end), boundedInt(args.workArea == null ? 0 : args.workArea, "workArea", 0, 16), optionalBoolean(args.removeUponCompletion, false, "removeUponCompletion"), optionalBoolean(args.startQueueImmediately, true, "startQueueImmediately"));
+        return manager.encodeFile(input, output, preset, inTime, outTime, workArea, removeUponCompletion, startQueueImmediately);
       }, "Premiere rejected file encode");
       return withAmeQueueNote(externalWriteResult({ queued: true, kind: "file", outputFile: output, encodeJob: accepted }), true);
     }
@@ -2212,9 +2225,23 @@
       });
     }
 
-    function beginEncoderJob(kind, operationId) {
+    function encodeTickString(value) {
+      return value && typeof value.ticks === "string" && /^-?(0|[1-9][0-9]{0,39})$/.test(value.ticks) ? value.ticks : null;
+    }
+
+    async function sequenceEncodeRange(sequence, full) {
+      let start = full ? "0" : null, end = null;
+      try {
+        if (!full && typeof sequence.getInPoint === "function") start = encodeTickString(await sequence.getInPoint());
+        const endMethod = full ? "getEndTime" : "getOutPoint";
+        if (typeof sequence[endMethod] === "function") end = encodeTickString(await sequence[endMethod]());
+      } catch (_) { start = null; end = null; }
+      return { mode: full ? "full_sequence" : "sequence_marks", inTicks: start, outTicks: end, endPolicy: "native_range_unverified" };
+    }
+
+    function beginEncoderJob(kind, operationId, lineage) {
       if (!canTrackEncoderJobs()) return null;
-      return events.beginEncodeJob({ kind, operationId: operationId || undefined });
+      return events.beginEncodeJob({ kind, operationId: operationId || undefined, lineage });
     }
 
     async function runTrackedEncode(job, callback, rejectionMessage) {
@@ -2225,7 +2252,7 @@
         if (job) events.markEncodeRejected(job.jobId, "host_error");
         throw error;
       }
-      if (!accepted) {
+      if (accepted !== true) {
         if (job) events.markEncodeRejected(job.jobId, "host_rejected");
         throw commandError("UXP_HOST_REJECTED", rejectionMessage);
       }

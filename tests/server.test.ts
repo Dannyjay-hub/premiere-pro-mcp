@@ -57,6 +57,7 @@ vi.mock("../src/bridge/file-bridge.js", () => ({
   sendRawCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
   getTempDir: vi.fn().mockReturnValue("/tmp/test"),
   cleanupTempDir: vi.fn(),
+  withBridgeWorkflow: (_options: unknown, work: () => Promise<unknown>) => work(),
 }));
 
 // We need the real tool modules to verify registration,

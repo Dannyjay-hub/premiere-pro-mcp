@@ -3,9 +3,11 @@ import {
   McpServer,
   type JsonSchemaType,
   type StandardSchemaWithJSON,
+  type ToolAnnotations,
 } from "@modelcontextprotocol/server";
-import { BridgeOptions } from "./bridge/file-bridge.js";
-import { runWithExpectedProject } from "./bridge/project-guard.js";
+import { BridgeOptions, getTempDir, withBridgeWorkflow } from "./bridge/file-bridge.js";
+import { markHostRecovery } from "./bridge/host-lease.js";
+import { runWithExpectedProject, runWithExpectedHostTarget } from "./bridge/project-guard.js";
 import { runWithUndoTracking } from "./bridge/undo-tracking.js";
 import { getDiscoveryTools } from "./tools/discovery.js";
 import { getProjectTools } from "./tools/project.js";
@@ -67,6 +69,12 @@ import { getTranscriptWordEditTools } from "./tools/transcript-word-edits.js";
 import { getPlatformDeliveryTools } from "./tools/platform-delivery.js";
 import { getEditorRequestTools } from "./tools/editor-requests.js";
 import { getReviewPlanTools } from "./tools/review-plans.js";
+import { getExecutionWorkflowTools } from "./tools/execution-workflows.js";
+import { getOperationRecoveryTools } from "./tools/operation-recovery.js";
+import { getTimelineEditorialTools } from "./tools/timeline-editorial.js";
+import { getInterchangeWorkflowTools } from "./tools/interchange-workflows.js";
+import { getTemporalRenderEvidenceTools } from "./tools/temporal-render-evidence.js";
+import { deriveToolOperationalCapability } from "./tool-capability-report.js";
 import { getUxpTools } from "./tools/uxp.js";
 import { getMogrtAuthoringTools } from "./tools/mogrt-authoring.js";
 import { getMogrtStudioTools } from "./tools/mogrt-studio.js";
@@ -93,6 +101,10 @@ import {
   type ToolPackSelection,
 } from "./workflows/tool-packs.js";
 import { getTelemetry, telemetryErrorType, type Telemetry } from "./telemetry.js";
+import { currentInvocation, withInvocationContext, reportProgress } from "./workflows/invocation-context.js";
+import { mutationReceipt } from "./workflows/mutation-receipt.js";
+import { argumentDiagnostics, strictDeclaredObjects } from "./workflows/strict-schema.js";
+import { recordPerformance } from "./workflows/performance-diagnostics.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -118,6 +130,7 @@ export const SERVER_VERSION = ((): string => {
 interface ToolDef {
   description: string;
   parameters: Record<string, unknown>;
+  annotations?: ToolAnnotations;
   handler: (
     args: any,
   ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
@@ -154,6 +167,11 @@ const toolResultOutputSchema = fromJsonSchema({
       type: "string",
       description: "Failure detail when ok is false.",
     },
+    receipt: {
+      type: "object",
+      description: "Versioned common mutation receipt; success never implies rendered verification.",
+      additionalProperties: true,
+    },
   },
   required: ["ok", "tool"],
 } as JsonSchemaType);
@@ -183,6 +201,8 @@ function namingUnknownArguments(
     "~standard": {
       ...standard,
       validate: async (value: unknown) => {
+        const diagnostics = argumentDiagnostics(value, sourceSchema);
+        if (diagnostics.length) return { issues: diagnostics.map(message => ({ message })) };
         const result = await standard.validate(value);
         if (!("issues" in result) || !result.issues) {
           return result;
@@ -243,10 +263,7 @@ function jsonSchemaToInputSchema(
   // A misspelled argument (time_seconds for start_seconds) used to be dropped
   // silently and the tool ran with its default instead. Reject unknown
   // top-level arguments whenever a tool declares its properties.
-  const sourceSchema = withDraft.properties !== undefined && withDraft.additionalProperties === undefined
-    && withDraft.patternProperties === undefined
-    ? { ...withDraft, additionalProperties: false }
-    : withDraft;
+  const sourceSchema = strictDeclaredObjects(withDraft);
   const schema = namingUnknownArguments(
     fromJsonSchema(sourceSchema as JsonSchemaType),
     sourceSchema.additionalProperties === false ? Object.keys((sourceSchema.properties ?? {}) as object) : null,
@@ -327,6 +344,8 @@ function collectStaticTools(
     ...getPlatformDeliveryTools(),
     ...getEditorRequestTools(bridgeOptions),
     ...getReviewPlanTools(),
+    ...getInterchangeWorkflowTools(bridgeOptions),
+    ...getTemporalRenderEvidenceTools(bridgeOptions),
   };
   toolCatalogCache.set(cacheKey, tools);
   return tools;
@@ -354,10 +373,24 @@ export function collectTools(
     ...getEditorialPlanTools({ repository: projectContextRepository, uxpBridge }),
     ...getCompetitorGapTools(bridgeOptions, uxpBridge),
     ...getMediaWatchTools(mediaWatchRegistry),
+    ...getOperationRecoveryTools(uxpBridge, bridgeOptions),
     ...(uxpBridge ? getUxpTools(uxpBridge) : {}),
   };
+  // Compositions use the same schema and authority boundary as external calls.
+  // A plan token or a discovered tool name is never authority to bypass it.
+  let compositionCatalog: Record<string, ToolDef> | undefined;
+  const getCompositionCatalog = () => compositionCatalog ??= Object.fromEntries(Object.entries(tools).map(([name, tool]) => [name, {
+    ...tool,
+    handler: async (args: unknown) => {
+      const validation = await jsonSchemaToInputSchema(tool.parameters)["~standard"].validate(args);
+      if ("issues" in validation && validation.issues) return { success: false, error: `INVALID_ARGUMENT: ${validation.issues.map(issue => issue.message).join("; ")}` };
+      return guardToolHandler(name, tool.handler, capabilities)(args);
+    },
+  }]));
   Object.assign(
     tools,
+    getTimelineEditorialTools(bridgeOptions, { getToolCatalog: getCompositionCatalog, capabilities }),
+    getExecutionWorkflowTools(bridgeOptions, { getToolCatalog: getCompositionCatalog, capabilities, uxpBridge }),
     getHealthTools(bridgeOptions, capabilities, () => tools, {
       telemetry,
       uxpBridge,
@@ -485,11 +518,40 @@ export function createServer(
           type: "string", minLength: 1, maxLength: 4096,
           description: "Optional absolute saved-project path. Every generated CEP command refuses before its body when the active project differs or is unsaved. UXP commands refuse this CEP-only guard; local-only tools do not inspect Premiere. Omit to keep existing behavior.",
         },
+        expected_cep_target: {
+          type: "object", additionalProperties: false,
+          description: "Optional reviewed CEP sequence/clip identity and exact tick ranges. Checked before every generated command; UXP refuses this CEP-only guard.",
+          properties: {
+            backend: { type: "string", const: "cep", description: "Backend namespace for these IDs." },
+            sequence_id: { type: "string", minLength: 1, maxLength: 512, description: "Stable expected active sequence ID." },
+            project_document_id: { type: "string", minLength: 1, maxLength: 512, description: "Exact Premiere project document ID observed during review." },
+            source_item: { type: "object", additionalProperties: false, description: "Reviewed source identity for a source-only operation.", properties: {
+              node_id: { type: "string", minLength: 1, maxLength: 512, description: "Exact project-item node ID." },
+              media_path: { type: "string", minLength: 1, maxLength: 4096, description: "Optional exact source-media path." },
+            }, required: ["node_id"] },
+            clip: { type: "object", additionalProperties: false, description: "Optional exact reviewed timeline clip.", properties: {
+              node_id: { type: "string", minLength: 1, maxLength: 512, description: "Stable CEP node ID." },
+              track_type: { type: "string", enum: ["video", "audio"], description: "Expected media track group." },
+              track_index: { type: "integer", minimum: 0, maximum: 255, description: "Expected zero-based track index; identity still checked." },
+              project_item_id: { type: "string", minLength: 1, maxLength: 512, description: "Expected source project-item node ID." },
+              start_ticks: { type: "string", pattern: "^-?\\d{1,30}$", description: "Exact expected timeline start ticks." },
+              end_ticks: { type: "string", pattern: "^-?\\d{1,30}$", description: "Exact expected exclusive timeline end ticks." },
+              in_ticks: { type: "string", pattern: "^-?\\d{1,30}$", description: "Exact expected source In ticks." },
+              out_ticks: { type: "string", pattern: "^-?\\d{1,30}$", description: "Exact expected exclusive source Out ticks." },
+              effect: { type: "object", additionalProperties: false, description: "Reviewed effect and parameter identity checked before mutation.", properties: {
+                match_name: { type: "string", minLength: 1, maxLength: 512, description: "Effect match name from host inspection." },
+                display_name: { type: "string", minLength: 1, maxLength: 512, description: "Optional exact host display name." },
+                parameter_index: { type: "integer", minimum: 0, maximum: 255, description: "Inspected zero-based parameter index." },
+                parameter_name: { type: "string", minLength: 1, maxLength: 512, description: "Exact inspected parameter name." },
+              }, required: ["match_name", "parameter_index", "parameter_name"] },
+            }, required: ["node_id", "track_type", "track_index"] },
+          }, required: ["backend"], anyOf: [{ required: ["sequence_id"] }, { required: ["source_item"] }],
+        },
       },
     });
     const guardedHandler = guardToolHandler(name, withFrameRateDefaultWarning(tool), capabilities);
 
-    const annotations = annotationsForTool(name);
+    const annotations = annotationsForTool(name, tool.annotations);
     server.registerTool(
       name,
       {
@@ -499,17 +561,48 @@ export function createServer(
         outputSchema: toolResultOutputSchema,
         annotations,
       },
-      async (args: unknown) => {
+      async (args: unknown, ctx) => withInvocationContext({
+        signal: ctx.mcpReq.signal,
+        progressToken: ctx.mcpReq._meta?.progressToken as string | number | undefined,
+        notify: ctx.mcpReq.notify,
+      }, async () => {
         const startedAt = Date.now();
+        const mutating = capabilitiesForToolInvocation(name, args).some(capability => capability !== "inspect");
+        const structured = (success: boolean, data?: unknown, error?: string) => ({
+          ...structuredToolResult(name, success, data, error),
+          ...(mutating ? { receipt: mutationReceipt(success, data, currentInvocation()) } : {}),
+        });
         try {
+          await reportProgress(0, 1, "Tool started; host completion remains unverified.");
           // Every call that may change the project records the undo position:
           // anything that needs more than inspect (edit, and also filesystem or
           // export tools such as import_*, relink_*, consolidate_* that add
           // project items). Only inspect-only calls skip it.
           const tracksUndo = capabilitiesForToolInvocation(name, args).some((capability) => capability !== "inspect");
-          const { expected_project_path, ...toolArgs } = args as Record<string, unknown>;
-          const result = await runWithExpectedProject(expected_project_path,
+          const { expected_project_path, expected_cep_target, ...toolArgs } = args as Record<string, unknown>;
+          const work = () => runWithExpectedHostTarget(expected_cep_target,
             () => runWithUndoTracking(tracksUndo, () => guardedHandler(toolArgs)));
+          const usesHost = deriveToolOperationalCapability(name, tool, capabilities).backends.some(backend => ["cep", "extendscript", "qe", "uxp"].includes(backend));
+          const protectedHostWork = async () => {
+            try {
+              const result = await work();
+              if (currentInvocation()?.dispatched && mutationReceipt(result.success, result.data, currentInvocation()).outcome === "unknown") {
+                markHostRecovery(getTempDir(bridgeOptions), "unknown_command_outcome");
+              }
+              return result;
+            } catch (error) {
+              // An earlier command may have written before a later readback or
+              // cancellation failed. Persist uncertainty before releasing the
+              // workflow lease so another backend cannot race the next edit.
+              if (currentInvocation()?.dispatched) markHostRecovery(getTempDir(bridgeOptions), "unknown_command_outcome");
+              throw error;
+            }
+          };
+          const result = await runWithExpectedProject(expected_project_path,
+            () => mutating && usesHost && name !== "acknowledge_operation_recovery" ? withBridgeWorkflow(bridgeOptions, protectedHostWork) : work());
+          let payloadBytes: number | null = null;
+          try { payloadBytes = Buffer.byteLength(JSON.stringify(result.data ?? null)); } catch { /* non-JSON diagnostic */ }
+          recordPerformance({ durationMs: Date.now() - startedAt, payloadBytes, stages: currentInvocation()?.stages ?? {}, cacheHit: (result.data as { analysisCache?: { hit?: boolean } } | undefined)?.analysisCache?.hit ?? null });
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",
@@ -524,9 +617,7 @@ export function createServer(
               typeof data.base64 === "string"
             ) {
               return {
-                structuredContent: structuredToolResult(name, true, {
-                  mimeType: data.mimeType,
-                }),
+                structuredContent: structured(true, Object.fromEntries(Object.entries(data).filter(([key]) => key !== "base64"))),
                 content: [
                   {
                     type: "image" as const,
@@ -541,7 +632,7 @@ export function createServer(
               };
             }
             return {
-              structuredContent: structuredToolResult(name, true, result.data),
+              structuredContent: structured(true, result.data),
               content: [
                 {
                   type: "text" as const,
@@ -552,8 +643,7 @@ export function createServer(
           } else {
             const failureData = (result as { data?: unknown }).data;
             return {
-              structuredContent: structuredToolResult(
-                name,
+              structuredContent: structured(
                 false,
                 failureData,
                 result.error,
@@ -577,8 +667,7 @@ export function createServer(
             error_type: telemetryErrorType(err),
           });
           return {
-            structuredContent: structuredToolResult(
-              name,
+            structuredContent: structured(
               false,
               undefined,
               err instanceof Error ? err.message : String(err),
@@ -591,8 +680,10 @@ export function createServer(
             ],
             isError: true,
           };
+        } finally {
+          await reportProgress(1, 1, "Tool returned; inspect its receipt for evidence and partial outcomes.");
         }
-      },
+      }),
     );
   }
 

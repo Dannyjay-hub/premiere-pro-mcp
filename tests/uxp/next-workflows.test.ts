@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
+import { reviewRecoveryFixture } from "./review-recovery-fixture.js";
 
 const require = createRequire(import.meta.url);
 const Commands = require("../../uxp-plugin/commands.cjs");
@@ -519,10 +520,12 @@ describe("next-wave UXP event workflows", () => {
     await expect(registry.dispatch("source.mediaTiming.setStart", {
       projectItemId: "clip-1", expectedTiming: { startSeconds: 10, durationSeconds: 60 }, startSeconds: 12,
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await reviewRecoveryFixture(registry);
     expect(media.createSetStartAction).not.toHaveBeenCalled();
     await expect(registry.dispatch("source.mediaTiming.setStart", {
       projectItemId: "clip-1", expectedTiming: { startSeconds: 10 }, startSeconds: 12, confirmSetStart: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(registry);
     expect(media.createSetStartAction).not.toHaveBeenCalled();
 
     const firstArgs = {
@@ -550,6 +553,7 @@ describe("next-wave UXP event workflows", () => {
       updated: true, after: { startSeconds: 15, durationSeconds: 60 }, operationId: "source-start-2",
     });
     await expect(concurrentSecond).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    await reviewRecoveryFixture(registry);
     expect(media.createSetStartAction).toHaveBeenCalledTimes(2);
     expect(project.executeTransaction).toHaveBeenCalledTimes(2);
     expect(startSeconds).toBe(15);
@@ -558,6 +562,7 @@ describe("next-wave UXP event workflows", () => {
       projectItemId: "clip-1", expectedTiming: { startSeconds: 12, durationSeconds: 60 },
       startSeconds: 19, confirmSetStart: true,
     })).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    await reviewRecoveryFixture(registry);
     expect(media.createSetStartAction).toHaveBeenCalledTimes(2);
 
     await expect(registry.dispatch("source.mediaTiming.setStart", {
@@ -577,7 +582,7 @@ describe("next-wave UXP event workflows", () => {
     await expect(registry.dispatch("source.mediaTiming.setStart", {
       projectItemId: "clip-1", expectedTiming: { startSeconds: 16, durationSeconds: 59 },
       startSeconds: 19, confirmSetStart: true,
-    })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
+    })).rejects.toMatchObject({ code: "UXP_RECOVERY_REQUIRED" });
     expect(betaPromiseMedia.createSetStartAction).not.toHaveBeenCalled();
   });
 
@@ -660,9 +665,11 @@ describe("next-wave UXP event workflows", () => {
     await expect(registry.dispatch("source.mediaOverrides.update", {
       projectItemId: "clip-1", expectedOverrides: initial, frameRate: 25,
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await reviewRecoveryFixture(registry);
     await expect(registry.dispatch("source.mediaOverrides.update", {
       projectItemId: "clip-1", expectedOverrides: initial, frameRate: 25, confirmMediaInterpretation: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(registry);
     expect(clip.createSetOverrideFrameRateAction).not.toHaveBeenCalled();
 
     const firstArgs = {
@@ -696,6 +703,7 @@ describe("next-wave UXP event workflows", () => {
       updated: true, operationId: "source-override-2", after: { frameRate: 30, pixelAspectRatio: 4 / 3 },
     });
     await expect(concurrentSecond).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    await reviewRecoveryFixture(registry);
     expect(clip.createSetOverrideFrameRateAction).toHaveBeenCalledTimes(2);
     expect(clip.createSetOverridePixelAspectRatioAction).toHaveBeenCalledTimes(1);
     expect(frameRate).toBe(30);
@@ -705,6 +713,7 @@ describe("next-wave UXP event workflows", () => {
       projectItemId: "clip-1", expectedOverrides: expectedCurrent, frameRate: 24,
       confirmMediaInterpretation: true, operationId: "source-override-4",
     })).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    await reviewRecoveryFixture(registry);
     expect(clip.createSetOverrideFrameRateAction).toHaveBeenCalledTimes(2);
 
     clip.createSetOverrideFrameRateAction.mockImplementationOnce(() => ({ apply: () => { frameRate = 29.97; } }));

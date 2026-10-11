@@ -63,16 +63,17 @@ const DESTRUCTIVE_TOOLS = new Set(["manage_project_context"]);
 const OPEN_WORLD_TOOLS = new Set(["execute_extendscript", "send_raw_script"]);
 
 /** Conservative MCP hints. They describe expected behavior, never authorization. */
-export function annotationsForTool(name: string): ToolAnnotations {
-  const readOnly = READ_ONLY_TOOLS.has(name) || READ_PREFIXES.some((prefix) => name.startsWith(prefix));
+export function annotationsForTool(name: string, explicit?: ToolAnnotations): ToolAnnotations {
+  const readOnly = explicit?.readOnlyHint ?? (READ_ONLY_TOOLS.has(name) || READ_PREFIXES.some((prefix) => name.startsWith(prefix)));
   return {
     title: name.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "),
     readOnlyHint: readOnly,
     destructiveHint: !readOnly && (
-      DESTRUCTIVE_TOOLS.has(name) || DESTRUCTIVE_PREFIXES.some((prefix) => name.startsWith(prefix))
+      DESTRUCTIVE_TOOLS.has(name) || name.startsWith("manage_") || name.startsWith("batch_") || DESTRUCTIVE_PREFIXES.some((prefix) => name.startsWith(prefix))
     ),
     idempotentHint: readOnly,
     openWorldHint: OPEN_WORLD_TOOLS.has(name),
+    ...explicit,
   };
 }
 

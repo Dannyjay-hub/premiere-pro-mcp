@@ -165,18 +165,23 @@ describe("guarded documented UXP contiguous track-item ripple delete workflow", 
   });
 
   it("rejects missing authority, stale state, a final item, and a gap before action creation", async () => {
-    const value = rippleHost();
-    await expect(value.registry.dispatch("trackItem.rippleDelete", { ...targetCoordinates, expectedSnapshot, operationId: "missing-confirmation" })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
-    await expect(value.registry.dispatch("trackItem.rippleDelete", { ...targetCoordinates, expectedSnapshot, confirmRippleDelete: true })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("trackItem.rippleDelete", {
-      ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, following: { ...following, outSeconds: 51 } }, confirmRippleDelete: true, operationId: "stale",
-    })).rejects.toMatchObject({ code: "UXP_STALE_TRACK_ITEM" });
+    const attempts = [
+      { args: { ...targetCoordinates, expectedSnapshot, operationId: "missing-confirmation" }, code: "UXP_CONFIRMATION_REQUIRED" },
+      { args: { ...targetCoordinates, expectedSnapshot, confirmRippleDelete: true }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, following: { ...following, outSeconds: 51 } }, confirmRippleDelete: true, operationId: "stale" }, code: "UXP_STALE_TRACK_ITEM" },
+    ];
+    for (const attempt of attempts) {
+      const value = rippleHost();
+      await expect(value.registry.dispatch("trackItem.rippleDelete", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    }
     const gap = rippleHost();
     gap.states[1]!.start = 11;
     await expect(gap.registry.dispatch("trackItem.rippleDelete.inspect", targetCoordinates)).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
     const finalItem = rippleHost();
     await expect(finalItem.registry.dispatch("trackItem.rippleDelete.inspect", { ...targetCoordinates, clipIndex: 1 })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
-    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    expect(gap.project.executeTransaction).not.toHaveBeenCalled();
+    expect(finalItem.project.executeTransaction).not.toHaveBeenCalled();
   });
 
   it("replays a completed operation ID without creating a second host transaction", async () => {

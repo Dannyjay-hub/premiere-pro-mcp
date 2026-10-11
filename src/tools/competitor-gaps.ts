@@ -797,6 +797,8 @@ export function getCompetitorGapTools(
             warnings: warnings,
             summary: {
               sequenceId: seq.sequenceID,
+              projectDocumentId: app.project.documentID ? String(app.project.documentID) : null,
+              projectPath: app.project.path ? String(app.project.path) : null,
               sequenceName: seq.name,
               durationSeconds: duration,
               checkedRange: { inSeconds: checkStart, outSeconds: checkEnd },

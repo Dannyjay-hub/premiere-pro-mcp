@@ -20,6 +20,7 @@ const commandRegistry = Commands.createCommandRegistry({
   fileExists: (path) => workspaceBroker.fileExists(path),
   events: eventJournal,
   storage: typeof globalThis !== "undefined" ? globalThis.localStorage : null,
+  requireOperationDurability: true,
   xmp: uxp.xmp && typeof uxp.xmp.XMPMeta === "function"
     ? uxp.xmp
     : { XMPMeta: uxp.XMPMeta, XMPConst: uxp.XMPConst },
@@ -359,6 +360,7 @@ async function dispatch(raw) {
       error: {
         code: errorCode,
         message: error.message || String(error),
+        ...(error.noHostDispatch === true && error.dispatchEvidence === "panel_pre_dispatch" ? { noHostDispatch: true, dispatchEvidence: "panel_pre_dispatch" } : {}),
         operation: Protocol.operationSemantics({ cancellationSupported: true })
       }
     }, cmd && cmd.requestId));

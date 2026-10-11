@@ -162,14 +162,18 @@ describe("Adobe Premiere Pro 26.3 UXP commands", () => {
   });
 
   it("rejects unsafe subclip ranges and unbounded AAF options before invoking the host", async () => {
-    const value = adobe263Host();
-    await expect(value.registry.dispatch("subclip.create", {
-      projectItemId: "source-1", name: "Invalid", startSeconds: 9, endSeconds: 3,
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("interchange.aaf.export", {
-      outputFilePath: "/exports/edit.aaf", options: { sampleRate: 12345 },
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("marker.list", { includeWebLinks: "true" })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("marker.list", { includeColorValues: "true" })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    const attempts = [
+      { command: "subclip.create", args: { projectItemId: "source-1", name: "Invalid", startSeconds: 9, endSeconds: 3 } },
+      { command: "interchange.aaf.export", args: { outputFilePath: "/exports/edit.aaf", options: { sampleRate: 12345 } } },
+      { command: "marker.list", args: { includeWebLinks: "true" } },
+      { command: "marker.list", args: { includeColorValues: "true" } },
+    ];
+    for (const attempt of attempts) {
+      const value = adobe263Host();
+      await expect(value.registry.dispatch(attempt.command, attempt.args)).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+      expect(value.source.createSubClipAction).not.toHaveBeenCalled();
+      expect(value.ppro.ProjectConverter.exportAAF).not.toHaveBeenCalled();
+    }
   });
 });

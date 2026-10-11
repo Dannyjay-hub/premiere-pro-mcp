@@ -33,3 +33,11 @@ Closes #
 - [ ] No duplicate tool names introduced
 - [ ] Tested with Premiere Pro (if possible)
 - [ ] `RESEARCH.md` updated (if adding new tools)
+
+## Compatibility and evidence
+
+- Backend and minimum host version:
+- Structural readback / artifact / temporal evidence:
+- Live Premiere verification performed (host/version/fixture), or explicitly not run:
+- Unknown outcomes, cancellation and recovery limitations:
+- Exact checks run (`npm run check`, coverage when applicable):

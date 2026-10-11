@@ -11,7 +11,7 @@
   const MAX_RESULTS = 256;
   const MAX_ENCODE_JOBS = 64;
   const SAFE_DETAIL_KEYS = new Set([
-    "state", "progress", "phase", "trackIndex", "mediaType", "attributed", "jobId"
+    "state", "progress", "phase", "trackIndex", "mediaType", "attributed", "jobId", "correlationVerified"
   ]);
 
   // Snap events are notifications only.  Keep their host constants and the
@@ -101,11 +101,14 @@
       const value = Object.assign({}, input, { detail: Object.assign({}, input && input.detail) });
       let attributedJob = null;
       if (value.category === "encoder") {
+        delete value.detail.jobId;
+        value.detail.correlationVerified = false;
         const candidates = Array.from(jobs.values()).filter(function (job) { return !job.terminal; });
         if (candidates.length === 1) {
           attributedJob = candidates[0];
           value.detail.attributed = true;
           value.detail.jobId = attributedJob.jobId;
+          value.detail.correlationVerified = false;
         } else {
           value.detail.attributed = false;
           unattributedEncoderEvents += 1;
@@ -154,14 +157,22 @@
       const value = input || {};
       const operationId = value.operationId == null ? null : boundedToken(value.operationId, "operationId");
       const jobId = operationId || ("encode-" + now() + "-" + (++jobSequence));
-      if (jobs.has(jobId)) return publicJob(jobs.get(jobId));
+      const kind = boundedToken(value.kind || "unknown", "kind"), lineage = normalizeEncoderLineage(value.lineage);
+      if (jobs.has(jobId)) {
+        const existing = jobs.get(jobId);
+        if (existing.kind !== kind || JSON.stringify(existing.lineage) !== JSON.stringify(lineage)) throw trackerError("UXP_ENCODE_LINEAGE_CONFLICT", "Operation ID is already bound to a different encode lineage");
+        return publicJob(existing);
+      }
       pruneJobs();
       if (jobs.size >= MAX_ENCODE_JOBS) throw trackerError("UXP_ENCODE_TRACKER_FULL", "Encode receipt tracker is full");
       const timestamp = new Date(now()).toISOString();
       const job = {
         jobId,
         operationId,
-        kind: boundedToken(value.kind || "unknown", "kind"),
+        kind,
+        lineage,
+        nativeJobId: null,
+        correlationVerified: false,
         state: "submitting",
         progress: null,
         hostEvent: null,
@@ -303,6 +314,10 @@
   function publicJob(job) {
     return {
       jobId: job.jobId,
+      nativeJobId: job.nativeJobId,
+      correlationVerified: job.correlationVerified,
+      correlationBoundary: "single_active_job_heuristic_native_boolean_has_no_job_id",
+      lineage: job.lineage == null ? null : JSON.parse(JSON.stringify(job.lineage)),
       operationId: job.operationId,
       kind: job.kind,
       state: job.state,
@@ -321,6 +336,39 @@
     const error = new Error(message);
     error.code = code;
     return error;
+  }
+
+  function normalizeEncoderLineage(value) {
+    if (value == null) return null;
+    if (typeof value !== "object" || Array.isArray(value)) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage must be an object");
+    const allowed = ["schemaVersion", "projectId", "sequenceId", "projectItemId", "inputFile", "outputFile", "presetFile", "exportType", "range", "removeUponCompletion", "startQueueImmediately"];
+    if (Object.keys(value).some(function (key) { return allowed.indexOf(key) === -1; })) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage has unknown fields");
+    if (value.schemaVersion !== "premiere-mcp.encoder-lineage.v1") throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage schema is unsupported");
+    const result = { schemaVersion: value.schemaVersion };
+    for (const key of ["projectId", "sequenceId", "projectItemId", "inputFile", "outputFile", "presetFile", "exportType"]) {
+      const field = value[key];
+      if (field != null && (typeof field !== "string" || !field || field.length > (key.indexOf("File") !== -1 ? 4096 : 512) || /\0/.test(field))) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage field is invalid: " + key);
+      result[key] = field == null ? null : field;
+    }
+    const range = value.range;
+    if (!range || typeof range !== "object" || Array.isArray(range) || Object.keys(range).some(function (key) { return ["mode", "inTicks", "outTicks", "inSeconds", "outSeconds", "workArea", "endPolicy"].indexOf(key) === -1; })) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage range is invalid");
+    if (["full_sequence", "sequence_marks", "project_item_work_area", "file_range"].indexOf(range.mode) === -1 || ["exclusive", "native_range_unverified"].indexOf(range.endPolicy) === -1) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage range policy is invalid");
+    result.range = { mode: range.mode, endPolicy: range.endPolicy };
+    for (const key of ["inTicks", "outTicks"]) {
+      if (range[key] != null && (typeof range[key] !== "string" || !/^-?(0|[1-9][0-9]{0,39})$/.test(range[key]))) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage ticks are invalid");
+      result.range[key] = range[key] == null ? null : range[key];
+    }
+    for (const key of ["inSeconds", "outSeconds"]) {
+      if (range[key] != null && (typeof range[key] !== "number" || !Number.isFinite(range[key]) || range[key] < 0 || range[key] > 86400)) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage seconds are invalid");
+      result.range[key] = range[key] == null ? null : range[key];
+    }
+    if (range.workArea != null && (!Number.isInteger(range.workArea) || range.workArea < 0 || range.workArea > 16)) throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage work area is invalid");
+    result.range.workArea = range.workArea == null ? null : range.workArea;
+    for (const key of ["removeUponCompletion", "startQueueImmediately"]) {
+      if (value[key] != null && typeof value[key] !== "boolean") throw trackerError("UXP_INVALID_ARGUMENT", "Encoder lineage queue flag is invalid");
+      result[key] = value[key] == null ? null : value[key];
+    }
+    return result;
   }
 
   function normalizeEvent(input, revision, timestamp) {

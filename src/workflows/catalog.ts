@@ -2,6 +2,36 @@ import { z } from "zod";
 
 export const WORKFLOW_CATALOG = [
   {
+    id: "exact-timeline-review",
+    title: "Predict and verify an exact timeline edit",
+    summary: "Capture a session-bound tick snapshot, review completeness and source handles, predict a supported edit, preview exact target bindings, apply once, then verify continuity against fresh readback.",
+    recommendedTools: ["inspect_timeline_snapshot", "predict_timeline_edit", "preview_extended_edit_plan", "apply_extended_edit_plan", "verify_timeline_postconditions"],
+  },
+  {
+    id: "scene-source-review",
+    title: "Create reviewed scene markers and subclips",
+    summary: "Review measured source candidates, approve exact segments, bind the saved project and source identity, then create verified source markers or audio-inclusive subclips in a new bin. Detector candidates never authorize cuts.",
+    recommendedTools: ["plan_scene_segments", "preview_scene_review_workflow", "apply_scene_review_workflow"],
+  },
+  {
+    id: "interchange-turnover",
+    title: "Review interchange loss and audio turnover",
+    summary: "Inspect bounded OTIO/XML artifacts and per-feature loss reports, prepare marker or ALE tables, and review an audio-post turnover contract before separately using an available native export. Parsing does not prove editor round-trip fidelity.",
+    recommendedTools: ["inspect_otio_interchange", "inspect_interchange_loss_report", "export_review_markers", "preview_facility_metadata_intake", "plan_audio_post_turnover"],
+  },
+  {
+    id: "temporal-delivery-proof",
+    title: "Render and check a delivery artifact",
+    summary: "Preflight a saved exact CEP sequence, directly export to a new destination and independently verify hash, format and optional decoded QC. Use a measured multi-frame oracle for temporal checks; generic encoder events never verify an artifact.",
+    recommendedTools: ["can_execute", "export_and_verify", "verify_temporal_render_artifact", "inspect_rendered_video_scopes", "build_edit_review_evidence"],
+  },
+  {
+    id: "operation-recovery",
+    title: "Reconcile an uncertain host operation",
+    summary: "Inspect recovery receipts and current target state, review a revision-bound acknowledgement, and keep consumed mutation IDs consumed. Cancellation of a local worker never cancels accepted native work.",
+    recommendedTools: ["inspect_operation_recovery", "acknowledge_operation_recovery", "inspect_workflow_job", "wait_workflow_job"],
+  },
+  {
     id: "film-editorial",
     title: "Review film editorial coverage and handoff",
     summary: "Capture source and timeline context, supply an explicit film manifest, inspect coverage and review layouts, resolve revision-bound notes and turnover exceptions, then use separately guarded host tools for approved edits and exports.",

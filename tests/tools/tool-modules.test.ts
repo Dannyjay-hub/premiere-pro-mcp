@@ -17,6 +17,11 @@ const mockedSendRawCommand = vi.mocked(sendRawCommand);
 
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/test-bridge", timeoutMs: 5000 };
 
+import { getExecutionWorkflowTools } from "../../src/tools/execution-workflows.js";
+import { getTimelineEditorialTools } from "../../src/tools/timeline-editorial.js";
+import { getInterchangeWorkflowTools } from "../../src/tools/interchange-workflows.js";
+import { getTemporalRenderEvidenceTools } from "../../src/tools/temporal-render-evidence.js";
+import { getOperationRecoveryTools } from "../../src/tools/operation-recovery.js";
 import { getEditorialReviewTools } from "../../src/tools/editorial-review.js";
 
 // Import all tool modules
@@ -89,6 +94,11 @@ const ALL_MODULES: Array<{
   getter: (opts: BridgeOptions) => ToolModule;
   minTools: number;
 }> = [
+  { name: "execution-workflows", getter: opts => getExecutionWorkflowTools(opts, {getToolCatalog: () => ({})}), minTools: 9 },
+  { name: "timeline-editorial", getter: getTimelineEditorialTools, minTools: 21 },
+  { name: "interchange-workflows", getter: getInterchangeWorkflowTools, minTools: 8 },
+  { name: "temporal-render-evidence", getter: getTemporalRenderEvidenceTools, minTools: 1 },
+  { name: "operation-recovery", getter: opts => getOperationRecoveryTools(undefined, opts), minTools: 2 },
   { name: "editorial-review", getter: getEditorialReviewTools, minTools: 5 },
   { name: "discovery", getter: getDiscoveryTools, minTools: 8 },
   { name: "project", getter: getProjectTools, minTools: 20 },
@@ -227,16 +237,16 @@ describe("Tool Module Structure", () => {
 });
 
 describe("Total Tool Count", () => {
-  it("all modules together have 381 tools", () => {
+  it("all modules together have 422 tools", () => {
     let total = 0;
     for (const mod of ALL_MODULES) {
       total += Object.keys(mod.getter(bridgeOptions)).length;
     }
-    expect(total).toBe(381);
+    expect(total).toBe(422);
   });
 
-  it("there are 54 directly enumerated modules", () => {
-    expect(ALL_MODULES.length).toBe(54);
+  it("there are 59 directly enumerated modules", () => {
+    expect(ALL_MODULES.length).toBe(59);
   });
 });
 

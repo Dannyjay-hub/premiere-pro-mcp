@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "seeds": [17, 295, 548, 550, 771, 104729],
+  "retained_cases": [
+    { "name": "ripple-intersects-a-sync-locked-neighbor", "seed": 548 },
+    { "name": "split-created-identities-cannot-authorize-a-later-plan", "seed": 771 },
+    { "name": "locked-track-refusal-preserves-every-input-field", "seed": 550 }
+  ]
+}

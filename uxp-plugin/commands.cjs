@@ -8,8 +8,15 @@
   function createCommandRegistry(deps) {
     const ppro = deps.ppro, Protocol = deps.Protocol, workspace = deps.workspace;
     const FrameTime = deps.FrameTime || (typeof require === "function" ? require("./frame-time.cjs") : globalThis.PremiereMcpFrameTime);
+    const Ledger = deps.OperationLedger || (typeof require === "function" ? require("./operation-ledger.cjs") : globalThis.PremiereMcpOperationLedger);
+    const Transcript = deps.TranscriptSupport || (typeof require === "function" ? require("./transcript.cjs") : globalThis.PremiereMcpTranscript);
+    const operationLedger = Ledger.createOperationLedger({ storage: deps.storage, sessionId: deps.sessionId, digest: Transcript.transcriptRevision, requireDurability: deps.requireOperationDurability === true });
+    let mutationTail = Promise.resolve();
+    let anonymousOperation = 0;
+    const invocationSession = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     const completedOperations = new Map();
     const inFlightOperations = new Map();
+    const inFlightBindings = new Map();
     const sequenceRangeUpdateTails = new Map();
     const transitionUpdateTails = new Map();
     const sequencePlayheadSetTails = new Map();
@@ -35,6 +42,8 @@
     const definitions = {
       "capabilities.get": { readOnly: true, handler: capabilities },
       "state.get": { readOnly: true, handler: stateSnapshot },
+      "operations.recovery.inspect": { readOnly: true, handler: inspectOperationRecovery },
+      "operations.recovery.acknowledge": { readOnly: true, handler: acknowledgeOperationRecovery },
       "project.snapshot": { readOnly: true, minHostVersion: "25.6.0", probe: canInspectProject, handler: projectSnapshot },
       "project.insertionBin.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canInspectProjectInsertionBin, handler: inspectProjectInsertionBin },
       "graphics.mogrtPath.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canInspectInstalledMogrtDirectory, handler: inspectInstalledMogrtDirectory },
@@ -184,41 +193,110 @@
       };
     }
 
+    async function operationIdentity(includeState) {
+      const project = ppro.Project && await ppro.Project.getActiveProject();
+      const sequence = project && typeof project.getActiveSequence === "function" ? await project.getActiveSequence() : null;
+      const identity = { projectGuid: project ? String(project.guid || "") : null, sequenceGuid: sequence ? String(sequence.guid || "") : null };
+      if (includeState) {
+        const clips = [];
+        for (const media of ["Video", "Audio"]) {
+          if (!sequence) continue;
+          const countMethod = sequence["get" + media + "TrackCount"], trackMethod = sequence["get" + media + "Track"];
+          if (typeof countMethod !== "function" || typeof trackMethod !== "function") continue;
+          const count = await countMethod.call(sequence);
+          if (!Number.isInteger(count) || count < 0 || count > 256) throw commandError("UXP_RECOVERY_SNAPSHOT_UNAVAILABLE", "Recovery track count cannot be bounded");
+          for (let trackIndex = 0; trackIndex < count; trackIndex += 1) {
+            const track = await trackMethod.call(sequence, trackIndex);
+            const items = Array.from(await track.getTrackItems(ppro.Constants && ppro.Constants.TrackItemType && ppro.Constants.TrackItemType.CLIP, false) || []);
+            if (clips.length + items.length > 5000) throw commandError("UXP_RECOVERY_SNAPSHOT_UNAVAILABLE", "Recovery snapshot exceeds 5000 clips; use bounded manual repair");
+            for (const item of items) {
+              const clip = { media, trackIndex, guid: String(item.guid || "") };
+              for (const field of ["StartTime", "EndTime", "InPoint", "OutPoint"]) {
+                if (typeof item["get" + field] !== "function") continue;
+                const time = await item["get" + field]();
+                clip[field] = time && time.ticks != null ? String(time.ticks) : time && Number.isFinite(time.seconds) ? String(time.seconds) + " seconds" : null;
+              }
+              clips.push(clip);
+            }
+          }
+        }
+        identity.hostStateRevision = Transcript.transcriptRevision(Ledger.canonical(clips));
+        identity.snapshotBoundary = "bounded_active_sequence_clip_identity_and_ranges";
+      }
+      return identity;
+    }
+    async function inspectOperationRecovery(args) {
+      assertOnlyKeys(args, []);
+      return operationLedger.inspect(await operationIdentity(true));
+    }
+    async function acknowledgeOperationRecovery(args) {
+      assertOnlyKeys(args, ["expectedRecoveryRevision", "expectedIdentityRevision", "operationIds", "reviewed"]);
+      if (!Array.isArray(args.operationIds) || args.operationIds.length > 4096 || args.operationIds.some((id) => typeof id !== "string")) throw commandError("UXP_INVALID_ARGUMENT", "operationIds must be the bounded inspected ID list");
+      // Reconciliation shares the mutation queue, so it cannot clear a reservation
+      // while its host mutation is still running.
+      const pending = mutationTail.then(async () => operationLedger.acknowledge(await operationIdentity(true), args));
+      mutationTail = pending.catch(() => {});
+      return pending;
+    }
+    function provenPreflightRefusal(error) {
+      // A typed code alone cannot prove that a handler did not already write.
+      return !!(error && error.noHostDispatch === true && error.dispatchEvidence === "panel_pre_dispatch");
+    }
     async function dispatch(command, args) {
+      const invocation = { handlerEntered: false };
+      try { return await dispatchInvocation(command, args, invocation); }
+      catch (error) {
+        if (!invocation.handlerEntered && error && typeof error === "object") {
+          error.noHostDispatch = true;
+          error.dispatchEvidence = "panel_pre_dispatch";
+        }
+        throw error;
+      }
+    }
+    async function dispatchInvocation(command, args, invocation) {
       const definition = definitions[command];
       if (!definition) throw commandError("UXP_UNSUPPORTED_COMMAND", "Unsupported UXP command: " + command);
       if (definition.probe && !await definition.probe()) throw commandError("UXP_COMMAND_UNAVAILABLE", command + " is not supported by this Premiere build");
       const input = args || {};
       const operationId = validateOperationId(input.operationId);
-      const operationKey = operationId ? command + ":" + operationId : null;
-      if (!definition.readOnly && operationKey && completedOperations.has(operationKey)) {
-        return { ...completedOperations.get(operationKey), replayed: true };
-      }
-      if (!definition.readOnly && operationKey && inFlightOperations.has(operationKey)) {
+      if (definition.readOnly) return definition.handler(input);
+      const identity = await operationIdentity(false);
+      const operationKey = operationId || "anonymous:" + operationLedger.sessionId + ":" + invocationSession + ":" + (++anonymousOperation);
+      const binding = operationLedger.bind(command, input, identity);
+      const record = operationLedger.get(operationKey, binding);
+      if (record && completedOperations.has(operationKey)) return { ...completedOperations.get(operationKey), replayed: true };
+      if (inFlightOperations.has(operationKey)) {
+        if (inFlightBindings.get(operationKey) !== binding) throw commandError("UXP_OPERATION_CONFLICT", "In-flight operation ID is bound to a different invocation");
         return { ...await inFlightOperations.get(operationKey), replayed: true };
       }
+      if (record) throw commandError("UXP_OPERATION_CONSUMED", "Operation ID was consumed; its result is unavailable or unknown. Inspect current state; replay is not authorized");
       const execute = async () => {
-        const result = await definition.handler(input);
-        return definition.readOnly ? result : {
-          operationId: operationId || null,
-          outcome: result && result.outcome ? result.outcome : "verified",
-          ...result
-        };
+        const current = await operationIdentity(false);
+        if (Ledger.canonical(current) !== Ledger.canonical(identity)) throw commandError("UXP_STALE_PROJECT", "Active project or sequence changed while waiting; no host mutation was dispatched");
+        operationLedger.assertReady(current);
+        operationLedger.reserve(operationKey, binding, current);
+        try {
+          invocation.handlerEntered = true;
+          const result = await definition.handler(input);
+          const envelope = { operationId: operationId || null, outcome: result && result.outcome ? result.outcome : "verified", ...result };
+          operationLedger.finish(operationKey, envelope.outcome);
+          completedOperations.set(operationKey, envelope);
+          if (completedOperations.size > 256) completedOperations.delete(completedOperations.keys().next().value);
+          return envelope;
+        } catch (error) {
+          if (provenPreflightRefusal(error)) operationLedger.releasePreflight(operationKey);
+          else operationLedger.unknown(operationKey);
+          throw error;
+        }
       };
-      if (definition.readOnly || !operationKey) return execute();
-
-      // Reserve the idempotency key before the handler starts so concurrent
-      // WebSocket dispatches share one host mutation instead of racing it.
-      const pending = Promise.resolve().then(execute);
+      // One queue protects cooperating UXP requests across all workflow modules.
+      // It does not prevent edits from Premiere UI or unrelated extensions.
+      const pending = mutationTail.then(execute);
+      mutationTail = pending.catch(() => {});
       inFlightOperations.set(operationKey, pending);
-      try {
-        const envelope = await pending;
-        completedOperations.set(operationKey, envelope);
-        if (completedOperations.size > 256) completedOperations.delete(completedOperations.keys().next().value);
-        return envelope;
-      } finally {
-        if (inFlightOperations.get(operationKey) === pending) inFlightOperations.delete(operationKey);
-      }
+      inFlightBindings.set(operationKey, binding);
+      try { return await pending; }
+      finally { if (inFlightOperations.get(operationKey) === pending) { inFlightOperations.delete(operationKey); inFlightBindings.delete(operationKey); } }
     }
     async function capabilities() {
       let project = null, sequence = null;
@@ -231,21 +309,24 @@
       for (const name of Object.keys(definitions)) {
         const definition = definitions[name], apiSupported = !definition.probe || await definition.probe();
         const pathValidationSupported = !definition.requiresWorkspace || workspaceState.canonicalPathValidation === "available";
-        const supported = apiSupported && pathValidationSupported;
+        const replaySupported = definition.readOnly || deps.requireOperationDurability !== true || operationLedger.durable;
+        const supported = apiSupported && pathValidationSupported && replaySupported;
         commands[name] = {
           supported, backend: "uxp", documented: true,
           readOnly: !!definition.readOnly, destructive: !!definition.destructive,
           undoable: !!definition.undoable, idempotent: !!definition.idempotent
         };
+        if (name === "interchange.export") commands[name].formats = { otio: !!(ppro.ProjectConverter && typeof ppro.ProjectConverter.exportAsOpenTimelineIO === "function"), fcpxml: !!(ppro.ProjectConverter && typeof ppro.ProjectConverter.exportAsFinalCutProXML === "function") };
         if (definition.minHostVersion) commands[name].minHostVersion = definition.minHostVersion;
         if (definition.requiresWorkspace) commands[name].workspaceRequired = true;
         if (definition.conditionalWorkspace) commands[name].workspaceRequired = "path_variant_only";
         if (definition.targetCapabilityProbe) commands[name].targetCapabilityProbe = "invocation";
         if (!apiSupported) commands[name].reason = "Required Premiere UXP API is unavailable in this host";
+        else if (!replaySupported) commands[name].reason = "Persistent operation storage is unavailable; mutations are disabled";
         else if (!pathValidationSupported) commands[name].reason = "canonical path validation is not implemented in this build; use the CEP fallback for path-based workflows";
       }
       return {
-        backend: "uxp", protocolVersion: Protocol.PROTOCOL_VERSION, hostMinVersion: "25.6.0",
+        backend: "uxp", protocolVersion: Protocol.PROTOCOL_VERSION, commandSchemaVersion: Protocol.COMMAND_SCHEMA_VERSION, receiptVersion: Protocol.RECEIPT_VERSION, operationSessionId: operationLedger.sessionId, replayPersistence: operationLedger.durable ? "durable_hashed_tombstones" : "memory_only", hostMinVersion: "25.6.0",
         activeProject: !!project, activeSequence: !!sequence, workspace: workspaceState, commands,
         fallback: { backend: "cep", reason: "Use CEP/QE only when a command is absent or reports unsupported; never silently retry a failed UXP mutation." }
       };
@@ -778,13 +859,16 @@
     }
     async function exportInterchange(args) {
       assertOnlyKeys(args, ["format", "outputFilePath", "suppressUI", "operationId"]);
-      const format = requiredString(args.format, "format"), outputFilePath = await allowedPath(args.outputFilePath, "outputFilePath", "file");
+      const format = requiredString(args.format, "format");
       if (format !== "otio" && format !== "fcpxml") throw commandError("UXP_INVALID_ARGUMENT", "format must be otio or fcpxml");
-      const context = await activeContext(false);
       const method = format === "otio" ? "exportAsOpenTimelineIO" : "exportAsFinalCutProXML";
-      const exported = await ppro.ProjectConverter[method](context.sequence, outputFilePath, args.suppressUI !== false);
+      if (!ppro.ProjectConverter || typeof ppro.ProjectConverter[method] !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Requested interchange format " + format + " is unavailable in this Premiere build");
+      const suppressUI = optionalBoolean(args.suppressUI, true, "suppressUI");
+      const outputFilePath = await allowedPath(args.outputFilePath, "outputFilePath", "file");
+      const context = await activeContext(false);
+      const exported = await ppro.ProjectConverter[method](context.sequence, outputFilePath, suppressUI);
       if (!exported) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm the interchange export");
-      return { exported: true, outcome: "verified", format, outputFilePath };
+      return { exported: true, outcome: "committed_unverified", outputVerified: false, verificationBoundary: "projectConverter_host_return_only", format, outputFilePath };
     }
     async function exportAaf(args) {
       const input = validateAafArgs(args);
@@ -1799,8 +1883,8 @@
         .every((method) => typeof sequence[method] === "function");
     }
     function canExportInterchange() {
-      return !!(ppro.ProjectConverter && typeof ppro.ProjectConverter.exportAsOpenTimelineIO === "function" &&
-        typeof ppro.ProjectConverter.exportAsFinalCutProXML === "function");
+      return !!(ppro.ProjectConverter && (typeof ppro.ProjectConverter.exportAsOpenTimelineIO === "function" ||
+        typeof ppro.ProjectConverter.exportAsFinalCutProXML === "function"));
     }
     function canExportAaf() {
       return !!(ppro.ProjectConverter && typeof ppro.ProjectConverter.exportAAF === "function" &&

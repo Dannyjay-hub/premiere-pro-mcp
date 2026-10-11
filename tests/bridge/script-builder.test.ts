@@ -368,6 +368,21 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
     expect(marks.inPoint).toBe(5);
     expect(marks.outPoint).toBeCloseTo(5 + 1 / 24, 8);
   });
+
+  it("preserves later user mark changes and reports recovery instead of restoring stale marks", () => {
+    const marks = { inPoint: 10, outPoint: 20 };
+    const result = runExport({
+      name: "Seq", sequenceID: "sequence-1", timebase: String(TICKS / 24),
+      getInPointAsTime() { return { ticks: String(marks.inPoint * TICKS) }; },
+      getOutPointAsTime() { return { ticks: String(marks.outPoint * TICKS) }; },
+      setInPoint(value: number) { marks.inPoint = value; },
+      setOutPoint(value: number) { marks.outPoint = value; },
+      exportAsMediaDirect() { marks.inPoint = 40; marks.outPoint = 50; return true; },
+    });
+    expect(result).toMatchObject({ ok: false, recoveryRequired: true, mutationOutcome: "unknown" });
+    expect(result.error).toContain("concurrent");
+    expect(marks).toEqual({ inPoint: 40, outPoint: 50 });
+  });
 });
 
 describe("escapeForExtendScript and ES3 line terminators", () => {

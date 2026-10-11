@@ -5,6 +5,10 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { getHelpersSource, helpersFileName, buildBootstrap } from "./script-builder.js";
 import { validateBridgeScriptSize } from "./script-size.js";
+import { withHostLease, ownsHostLease, inspectHostRecovery, markHostRecovery, HostLeaseError } from "./host-lease.js";
+import { undoTrackingEnabled } from "./undo-tracking.js";
+import { assertInvocationNotCancelled, markHostDispatch, measureStage, measureStageSync, startStage } from "../workflows/invocation-context.js";
+import { AsyncResource } from "node:async_hooks";
 
 export function getDarwinUserTempDirectory(): string | null {
   try {
@@ -86,7 +90,9 @@ function scheduleBridgeCommand(
   }
 
   return new Promise<CommandResult>((resolve, reject) => {
-    scheduler!.pending.push({ run, resolve, reject });
+    // The next item starts from the previous request's completion callback.
+    // Bind every AsyncLocalStorage guard to this request at enqueue time.
+    scheduler!.pending.push({ run: AsyncResource.bind(run), resolve, reject });
     runNextBridgeCommand(tempDir, scheduler!);
   });
 }
@@ -495,6 +501,25 @@ export function getBridgeLiveness(
   }
 }
 
+/** Transport compatibility is independent from host API support and liveness. */
+export function getBridgeCompatibility(options?: BridgeOptions) {
+  const legacy = { compatible: true, boundary: "legacy_transport", commandSchemaVersion: null as number | null, receiptVersion: null as number | null };
+  try {
+    const path = join(getTempDir(options), BRIDGE_HEARTBEAT_FILE);
+    if (!existsSync(path)) return legacy;
+    const raw = readFileSync(path, "utf8");
+    if (Buffer.byteLength(raw, "utf8") > 4096) return { ...legacy, compatible: false, boundary: "invalid_heartbeat" };
+    const value = JSON.parse(raw);
+    if (value.commandSchemaVersion === undefined && value.receiptVersion === undefined) return legacy;
+    return {
+      compatible: value.commandSchemaVersion === 1 && value.receiptVersion === 1,
+      boundary: "versioned_command_and_receipt_schema",
+      commandSchemaVersion: Number.isInteger(value.commandSchemaVersion) ? value.commandSchemaVersion as number : null,
+      receiptVersion: Number.isInteger(value.receiptVersion) ? value.receiptVersion as number : null,
+    };
+  } catch { return { ...legacy, compatible: false, boundary: "unreadable_heartbeat" }; }
+}
+
 function heartbeatFailure(liveness: BridgeLiveness, hostLabel = "Premiere Pro", requireHeartbeat = false): CommandResult | null {
   if (liveness.state === "waiting") {
     return {
@@ -552,7 +577,47 @@ export async function sendCommand(
 ): Promise<CommandResult> {
   validateScript(script);
   const tempDir = getTempDir(options);
-  return scheduleBridgeCommand(tempDir, () => sendCommandUnchecked(script, options));
+  return executeOwnedCommand(tempDir, options, () => sendCommandUnchecked(script, options));
+}
+
+/** Hold one cooperating-process lease across a tool's inspect/apply/readback calls. */
+export async function withBridgeWorkflow<T>(options: BridgeOptions | undefined, work: () => Promise<T>): Promise<T> {
+  const tempDir = getTempDir(options);
+  ensurePrivateBridgeDirectory(tempDir);
+  if (ownsHostLease(tempDir)) return work();
+  // Reuse the bounded scheduler for the entire workflow. Nested commands bypass
+  // it under the inherited lease, avoiding a queue/lease inversion deadlock.
+  const finishQueue = startStage("queue_wait");
+  return scheduleBridgeCommand(tempDir, () => withHostLease(tempDir, options?.timeoutMs || DEFAULT_TIMEOUT_MS, async () => {
+    finishQueue();
+    return { success: true, data: await work() };
+  })).then((result) => {
+    if (!result.success) throw new HostLeaseError("HOST_WORKFLOW_QUEUE_FULL", result.error || "Protected workflow queue is full");
+    return result.data as T;
+  }).finally(finishQueue);
+}
+async function executeOwnedCommand(tempDir: string, options: BridgeOptions | undefined, work: () => Promise<CommandResult>): Promise<CommandResult> {
+  ensurePrivateBridgeDirectory(tempDir);
+  const nested = ownsHostLease(tempDir);
+  const finishQueue = nested ? () => {} : startStage("queue_wait");
+  const run = async () => {
+    try {
+      return await withHostLease(tempDir, options?.timeoutMs || DEFAULT_TIMEOUT_MS, async () => {
+        finishQueue();
+        const mutating = options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled());
+        if (mutating && !getBridgeCompatibility(options).compatible) return { success: false, data: { mutationOutcome: "not_applied" }, error: "CEP_SCHEMA_INCOMPATIBLE: install the matching CEP panel before editing; no command was dispatched" };
+        if (mutating && inspectHostRecovery(tempDir).recoveryRequired) return { success: false, data: { mutationOutcome: "not_applied", recoveryRequired: true }, error: "HOST_RECOVERY_REQUIRED: inspect current Premiere state and acknowledge the matching recovery revision before another edit" };
+        const result = await measureStage("host_wait", work);
+        const data = result.data as { mutationOutcome?: string } | undefined;
+        if (data?.mutationOutcome === "unknown") markHostRecovery(tempDir, "unknown_command_outcome");
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof HostLeaseError) return { success: false, data: { mutationOutcome: error.code === "HOST_LEASE_LOST" ? "unknown" : "not_applied", ...(error.code === "HOST_LEASE_LOST" ? { recoveryRequired: true } : {}) }, error: `${error.code}: ${error.message}` };
+      throw error;
+    }
+  };
+  return (nested ? run() : scheduleBridgeCommand(tempDir, run)).finally(finishQueue);
 }
 
 async function sendCommandUnchecked(
@@ -577,11 +642,16 @@ async function sendCommandUnchecked(
   try {
     // Write a complete command before its .jsx name makes it visible to CEP.
     // renameSync is atomic when both paths are in the bridge directory.
+    measureStageSync("dispatch", () => {
     writeFileSync(stagedCmdFile, `${ensureHelpers(tempDir, options?.helpers)}
 ${script}`, "utf-8");
+    assertInvocationNotCancelled();
     renameSync(stagedCmdFile, cmdFile);
+    if (options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled())) markHostDispatch();
+    });
 
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
+    const mutating = options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled());
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutating === false ? false : (options?.mutationOnTimeout === true || undoTrackingEnabled()), mutating);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -620,7 +690,7 @@ export async function sendRawCommand(
 ): Promise<CommandResult> {
   validateScript(script, true);
   const tempDir = getTempDir(options);
-  return scheduleBridgeCommand(tempDir, () => sendRawCommandUnchecked(script, options));
+  return executeOwnedCommand(tempDir, options, () => sendRawCommandUnchecked(script, options));
 }
 
 async function sendRawCommandUnchecked(
@@ -643,10 +713,15 @@ async function sendRawCommandUnchecked(
   const busyFile = join(tempDir, `busy_${id}.json`);
 
   try {
+    measureStageSync("dispatch", () => {
     writeFileSync(stagedCmdFile, `${ensureHelpers(tempDir, options?.helpers)}
 ${script}`, "utf-8");
+    assertInvocationNotCancelled();
     renameSync(stagedCmdFile, cmdFile);
-    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutationOnTimeout === true, options?.mutating === true);
+    if (options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled())) markHostDispatch();
+    });
+    const mutating = options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled());
+    return await pollForResponse(resFile, busyFile, timeoutMs, options?.hostLabel, options?.mutating === false ? false : (options?.mutationOnTimeout === true || undoTrackingEnabled()), mutating);
   } finally {
     safeUnlink(stagedCmdFile);
     safeUnlink(cmdFile);
@@ -725,8 +800,7 @@ async function pollForResponse(
             });
             return;
           }
-          const raw = readFileSync(resFile, "utf-8");
-          const result = JSON.parse(raw) as CommandResult;
+          const result = measureStageSync("readback", () => JSON.parse(readFileSync(resFile, "utf-8")) as CommandResult);
           if (typeof result !== "object" || result === null || typeof result.success !== "boolean") {
             lastResponseParseError = "Failed to parse response: missing boolean success field";
           } else if (result.success && typeof result.data === "string" && /^EvalScript error/i.test(result.data)) {

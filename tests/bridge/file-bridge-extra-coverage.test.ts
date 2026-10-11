@@ -16,6 +16,16 @@ import {
 import { execFileSync } from "node:child_process";
 import { cleanupTempDir, sendCommand } from "../../src/bridge/file-bridge.js";
 
+// File transport unit tests isolate ownership; real multi-process lease behavior
+// is exercised by host-lease.test.ts using the actual filesystem.
+vi.mock("../../src/bridge/host-lease.js", () => ({
+  withHostLease: async (_directory: string, _timeout: number, work: () => Promise<unknown>) => work(),
+  ownsHostLease: () => false,
+  inspectHostRecovery: () => ({ version: 1, recoveryRequired: false, recoveryRevision: null }),
+  markHostRecovery: vi.fn(),
+  HostLeaseError: class extends Error {},
+}));
+
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),

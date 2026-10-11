@@ -144,13 +144,19 @@ describe("guarded documented UXP track-item slide workflow", () => {
   });
 
   it("rejects incomplete confirmation/replay/stale/edge requests before action creation", async () => {
+    const attempts = [
+      { args: { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, operationId: "missing-confirmation" }, code: "UXP_CONFIRMATION_REQUIRED" },
+      { args: { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, confirmSlide: true }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, following: { ...expectedSnapshot.following, inSeconds: 31 } }, slideBySeconds: 1, confirmSlide: true, operationId: "stale" }, code: "UXP_STALE_TRACK_ITEM" },
+      { args: { ...targetCoordinates, expectedSnapshot, slideBySeconds: 10, confirmSlide: true, operationId: "zero-following" }, code: "UXP_TARGET_UNSUPPORTED" },
+    ];
+    // A refused mutation retains its consumed receipt; each unrelated guard uses a fresh host.
+    for (const attempt of attempts) {
+      const value = slideHost();
+      await expect(value.registry.dispatch("trackItem.slide", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    }
     const value = slideHost();
-    await expect(value.registry.dispatch("trackItem.slide", { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, operationId: "missing-confirmation" })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
-    await expect(value.registry.dispatch("trackItem.slide", { ...targetCoordinates, expectedSnapshot, slideBySeconds: 1, confirmSlide: true })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("trackItem.slide", {
-      ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, following: { ...expectedSnapshot.following, inSeconds: 31 } }, slideBySeconds: 1, confirmSlide: true, operationId: "stale",
-    })).rejects.toMatchObject({ code: "UXP_STALE_TRACK_ITEM" });
-    await expect(value.registry.dispatch("trackItem.slide", { ...targetCoordinates, expectedSnapshot, slideBySeconds: 10, confirmSlide: true, operationId: "zero-following" })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
     await expect(value.registry.dispatch("trackItem.slide.inspect", { mediaType: "video", trackIndex: 0, clipIndex: 0 })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
   });

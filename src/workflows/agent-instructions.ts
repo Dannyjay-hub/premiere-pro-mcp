@@ -7,6 +7,21 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
     }
   };
 
+  route(["can_execute", "inspect_operation_recovery"],
+    "Preflight the exact proposed invocation. Named refusal and unknown reasons are actionable; evidence is advisory and dispatch revalidates targets. Unknown host outcomes block dependent edits until reviewed recovery. UXP edits require matching command/receipt versions and durable ledger storage; older unversioned panels remain read-only. Recovery inspection is a bounded clip snapshot, not complete effect/source reconciliation. Never replay a consumed operation ID, reset its ledger to retry, or silently switch backend.");
+  route(["inspect_timeline_snapshot", "predict_timeline_edit", "verify_timeline_postconditions"],
+    "Keep decimal tick strings and rational frame rates intact. Check snapshot completeness and session/project/sequence identity; unknown locks, links, effects, transitions or source bounds cannot authorize edits. Synthetic interchange IDs never authorize host mutations. Verify affected and unaffected A/V ranges from fresh readback.");
+  route(["preview_extended_edit_plan", "apply_extended_edit_plan"],
+    "Preview only the allowlisted typed steps with exact source/effect/parameter identities. Apply the unchanged single-use token once. Sequential CEP work can partially commit; inspect step receipts and do not assume atomic rollback.");
+  route(["preview_scene_review_workflow", "apply_scene_review_workflow"],
+    "Approve scene candidates before binding exact saved-project/source identity and physical duration. Create reviewed source markers or audio-inclusive subclips; never turn flashes, pans or detector guesses into automatic cuts.");
+  route(["export_and_verify", "verify_temporal_render_artifact"],
+    "Export to a new destination with a reviewed preset and delivery contract. Treat artifact hash/conformance, decoded temporal frame/audio checks, still-image review and native completion events as separate evidence. Temporal verification requires actual decoded frames at multiple times and an explicit measured oracle.");
+  route(["inspect_otio_interchange", "inspect_interchange_loss_report", "preview_facility_metadata_intake"],
+    "Review bounded OTIO/XML support and per-feature loss before native interchange. ALE intake returns proposals for named metadata fields; route separately through bounded field-level tools with readback, preserving sensitive-field omissions. FCP 7 xmeml and modern FCPXML are different formats.");
+  route(["start_local_analysis_job", "cancel_workflow_job"],
+    "Only allowlisted local analysis workers are cancellable. Stopping a wait or cancelling a request never claims to cancel accepted Premiere/AME work. Missing job receipts and generic terminal events cannot establish output provenance.");
+
   route(["manage_project_context", "create_editorial_context_pack"],
     "Capture explicitly scoped evidence, then retrieve a bounded transcript-first reading pack for the edit intent. Keep evidence IDs, source ranges, revisions, and truncation notices; retrieve more only when needed. Captured evidence may be stale.");
   route(["create_editorial_plan", "preview_editorial_plan"],

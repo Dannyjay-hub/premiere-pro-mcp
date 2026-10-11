@@ -3,7 +3,7 @@
  * All generated code must be ES3-compatible (var, no arrow functions, no let/const).
  */
 import { createHash } from "node:crypto";
-import { expectedProjectPath } from "./project-guard.js";
+import { expectedProjectPath, expectedHostTarget } from "./project-guard.js";
 import { undoTrackingEnabled } from "./undo-tracking.js";
 
 const HELPERS = `
@@ -1386,6 +1386,7 @@ function __exportStillFrame(outputPath, ticks) {
   if (!seq) return { ok: false, error: "No active sequence", notes: [] };
 
   var notes = [];
+  var restorationFailure = null;
   var atTicks = ticks;
   if (!atTicks) {
     try { atTicks = seq.getPlayerPosition().ticks; } catch (e) { atTicks = "0"; }
@@ -1470,16 +1471,33 @@ function __exportStillFrame(outputPath, ticks) {
         // interval and the still export produces no file.
         var frameTicks = parseFloat(seq.timebase);
         var startTicks = parseFloat(atTicks);
+        if (!isFinite(frameTicks) || frameTicks <= 0 || !isFinite(startTicks)) return { ok: false, error: "Still-frame export requires a readable finite sequence frame grid and requested ticks", notes: notes };
         var ameMutatedMarks = false;
+        var temporaryIn = String(savedIn), temporaryOut = String(savedOut);
+        var guardedSequenceId = String(seq.sequenceID);
         try {
           seq.setInPoint(__ticksToSeconds(startTicks));
           ameMutatedMarks = true;
+          temporaryIn = String(seq.getInPointAsTime().ticks);
           seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
+          temporaryOut = String(seq.getOutPointAsTime().ticks);
           seq.exportAsMediaDirect(outputPath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
-          try { seq.setInPoint(__ticksToSeconds(savedIn)); } catch (eIn) {}
-          try { seq.setOutPoint(__ticksToSeconds(savedOut)); } catch (eOut) {}
+          // Restore only marks that still equal this capture's temporary state.
+          // A later user/extension change belongs to that editor, not this call.
+          var currentIn = null, currentOut = null;
+          try { currentIn = String(seq.getInPointAsTime().ticks); currentOut = String(seq.getOutPointAsTime().ticks); } catch (eCurrent) {}
+          var currentSequence = app.project && app.project.activeSequence;
+          if (!currentSequence || String(currentSequence.sequenceID) !== guardedSequenceId || currentIn !== temporaryIn || currentOut !== temporaryOut) {
+            restorationFailure = "Media Encoder still export observed a concurrent sequence/mark change; automatic restoration was refused. Inspect current sequence marks before continuing.";
+          } else {
+            try { seq.setInPoint(__ticksToSeconds(savedIn)); } catch (eIn) { restorationFailure = "Media Encoder still export could not restore sequence In point."; }
+            try { seq.setOutPoint(__ticksToSeconds(savedOut)); } catch (eOut) { restorationFailure = "Media Encoder still export could not restore sequence Out point."; }
+            var finallyIn = null, finallyOut = null;
+            try { finallyIn = String(seq.getInPointAsTime().ticks); finallyOut = String(seq.getOutPointAsTime().ticks); } catch (eFinally) {}
+            if (finallyIn === null || finallyOut === null || isNaN(parseFloat(finallyIn)) || isNaN(parseFloat(finallyOut)) || Math.abs(parseFloat(finallyIn) - parseFloat(savedIn)) > frameTicks / 1000 || Math.abs(parseFloat(finallyOut) - parseFloat(savedOut)) > frameTicks / 1000) restorationFailure = "Media Encoder still export left sequence in/out points unrestored; inspect marks or Undo before continuing.";
+          }
         }
         // Premiere 26.x setters can throw or silently no-op. A still file is
         // not success if the sequence is still pinned to the one-frame range.
@@ -1487,16 +1505,19 @@ function __exportStillFrame(outputPath, ticks) {
           var restoredIn = null, restoredOut = null;
           try { restoredIn = seq.getInPointAsTime().ticks; } catch (eRi) {}
           try { restoredOut = seq.getOutPointAsTime().ticks; } catch (eRo) {}
-          var restoreTol = (frameTicks && !isNaN(frameTicks)) ? frameTicks : (TICKS_PER_SECOND / 24);
+          var restoreTol = ((frameTicks && !isNaN(frameTicks)) ? frameTicks : (TICKS_PER_SECOND / 24)) / 1000;
           var inRestored = restoredIn != null && !isNaN(parseFloat(restoredIn))
             && Math.abs(parseFloat(restoredIn) - parseFloat(savedIn)) <= restoreTol;
           var outRestored = restoredOut != null && !isNaN(parseFloat(restoredOut))
             && Math.abs(parseFloat(restoredOut) - parseFloat(savedOut)) <= restoreTol;
           if (!inRestored || !outRestored) {
+            __stillFrameRecoveryRequired = true;
             notes.push("AME: sequence in/out could not be restored after the one-frame export");
             return {
               ok: false,
-              error: "Media Encoder still export left the sequence in/out points unrestored. The sequence may still be pinned to a one-frame range; restore the marks in Premiere or Undo before exporting again.",
+              error: restorationFailure || "Media Encoder still export left the sequence in/out points unrestored. The sequence may still be pinned to a one-frame range; restore the marks in Premiere or Undo before exporting again.",
+              recoveryRequired: true,
+              mutationOutcome: "unknown",
               notes: notes
             };
           }
@@ -1507,6 +1528,7 @@ function __exportStillFrame(outputPath, ticks) {
     notes.push("AME: " + eAME.toString());
   }
 
+  if (restorationFailure) { __stillFrameRecoveryRequired = true; return { ok: false, error: restorationFailure, recoveryRequired: true, mutationOutcome: "unknown", notes: notes }; }
   written = __firstWrittenFile(outputPath);
   if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
 
@@ -2745,6 +2767,16 @@ function __jsonStringify(obj) {
 // undo exactly that call.
 var __undoStart = null;
 var __markerWriteAttempted = false;
+var __stillFrameRecoveryRequired = false;
+function __captureRestorationReceipt(data) {
+  if (!__stillFrameRecoveryRequired) return data;
+  if (!data || typeof data !== "object" || data instanceof Array) data = {};
+  data.mutationOutcome = "unknown";
+  data.recoveryRequired = true;
+  data.timelineChanged = null;
+  data.verified = false;
+  return data;
+}
 function __readUndoIndex() {
   try {
     app.enableQE();
@@ -2765,7 +2797,7 @@ function __markerWriteReceipt(data) {
   return data;
 }
 function __result(data) {
-  data = __markerWriteReceipt(data);
+  data = __captureRestorationReceipt(__markerWriteReceipt(data));
   if (__undoStart !== null && data && typeof data === "object" && !(data instanceof Array)) {
     var undoNow = __readUndoIndex();
     if (undoNow !== null && undoNow > __undoStart) {
@@ -2787,7 +2819,7 @@ function __error(msg, extraData) {
     data = {};
     for (var key in extraData) if (extraData.hasOwnProperty(key)) data[key] = extraData[key];
   }
-  data = __markerWriteReceipt(data);
+  data = __captureRestorationReceipt(__markerWriteReceipt(data));
   if (__markerWriteAttempted && data) {
     // A throwing DOM call may have changed the marker; an attempted write
     // alone cannot establish that it committed. Preserve observed changes.
@@ -2852,6 +2884,40 @@ export function buildBootstrap(helpersPath: string): string {
  */
 export function buildScript(code: string): string {
   const expected = expectedProjectPath();
+  const target = expectedHostTarget();
+  let targetGuard = target?.sequence_id ? `
+    var __guardSequence = app.project && app.project.activeSequence;
+    if (!__guardSequence || String(__guardSequence.sequenceID) !== "${escapeForExtendScript(target.sequence_id)}") return __error("Expected target guard refused: active sequence changed; nothing was changed.");
+  ` : "";
+  if (target?.project_document_id) targetGuard += `if (!app.project || String(app.project.documentID) !== "${escapeForExtendScript(target.project_document_id)}") return __error("Expected target guard refused: project document changed; nothing was changed.");\n`;
+  if (target?.source_item) {
+    targetGuard += `var __guardSourceItem = __findProjectItem("${escapeForExtendScript(target.source_item.node_id)}"); if (!__guardSourceItem || String(__guardSourceItem.nodeId) !== "${escapeForExtendScript(target.source_item.node_id)}") return __error("Expected source guard refused: exact source identity changed; nothing was changed.");\n`;
+    if (target.source_item.media_path !== undefined) targetGuard += `if (typeof __guardSourceItem.getMediaPath !== "function" || String(__guardSourceItem.getMediaPath()) !== "${escapeForExtendScript(target.source_item.media_path)}") return __error("Expected source guard refused: source media path changed; nothing was changed.");\n`;
+  }
+  if (target?.clip) {
+    const clip = target.clip;
+    targetGuard += `
+    var __guardClip = __findClip("${escapeForExtendScript(clip.node_id)}");
+    if (!__guardClip || __guardClip.trackType !== "${clip.track_type}" || __guardClip.trackIndex !== ${clip.track_index}) return __error("Expected target guard refused: clip identity or track changed; nothing was changed.");
+    `;
+    if (clip.project_item_id !== undefined) targetGuard += `if (!__guardClip.clip.projectItem || String(__guardClip.clip.projectItem.nodeId) !== "${escapeForExtendScript(clip.project_item_id)}") return __error("Expected target guard refused: source identity changed; nothing was changed.");\n`;
+    for (const [field, host] of [["start_ticks", "start"], ["end_ticks", "end"], ["in_ticks", "inPoint"], ["out_ticks", "outPoint"]] as const) {
+      if (clip[field] !== undefined) targetGuard += `if (String(__guardClip.clip.${host}.ticks) !== "${escapeForExtendScript(clip[field]!)}") return __error("Expected target guard refused: clip range changed; nothing was changed.");\n`;
+    }
+    if (clip.effect) {
+      const effect = clip.effect;
+      targetGuard += `
+        var __guardComponent = null, __guardMatches = 0;
+        for (var __gc = 0; __gc < __guardClip.clip.components.numItems; __gc++) {
+          var __candidateComponent = __guardClip.clip.components[__gc];
+          if (String(__candidateComponent.matchName) === "${escapeForExtendScript(effect.match_name)}") { __guardComponent = __candidateComponent; __guardMatches++; }
+        }
+        if (__guardMatches !== 1 || !__guardComponent) return __error("Expected effect guard refused: component identity is missing or ambiguous; nothing was changed.");
+        ${effect.display_name === undefined ? "" : `if (String(__guardComponent.displayName) !== "${escapeForExtendScript(effect.display_name)}") return __error("Expected effect guard refused: component display identity changed; nothing was changed.");`}
+        if (!__guardComponent.properties || __guardComponent.properties.numItems <= ${effect.parameter_index} || String(__guardComponent.properties[${effect.parameter_index}].displayName) !== "${escapeForExtendScript(effect.parameter_name)}") return __error("Expected effect guard refused: indexed parameter identity changed; nothing was changed.");
+      `;
+    }
+  }
   const projectGuard = expected === undefined ? "" : `
     var __expectedProjectPath = new File("${escapeForExtendScript(expected)}").fsName;
     var __activeProjectPath = app.project && app.project.path;
@@ -2871,8 +2937,10 @@ export function buildScript(code: string): string {
   return `(function() {
   try {
     ${projectGuard}
+    ${targetGuard}
     ${undoStart}
     __markerWriteAttempted = false;
+    __stillFrameRecoveryRequired = false;
     ${code}
   } catch(e) {
     return __error(e.toString());

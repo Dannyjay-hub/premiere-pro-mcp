@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
+import { reviewRecoveryFixture } from "./review-recovery-fixture.js";
 const require = createRequire(import.meta.url);
 const Commands = require("../../uxp-plugin/commands.cjs");
 const Protocol = require("../../uxp-plugin/protocol.cjs");
@@ -193,11 +194,13 @@ describe("UXP command registry", () => {
       name: "Delivery",
       presetPath: "/presets/hd.sqpreset",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await reviewRecoveryFixture(value.registry);
     await expect(value.registry.dispatch("sequence.createPreset", {
       name: "Delivery",
       presetPath: "/presets/hd.sqpreset",
       confirmNonUndoable: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(value.registry);
     expect(value.project.createSequenceWithPresetPath).not.toHaveBeenCalled();
     await expect(value.registry.dispatch("sequence.createPreset", {
       name: "Delivery",
@@ -681,9 +684,11 @@ describe("UXP command registry", () => {
     await expect(value.registry.dispatch("preferences.set", {
       preference: "auto_peak_generation", expectedValue: "0", value: "1", persistence: "persistent", operationId: "app-preference-unconfirmed",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await reviewRecoveryFixture(value.registry);
     await expect(value.registry.dispatch("preferences.set", {
       preference: "unknown", expectedValue: "0", value: "1", persistence: "persistent", confirmPreferenceChange: true, operationId: "app-preference-invalid",
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(value.registry);
     await expect(value.registry.dispatch("preferences.set", {
       preference: "auto_peak_generation", expectedValue: "0", value: "1", persistence: "persistent", confirmPreferenceChange: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
@@ -976,12 +981,15 @@ describe("UXP command registry", () => {
     await expect(malformed.registry.dispatch("sequence.playhead.set", {
       expectedPositionSeconds: 3, positionSeconds: 8,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(malformed.registry);
     await expect(malformed.registry.dispatch("sequence.playhead.set", {
       expectedSequenceGuid: "sequence-1", expectedPositionSeconds: Number.NaN, positionSeconds: 8,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(malformed.registry);
     await expect(malformed.registry.dispatch("sequence.playhead.set", {
       expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 86400.001,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(malformed.registry);
     await expect(malformed.registry.dispatch("sequence.playhead.set", {
       expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8, unexpected: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
@@ -1062,11 +1070,13 @@ describe("UXP command registry", () => {
       expectedRange: { inSeconds: 1, outSeconds: 100, inSet: true, outSet: true, zeroPointSeconds: 3600, endSeconds: 120 },
       updates: { inSeconds: 2 },
     })).rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
+    await reviewRecoveryFixture(value.registry);
     await expect(value.registry.dispatch("sequence.range.update", {
       expectedSequenceGuid: "sequence-1",
       expectedRange: { inSeconds: 0, outSeconds: 100, inSet: true, outSet: true, zeroPointSeconds: 3600, endSeconds: 120 },
       updates: { inSeconds: 2 },
     })).rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
+    await reviewRecoveryFixture(value.registry);
     const durationChanged = host();
     durationChanged.range.endSeconds = 119;
     await expect(durationChanged.registry.dispatch("sequence.range.update", {
@@ -1080,6 +1090,7 @@ describe("UXP command registry", () => {
       expectedRange: { inSeconds: 1, outSeconds: 100, inSet: true, outSet: true, zeroPointSeconds: 3600, endSeconds: 120 },
       updates: { inSeconds: 111, outSeconds: 110 },
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await reviewRecoveryFixture(value.registry);
     await expect(value.registry.dispatch("sequence.range.update", {
       expectedSequenceGuid: "sequence-1",
       expectedRange: { inSeconds: 1, outSeconds: 100, inSet: true, outSet: true, zeroPointSeconds: 3600, endSeconds: 120 },
@@ -1157,7 +1168,7 @@ describe("UXP command registry", () => {
     expect(value.project.save).toHaveBeenCalledOnce();
   });
 
-  it("shares concurrent mutation failures and releases the operation id for retry", async () => {
+  it("shares concurrent mutation failures and consumes the operation id without blind retry", async () => {
     const value = host();
     let rejectSave: (error: Error) => void = () => undefined;
     value.project.save
@@ -1175,10 +1186,9 @@ describe("UXP command registry", () => {
       expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ message: "save failed" }) }),
       expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ message: "save failed" }) }),
     ]);
-    await expect(value.registry.dispatch("project.save", args)).resolves.toMatchObject({
-      saved: true, operationId: "save-retry",
-    });
-    expect(value.project.save).toHaveBeenCalledTimes(2);
+    await expect(value.registry.dispatch("project.save", args)).rejects.toMatchObject({ code: "UXP_OPERATION_CONSUMED" });
+    await expect(value.registry.dispatch("project.save", { operationId: "save-other" })).rejects.toMatchObject({ code: "UXP_RECOVERY_REQUIRED" });
+    expect(value.project.save).toHaveBeenCalledTimes(1);
   });
 
   it("applies replay protection to the injected transcript import mutator", async () => {
@@ -1213,7 +1223,7 @@ describe("UXP command registry", () => {
     const value = host();
     await expect(value.registry.dispatch("interchange.export", {
       format: "otio", outputFilePath: "/tmp/edit.otio",
-    })).resolves.toMatchObject({ exported: true, format: "otio", outcome: "verified" });
+    })).resolves.toMatchObject({ exported: true, format: "otio", outcome: "committed_unverified", outputVerified: false });
     await expect(value.registry.dispatch("encoder.configure", {
       launch: true, embeddedXmp: true, startBatch: true,
     })).resolves.toMatchObject({
@@ -1221,6 +1231,18 @@ describe("UXP command registry", () => {
       outcome: "committed_unverified",
       performed: ["launch", "embeddedXmp", "startBatch"],
     });
+  });
+
+  it.each(["otio", "fcpxml"])("probes interchange formats independently (%s only)", async (format) => {
+    const value = host();
+    value.registry = Commands.createCommandRegistry({ ppro: value.ppro, Protocol, workspace: { status: () => ({ canonicalPathValidation: "available" }), assertPathAllowed: async (path: string) => path } });
+    const unavailable = format === "otio" ? "exportAsFinalCutProXML" : "exportAsOpenTimelineIO";
+    delete (value.ppro.ProjectConverter as Record<string, unknown>)[unavailable];
+    await expect(value.registry.capabilities()).resolves.toMatchObject({ commands: { "interchange.export": { supported: true, formats: { otio: format === "otio", fcpxml: format === "fcpxml" } } } });
+    await expect(value.registry.dispatch("interchange.export", { format, outputFilePath: "/tmp/edit." + format })).resolves.toMatchObject({ exported: true, outputVerified: false, outcome: "committed_unverified" });
+    await expect(value.registry.dispatch("interchange.export", { format: format === "otio" ? "fcpxml" : "otio", outputFilePath: "/tmp/unavailable.xml" })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
+    await reviewRecoveryFixture(value.registry);
+    await expect(value.registry.dispatch("interchange.export", { format, outputFilePath: "/tmp/invalid.xml", suppressUI: "true" })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
   });
 
   it("adds a configured transition in a locked undoable transaction", async () => {

@@ -27,7 +27,7 @@ describe("UXP bridge symlink confinement (#640)", () => {
     mkdirSync(outside);
     symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
 
-    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0 });
+    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0, tempDir: (() => { const dir = mkdtempSync(join(tmpdir(), "uxp-lease-")); dirs.push(dir); return dir; })() });
     bridges.push(bridge);
     await bridge.start();
     const address = bridge.address();
@@ -37,7 +37,7 @@ describe("UXP bridge symlink confinement (#640)", () => {
     client.send(JSON.stringify({
       protocolVersion: 1,
       type: "hello",
-      payload: { backend: "uxp", protocolVersion: 1, commands: { "media.import": { supported: true } } },
+      payload: { backend: "uxp", protocolVersion: 1, commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones", commands: { "media.import": { supported: true } } },
     }));
     await connected;
 
@@ -58,7 +58,7 @@ describe("UXP bridge command size limit (#642)", () => {
   });
 
   it("refuses a command over the panel's 64 KiB limit without sending it", async () => {
-    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0 });
+    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0, tempDir: (() => { const dir = mkdtempSync(join(tmpdir(), "uxp-lease-")); dirs.push(dir); return dir; })() });
     bridges.push(bridge);
     await bridge.start();
     const address = bridge.address();
@@ -68,7 +68,7 @@ describe("UXP bridge command size limit (#642)", () => {
     client.send(JSON.stringify({
       protocolVersion: 1,
       type: "hello",
-      payload: { backend: "uxp", protocolVersion: 1, commands: { "metadata.update": { supported: true } } },
+      payload: { backend: "uxp", protocolVersion: 1, commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones", commands: { "metadata.update": { supported: true } } },
     }));
     await connected;
 

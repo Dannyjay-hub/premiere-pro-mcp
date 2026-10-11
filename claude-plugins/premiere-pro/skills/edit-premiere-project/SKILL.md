@@ -91,6 +91,38 @@ For other mutations:
 5. Report completed, skipped, and failed work separately. Include any remaining
    verification that requires playback or human visual judgment.
 
+
+## Exact edits, recovery and delivery evidence
+
+Use `can_execute` for the exact arguments before mutation. Bind optional
+`expected_cep_target` to the reviewed project document, sequence, source, clip
+ranges and effect parameter when available. This guard is CEP-only; UXP keeps
+its own documented identity and capability probes. Every command revalidates.
+
+Preserve canonical decimal ticks, rational rates, completeness and revisions
+from `inspect_timeline_snapshot`. Preview extended or scene workflows before
+applying their unchanged single-use token. Unknown source bounds, locks, links,
+retiming or descriptor evidence cause a refusal. Sequential CEP steps may
+partially commit; fresh structural readback is separate from playback.
+
+Unknown host outcomes require `inspect_operation_recovery` and reviewed,
+revision-bound `acknowledge_operation_recovery`. Consumed IDs remain consumed.
+UXP edits require matching command/receipt versions and durable ledger storage;
+older unversioned panels remain read-only. Bounded clip snapshots do not replace
+actual effect/source reconciliation, and reconnecting never grants ID replay.
+Only local analysis workers support `cancel_workflow_job`; request cancellation
+or a stopped wait cannot cancel accepted native Premiere/AME jobs.
+
+Use `export_and_verify` for a saved exact CEP sequence, a new destination and an
+explicit preset/delivery contract. A queued or generic terminal event is not
+artifact verification. `verify_temporal_render_artifact` decodes actual frames
+at multiple times against a measured oracle; still grids and property readback
+cannot establish temporal rendering. Report unavailable licensed-host evidence.
+
+For facility work, inspect OTIO/XML loss first. Review ALE intake proposals,
+then use the existing named-field metadata routes with bounded readback;
+never replace a complete metadata packet just to apply a facility table.
+
 ## Editing judgment
 
 - Prefer reversible operations and conservative parameter values.
