@@ -111,7 +111,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
     },
 
     import_folder: {
-      description: "Import the media files directly inside a folder and read the destination tree back. Reports observed new media items; unreadable or unmatched imports are committed_unverified.",
+      description: "Import the media files directly inside a folder and read the destination tree back. Refuses an unreadable baseline before importing. Reports observed new media items; unreadable or unmatched imports are committed_unverified. Host errors retain partial-change diagnostics; inspect the destination before retrying.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -163,7 +163,7 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           
           function folderTreeItems(parent, entries) {
             var children = parent.children;
-            if (!children || typeof children.numItems !== "number") throw new Error("Destination children are unreadable");
+            if (!children || typeof children.numItems !== "number" || !isFinite(children.numItems) || children.numItems < 0 || Math.floor(children.numItems) !== children.numItems) throw new Error("Destination children are unreadable");
             for (var c = 0; c < children.numItems; c++) {
               var child = children[c];
               if (!child || child.nodeId === undefined || child.nodeId === null) throw new Error("Destination item identity is unreadable");
@@ -174,8 +174,12 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
             }
           }
           var before = [], after = [], treeReadable = true;
-          try { folderTreeItems(targetBin, before); } catch (eBefore) { treeReadable = false; }
-          var importSuccess = app.project.importFiles(filePaths, true, targetBin, false);
+          try { folderTreeItems(targetBin, before); } catch (eBefore) {
+            return __error("Cannot inspect the destination before import: " + eBefore.toString() + ". Nothing was imported.");
+          }
+          var importSuccess = false, hostError = null;
+          try { importSuccess = app.project.importFiles(filePaths, true, targetBin, false); }
+          catch (eImport) { hostError = eImport.toString(); }
           try { folderTreeItems(targetBin, after); } catch (eAfter) { treeReadable = false; }
           var added = [], observedFiles = [], missingFiles = [];
           if (treeReadable) {
@@ -195,8 +199,10 @@ export function getMediaTools(bridgeOptions: BridgeOptions) {
           var verified = treeReadable && missingFiles.length === 0;
           var receipt = { imported: treeReadable ? observedFiles.length : null, requestedCount: filePaths.length,
             observedNewItemCount: treeReadable ? added.length : null, items: added, notImported: missingFiles,
-            importReturned: importSuccess, verified: verified, outcome: verified ? "verified" : "committed_unverified",
+            importReturned: importSuccess, hostError: hostError, projectChanged: treeReadable && added.length > 0 ? true : null,
+            verified: verified, outcome: verified ? "verified" : "committed_unverified",
             folder: "${escapeForExtendScript(args.folder_path)}", targetBin: targetBin.name };
+          if (hostError && !verified) return __error("Folder import threw after it was attempted. Inspect the destination before retrying to avoid duplicates.", receipt);
           if (treeReadable && added.length === 0) {
             receipt.outcome = "failed";
             return __error("Premiere produced no new destination items for the requested folder.", receipt);

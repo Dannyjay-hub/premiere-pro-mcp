@@ -90,8 +90,9 @@ describe("media and project mutation receipts", () => {
     execute({ rootItem: root, importFiles() { root.children = children([{ nodeId: "new", name: "Sequence" }]); return true; } }, { File: FakeFile, Folder: FakeFolder });
     expect(await media.import_folder.handler({ folder_path: folder })).toMatchObject({ success: true, data: { imported: 0, observedNewItemCount: 1, verified: false, outcome: "committed_unverified" } });
   });
-  it("reports unknown import counts when the destination cannot be read", async () => {
-    execute({ rootItem: { name: "Root" }, importFiles: () => true }, { File: FakeFile, Folder: FakeFolder });
+  it("reports unknown import counts when the destination cannot be read after import", async () => {
+    const root: any = { name: "Root", children: children([]) };
+    execute({ rootItem: root, importFiles() { delete root.children; return true; } }, { File: FakeFile, Folder: FakeFolder });
     expect(await media.import_folder.handler({ folder_path: folder })).toMatchObject({ success: true, data: { imported: null, observedNewItemCount: null, verified: false, outcome: "committed_unverified" } });
   });
   it("rejects invalid folder input before sending", async () => {
