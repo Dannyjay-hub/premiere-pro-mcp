@@ -64,7 +64,7 @@ describe("caption import input and readback contract", () => {
       .toMatchObject({ success: true, data: { format: "subtitle", verified: true, outcome: "verified" } });
   });
 
-  it.each([undefined, null, "1", true, NaN, Infinity, -1, 0.5])("never verifies invalid track count %s", async after => {
+  it.each([undefined, null, "1", true, NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("never verifies invalid track count %s", async after => {
     host({ after });
     expect(await tool.handler({ item_id: itemId, start_seconds: 2 }))
       .toMatchObject({ success: true, data: { verified: false, outcome: "committed_unverified", afterTrackCount: null } });
@@ -74,6 +74,14 @@ describe("caption import input and readback contract", () => {
     host({ before: null, after: 1 });
     expect(await tool.handler({ item_id: itemId, start_seconds: 2 }))
       .toMatchObject({ success: true, data: { verified: false, beforeTrackCount: null, afterTrackCount: 1 } });
+  });
+
+  it("never verifies unchanged counts when oversized integers round away the increment", async () => {
+    const count = Number.MAX_SAFE_INTEGER + 1;
+    expect(count + 1).toBe(count);
+    host({ before: count, after: count });
+    expect(await tool.handler({ item_id: itemId, start_seconds: 2 }))
+      .toMatchObject({ success: true, data: { verified: false, beforeTrackCount: null, afterTrackCount: null } });
   });
 
   it.each([0, 2])("does not certify unexpected track-count delta %s", async after => {

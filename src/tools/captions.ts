@@ -204,7 +204,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
             if (!tracks) return null;
             try {
               var count = tracks.numTracks !== undefined ? tracks.numTracks : tracks.length;
-              return typeof count === "number" && isFinite(count) && count >= 0 && Math.floor(count) === count ? count : null;
+              return typeof count === "number" && isFinite(count) && count >= 0 && count <= 9007199254740991 && Math.floor(count) === count ? count : null;
             }
             catch (countError) { return null; }
           }
