@@ -5,6 +5,16 @@ import {
   MAX_CAPTION_ARTIFACT_CHARACTERS,
 } from "../ai/caption-timing.js";
 
+const CAPTION_FORMATS: Record<string, string> = {
+  subtitle: "Sequence.CAPTION_FORMAT_SUBTITLE",
+  "608": "Sequence.CAPTION_FORMAT_608",
+  "708": "Sequence.CAPTION_FORMAT_708",
+  teletext: "Sequence.CAPTION_FORMAT_TELETEXT",
+  ebu: "Sequence.CAPTION_FORMAT_OPEN_EBU",
+  op42: "Sequence.CAPTION_FORMAT_OP42",
+  op47: "Sequence.CAPTION_FORMAT_OP47",
+};
+
 function finiteNonNegativeSeconds(value: unknown, field: string, fallback = 0): number {
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 604_800) {
@@ -75,7 +85,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
   return {
     create_caption_track: {
       description:
-        "Import an already reviewed caption artifact into the active sequence, or create a local lecture-caption timing and review workflow plan. Import reports structural success only when the host exposes a caption-track readback; the planning action never contacts Premiere or changes an artifact.",
+        "Import an already reviewed caption artifact into the active sequence, or create a local lecture-caption timing and review workflow plan. Import rejects unsupported formats before host dispatch and reports structural success only when valid count readback shows exactly one new caption track. Unreadable or unexpected results preserve committed_unverified diagnostics; inspect before retrying. The planning action never contacts Premiere or changes an artifact.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -101,6 +111,7 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
           },
           caption_format: {
             type: "string",
+            enum: Object.keys(CAPTION_FORMATS),
             description:
               "For action import, Premiere caption format: subtitle (default), 608, 708, teletext, ebu, op42, or op47.",
           },
@@ -171,18 +182,11 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
           if (action !== "import") return { success: false, error: "action must be either import or plan_lecture_workflow" };
           const itemId = requiredItemId(args.item_id);
           const startSeconds = finiteNonNegativeSeconds(args.start_seconds, "start_seconds");
-        const formatMap: Record<string, string> = {
-          subtitle: "Sequence.CAPTION_FORMAT_SUBTITLE",
-          "608": "Sequence.CAPTION_FORMAT_608",
-          "708": "Sequence.CAPTION_FORMAT_708",
-          teletext: "Sequence.CAPTION_FORMAT_TELETEXT",
-          ebu: "Sequence.CAPTION_FORMAT_OPEN_EBU",
-          op42: "Sequence.CAPTION_FORMAT_OP42",
-          op47: "Sequence.CAPTION_FORMAT_OP47",
-        };
-        const format =
-          formatMap[args.caption_format || "subtitle"] ||
-          "Sequence.CAPTION_FORMAT_SUBTITLE";
+        const captionFormat = args.caption_format === undefined ? "subtitle" : args.caption_format;
+        if (typeof captionFormat !== "string" || !Object.prototype.hasOwnProperty.call(CAPTION_FORMATS, captionFormat)) {
+          return { success: false, error: `caption_format must be one of: ${Object.keys(CAPTION_FORMATS).join(", ")}` };
+        }
+        const format = CAPTION_FORMATS[captionFormat];
 
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
@@ -198,38 +202,43 @@ export function getCaptionTools(bridgeOptions: BridgeOptions) {
               else if (sequence.captionTracks) tracks = sequence.captionTracks;
             } catch (readError) { tracks = null; }
             if (!tracks) return null;
-            try { return tracks.numTracks !== undefined ? Number(tracks.numTracks) : Number(tracks.length); }
+            try {
+              var count = tracks.numTracks !== undefined ? tracks.numTracks : tracks.length;
+              return typeof count === "number" && isFinite(count) && count >= 0 && Math.floor(count) === count ? count : null;
+            }
             catch (countError) { return null; }
           }
           var beforeCount = __captionTrackCount(seq);
-          var result = seq.createCaptionTrack(item, ${startSeconds}, ${format});
-          if (!result) return __error("Failed to create caption track");
+          var result = false, hostError = null;
+          try { result = seq.createCaptionTrack(item, ${startSeconds}, ${format}); }
+          catch (createError) { hostError = createError.toString(); }
           var afterCount = __captionTrackCount(seq);
-          if (beforeCount !== null && afterCount !== null) {
-            if (afterCount <= beforeCount) {
-              return __error("Premiere accepted caption-track creation but no caption track appeared in host readback. No successful creation is reported.");
-            }
-            return __result({
-              created: true,
-              verified: true,
-              renderVerified: false,
-              verificationScope: "Caption-track count readback only; verify playback or exported frames before delivery.",
-              item: item.name,
-              startSeconds: ${startSeconds},
-              format: "${args.caption_format || "subtitle"}",
-              beforeTrackCount: beforeCount,
-              afterTrackCount: afterCount
-            });
-          }
-          return __result({
-            accepted: true,
+          var receipt = {
+            accepted: !!result,
             verified: false,
+            outcome: "committed_unverified",
+            timelineChanged: beforeCount !== null && afterCount !== null && afterCount !== beforeCount ? true : null,
             renderVerified: false,
-            verificationScope: "Premiere accepted the caption-track request, but this CEP host exposes no caption-track readback. No structural creation is claimed; verify playback or exported frames before delivery.",
             item: item.name,
             startSeconds: ${startSeconds},
-            format: "${args.caption_format || "subtitle"}"
-          });
+            format: "${escapeForExtendScript(captionFormat)}",
+            beforeTrackCount: beforeCount,
+            afterTrackCount: afterCount,
+            hostError: hostError
+          };
+          if (beforeCount !== null && afterCount !== null) {
+            if (afterCount !== beforeCount + 1) {
+              return __error("Caption-track creation was attempted but readback did not show exactly one new track. Inspect the sequence before retrying.", receipt);
+            }
+            receipt.created = true;
+            receipt.verified = true;
+            receipt.outcome = "verified";
+            receipt.verificationScope = "Caption-track count readback only; verify playback or exported frames before delivery.";
+            return __result(receipt);
+          }
+          receipt.verificationScope = "Caption-track readback is unavailable or invalid. No structural creation is claimed; verify playback or exported frames before delivery.";
+          if (hostError || !result) return __error("Caption-track creation did not confirm acceptance and its mutation outcome is unknown. Inspect the sequence before retrying.", receipt);
+          return __result(receipt);
         `);
           return sendCommand(script, bridgeOptions);
         } catch (error) {
