@@ -22,7 +22,11 @@ vi.mock("node:fs",async importOriginal=>{
   linkSync:(source:string,destination:string)=>{hooks.beforeLink?.(source,destination);actual.linkSync(source,destination);hooks.afterLink?.(source,destination);}};
 });
 let directory:string;
-afterEach(()=>{hooks.run=null;hooks.beforeLink=null;hooks.afterLink=null;hooks.frozenSource=null;hooks.sourceDescriptors.clear();if(directory)rmSync(directory,{recursive:true,force:true});});
+afterEach(()=>{
+ hooks.run=null;hooks.beforeLink=null;hooks.afterLink=null;hooks.frozenSource=null;hooks.sourceDescriptors.clear();
+ // Retain bounded Windows deletion retries and propagate any final failure.
+ if(directory)rmSync(directory,{recursive:true,force:true,maxRetries:3});
+});
 function fixture() {directory=mkdtempSync(join(tmpdir(),"mcp-review-race-"));const input=join(directory,"input.mp4"),output=join(directory,"output.mp4");writeFileSync(input,"source fixture");return {input,output};}
 function fakeEncoder(onProbe?:(staging:string)=>void) {
  hooks.run=async(file,args)=>{const staging=args.at(-1)!;if(file==="ffmpeg"){writeFileSync(staging,"encoded review fixture");return {stdout:"",stderr:""};}onProbe?.(staging);return {stdout:JSON.stringify({streams:[{codec_type:"video",nb_read_frames:"24"}],format:{duration:"1"}}),stderr:""};};

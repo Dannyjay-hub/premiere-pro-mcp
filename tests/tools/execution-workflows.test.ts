@@ -23,7 +23,12 @@ import { sendCommand } from "../../src/bridge/file-bridge.js";
 let folder: string;
 let outputCounter = 0;
 beforeEach(()=> {folder=mkdtempSync(join(tmpdir(),"mcp-execution-"));outputCounter=0;vi.mocked(sendCommand).mockReset().mockResolvedValue({success:true,data:{reasons:[],sequenceId:"seq"}});});
-afterEach(()=> {frozenSource.value=null;frozenSource.descriptors.clear();rmSync(folder,{recursive:true,force:true});resetWorkflowJobs();});
+afterEach(()=> {
+  frozenSource.value=null;frozenSource.descriptors.clear();resetWorkflowJobs();
+  // Windows deletion can briefly remain pending after stream and hardlink cleanup.
+  // Match the shared fixture helper's bounded retry policy; final failures throw.
+  rmSync(folder,{recursive:true,force:true,maxRetries:3});
+});
 const definition=(handler: any, properties: Record<string,unknown>={}, required: string[]=[]) => ({description:"Test registered operation",parameters:{type:"object",properties,required},handler});
 const string={type:"string"};
 function catalog() {
