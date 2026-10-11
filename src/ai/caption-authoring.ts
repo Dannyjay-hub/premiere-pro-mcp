@@ -236,6 +236,225 @@ export function describeCaptionStyle(preset: CaptionStylePreset): CaptionStyleDe
 }
 
 // ---------------------------------------------------------------------------
+// Custom caption track style (documentation only)
+// ---------------------------------------------------------------------------
+
+export const CAPTION_ZONES = ["top_left", "top_center", "top_right", "middle_left", "middle_center", "middle_right", "bottom_left", "bottom_center", "bottom_right"] as const;
+export type CaptionZone = (typeof CAPTION_ZONES)[number];
+
+export const CAPTION_STROKE_PLACEMENTS = ["outer", "inner", "center"] as const;
+export type CaptionStrokePlacement = (typeof CAPTION_STROKE_PLACEMENTS)[number];
+
+export const MAX_CAPTION_STROKES = 3;
+export const CUSTOM_CAPTION_STYLE_LIMITS = {
+  font_family_max_length: 128,
+  font_weight_max_length: 64,
+  track_style_name_max_length: 80,
+  font_size_px: { min: 8, max: 400 },
+  stroke_width_px: { min: 0, max: 100 },
+  offset_px: { min: -2000, max: 2000 },
+  shadow: {
+    opacity: { min: 0, max: 100 },
+    angle: { min: 0, max: 360 },
+    distance: { min: 0, max: 200 },
+    size: { min: 0, max: 100 },
+    blur: { min: 0, max: 100 },
+  },
+} as const;
+
+export const CAPTION_SHADOW_DEFAULTS = { color: "#000000", opacity: 75, angle: 135, distance: 7, size: 0, blur: 40 } as const;
+export const DEFAULT_TRACK_STYLE_NAME = "Caption Track Style";
+
+export type CaptionStroke = { color: string; width_px: number; placement: CaptionStrokePlacement };
+export type CaptionShadow = { color: string; opacity: number; angle: number; distance: number; size: number; blur: number };
+export type CustomCaptionStyle = {
+  font_family?: string;
+  font_weight?: string;
+  font_size_px?: number;
+  fill_color?: string;
+  strokes?: CaptionStroke[];
+  shadow?: CaptionShadow;
+  zone?: CaptionZone;
+  offset_x_px?: number;
+  offset_y_px?: number;
+  track_style_name?: string;
+};
+
+const CUSTOM_STYLE_KEYS = ["font_family", "font_weight", "font_size_px", "fill_color", "strokes", "shadow", "zone", "offset_x_px", "offset_y_px", "track_style_name"] as const;
+const STROKE_KEYS = ["color", "width_px", "placement"] as const;
+const SHADOW_KEYS = ["color", "opacity", "angle", "distance", "size", "blur"] as const;
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
+
+function plainObject(value: unknown, label: string, allowed: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} must be an object`);
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).find((key) => !allowed.includes(key));
+  if (unknown) fail(`${label} has an unknown field: ${unknown}`);
+  return record;
+}
+
+function boundedText(value: unknown, label: string, maxLength: number): string {
+  if (typeof value !== "string" || !value.trim() || value.length > maxLength) fail(`${label} must be a non-empty string of at most ${maxLength} characters`);
+  return value.trim();
+}
+
+function hexColor(value: unknown, label: string): string {
+  if (typeof value !== "string" || !HEX_COLOR.test(value)) fail(`${label} must be a hex colour in the form #RRGGBB`);
+  return value.toUpperCase();
+}
+
+function rangedNumber(value: unknown, label: string, range: { min: number; max: number }, integer = false): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) fail(`${label} must be a finite number`);
+  if (integer && !Number.isInteger(value)) fail(`${label} must be an integer`);
+  if (value < range.min || value > range.max) fail(`${label} must be between ${range.min} and ${range.max}`);
+  return value;
+}
+
+export function validateCustomCaptionStyle(value: unknown): CustomCaptionStyle {
+  const raw = plainObject(value, "custom_style", CUSTOM_STYLE_KEYS);
+  if (!Object.keys(raw).length) fail("custom_style must set at least one field");
+  const limits = CUSTOM_CAPTION_STYLE_LIMITS;
+  const style: CustomCaptionStyle = {};
+  if (raw.font_family !== undefined) style.font_family = boundedText(raw.font_family, "custom_style.font_family", limits.font_family_max_length);
+  if (raw.font_weight !== undefined) style.font_weight = boundedText(raw.font_weight, "custom_style.font_weight", limits.font_weight_max_length);
+  if (raw.font_size_px !== undefined) style.font_size_px = rangedNumber(raw.font_size_px, "custom_style.font_size_px", limits.font_size_px, true);
+  if (raw.fill_color !== undefined) style.fill_color = hexColor(raw.fill_color, "custom_style.fill_color");
+  if (raw.strokes !== undefined) {
+    if (!Array.isArray(raw.strokes) || raw.strokes.length > MAX_CAPTION_STROKES) fail(`custom_style.strokes must be an array of at most ${MAX_CAPTION_STROKES} strokes`);
+    style.strokes = raw.strokes.map((item, index) => {
+      const label = `custom_style.strokes[${index}]`;
+      const stroke = plainObject(item, label, STROKE_KEYS);
+      const placement = stroke.placement === undefined ? "outer" : stroke.placement;
+      if (typeof placement !== "string" || !(CAPTION_STROKE_PLACEMENTS as readonly string[]).includes(placement)) fail(`${label}.placement must be one of: ${CAPTION_STROKE_PLACEMENTS.join(", ")}`);
+      return {
+        color: hexColor(stroke.color, `${label}.color`),
+        width_px: rangedNumber(stroke.width_px, `${label}.width_px`, limits.stroke_width_px),
+        placement: placement as CaptionStrokePlacement,
+      };
+    });
+  }
+  if (raw.shadow !== undefined) {
+    const shadow = plainObject(raw.shadow, "custom_style.shadow", SHADOW_KEYS);
+    const numberOr = (key: keyof typeof limits.shadow) => shadow[key] === undefined ? CAPTION_SHADOW_DEFAULTS[key] : rangedNumber(shadow[key], `custom_style.shadow.${key}`, limits.shadow[key]);
+    style.shadow = {
+      color: shadow.color === undefined ? CAPTION_SHADOW_DEFAULTS.color : hexColor(shadow.color, "custom_style.shadow.color"),
+      opacity: numberOr("opacity"),
+      angle: numberOr("angle"),
+      distance: numberOr("distance"),
+      size: numberOr("size"),
+      blur: numberOr("blur"),
+    };
+  }
+  if (raw.zone !== undefined) {
+    if (typeof raw.zone !== "string" || !(CAPTION_ZONES as readonly string[]).includes(raw.zone)) fail(`custom_style.zone must be one of: ${CAPTION_ZONES.join(", ")}`);
+    style.zone = raw.zone as CaptionZone;
+  }
+  if (raw.offset_x_px !== undefined) style.offset_x_px = rangedNumber(raw.offset_x_px, "custom_style.offset_x_px", limits.offset_px, true);
+  if (raw.offset_y_px !== undefined) style.offset_y_px = rangedNumber(raw.offset_y_px, "custom_style.offset_y_px", limits.offset_px, true);
+  if (raw.track_style_name !== undefined) style.track_style_name = boundedText(raw.track_style_name, "custom_style.track_style_name", limits.track_style_name_max_length);
+  return style;
+}
+
+const ordinal = (index: number) => ["first", "second", "third"][index] ?? `#${index + 1}`;
+const zoneLabel = (zone: CaptionZone) => zone.replace("_", "-");
+
+/** Warnings about a custom style that Premiere will accept but that may not render as intended. */
+export function customCaptionStyleWarnings(style: CustomCaptionStyle): string[] {
+  const warnings: string[] = [];
+  const outer = (style.strokes ?? []).filter((stroke) => stroke.placement === "outer");
+  for (let index = 1; index < outer.length; index += 1) {
+    if (outer[index].width_px <= outer[index - 1].width_px) warnings.push(`outer stroke ${index + 1} (${outer[index].width_px} px) is not wider than outer stroke ${index} (${outer[index - 1].width_px} px), so it may be hidden behind it; layered outer strokes need increasing widths`);
+  }
+  if (style.shadow && style.shadow.opacity === 0) warnings.push("shadow opacity is 0, so the shadow will not be visible");
+  if (style.strokes?.some((stroke) => stroke.width_px === 0)) warnings.push("a stroke with width 0 will not be visible");
+  return warnings;
+}
+
+const TRACK_STYLE_SELECT_STEPS = [
+  "Select one caption on the caption track in the timeline. One caption is enough: a Track Style applies to every caption on the track, so no multi-select is needed.",
+  "Open the Properties panel (Window > Properties). If your Premiere version has no Properties panel, use Window > Essential Graphics > Edit, which shows the same caption sections.",
+];
+
+function trackStyleSaveSteps(name: string): string[] {
+  return [
+    `Track Style: open the Track Style dropdown in the Properties panel, choose "+ Create style", and name it "${name}". The style now applies to the whole caption track.`,
+    "Scrub through the track and confirm that the other captions show the new style.",
+    `Reuse: select a caption on the caption track in another sequence and pick "${name}" from the Track Style dropdown.`,
+    `The style is a project item in the Project panel. Move "${name}" into a shared bin (for example "Caption Styles") so other sequences and projects can reuse it.`,
+    "Verify the rendered look with export_frame or export_sequence_review_frames.",
+  ];
+}
+
+const numbered = (steps: string[]) => steps.map((step, index) => `${index + 1}. ${step}`);
+
+/** Premiere 2024+ Properties-panel / Track Style steps for a custom caption style. */
+export function buildCustomCaptionStyleSteps(style: CustomCaptionStyle, preset?: CaptionStylePreset): string[] {
+  const fallback = preset ? describeCaptionStyle(preset) : undefined;
+  const steps = [...TRACK_STYLE_SELECT_STEPS];
+  const text: string[] = [];
+  const family = style.font_family ?? fallback?.font_family_suggestion;
+  const weight = style.font_weight ?? fallback?.font_weight;
+  if (family) text.push(`font family "${family}"`);
+  if (weight) text.push(`font weight/style "${weight}"`);
+  if (style.font_size_px !== undefined) text.push(`font size ${style.font_size_px}`);
+  else if (fallback) text.push(`font size about ${fallback.font_size_percent_of_height}% of the frame height`);
+  if (text.length) steps.push(`Text: set ${text.join(", ")}.`);
+  if (style.fill_color) steps.push(`Appearance > Fill: turn Fill on and set the colour to ${style.fill_color}.`);
+  if (style.strokes) {
+    if (!style.strokes.length) steps.push("Appearance > Stroke: turn Stroke off.");
+    style.strokes.forEach((stroke, index) => {
+      const values = `colour ${stroke.color}, width ${stroke.width_px}, ${stroke.placement} stroke`;
+      steps.push(index === 0
+        ? `Appearance > Stroke: turn Stroke on and set the ${ordinal(index)} stroke to ${values}.`
+        : `Appearance > Stroke: press + next to Stroke to add stroke ${index + 1}, then set it to ${values}.`);
+    });
+  } else if (fallback) {
+    steps.push(`Appearance > Stroke: ${fallback.stroke ? "turn Stroke on" : "leave Stroke off"} (preset ${fallback.preset}).`);
+  }
+  if (style.shadow) {
+    const shadow = style.shadow;
+    steps.push(`Appearance > Shadow: turn Shadow on and set colour ${shadow.color}, Opacity ${shadow.opacity}%, Angle ${shadow.angle}°, Distance ${shadow.distance}, Size ${shadow.size}, Blur ${shadow.blur}.`);
+  }
+  if (style.zone) steps.push(`Align and Transform: choose the ${zoneLabel(style.zone)} cell in the caption region (zone) grid.`);
+  else if (fallback) steps.push(`Align and Transform: place the caption centre near x=${fallback.position.x * 100}%, y=${fallback.position.y * 100}% of the frame (preset ${fallback.preset}).`);
+  if (style.offset_x_px !== undefined || style.offset_y_px !== undefined) {
+    steps.push(`Align and Transform: set the position offset to X ${style.offset_x_px ?? 0} and Y ${style.offset_y_px ?? 0} (pixels relative to the chosen zone; negative Y moves the caption up).`);
+  }
+  steps.push(...trackStyleSaveSteps(style.track_style_name ?? DEFAULT_TRACK_STYLE_NAME));
+  return numbered(steps);
+}
+
+/** Premiere 2024+ Properties-panel / Track Style steps for a built-in preset. */
+export function buildPresetCaptionStyleSteps(style: CaptionStyleDescriptor): string[] {
+  const steps = [
+    ...TRACK_STYLE_SELECT_STEPS,
+    `Text: set font family "${style.font_family_suggestion}", font weight ${style.font_weight}, and a font size of about ${style.font_size_percent_of_height}% of the frame height.`,
+    `Appearance > Stroke: ${style.stroke ? "turn Stroke on (press + next to Stroke for a second, wider outer stroke if you want a layered outline)" : "leave Stroke off"}.`,
+    `Appearance > Background: ${style.background ? "turn Background on and lower its opacity so the video stays visible" : "leave Background off"}.`,
+    `Align and Transform: centre-align the text and place the caption centre near x=${style.position.x * 100}%, y=${style.position.y * 100}% of the frame (normalized, centre-anchored).`,
+    ...(style.word_highlight ? ["Word highlight: enable word highlighting for a karaoke-style progressive reveal where your Premiere version offers it."] : []),
+    ...(style.uppercase_recommended ? ["Text: uppercase is recommended for this preset (use the All Caps option or the build_caption_artifact uppercase flag)."] : []),
+    ...trackStyleSaveSteps(`${style.preset} captions`),
+  ];
+  return numbered(steps);
+}
+
+export const CAPTION_TRACK_STYLE_GUIDANCE = {
+  scope: "A Track Style applies to every caption on the caption track. Style one caption, save it with Track Style > + Create style, and the whole track updates; no multi-select is needed.",
+  reusable: "A saved Track Style can be applied to the caption track of any other sequence in the project from the Track Style dropdown.",
+  project_item: "Each Track Style is stored as a project item in the Project panel; keep it in a shared bin so it can be found and reused.",
+  limitations: [
+    "Premiere Pro exposes no documented ExtendScript, QE DOM, or UXP API that creates, edits, or applies caption styles, so these steps must be performed in the Premiere UI.",
+    "These steps target Premiere Pro 2024 and later. Earlier versions lack the Track Style workflow described here and were not checked; panel labels can also differ between versions and UI languages.",
+    "Verify the rendered result with export_frame or export_sequence_review_frames; this tool cannot read the applied style back.",
+  ],
+} as const;
+
+export function captionSafeZoneRecommendation(): Record<SafeZonePlatform, { x: number; y: number }> {
+  return safeZoneRecommendation();
+}
+
+// ---------------------------------------------------------------------------
 // Cue construction
 // ---------------------------------------------------------------------------
 

@@ -298,6 +298,7 @@ export function buildPlatformCapabilityReport(
             cloudPublish: "No documented Premiere automation API for publishing to cloud destinations.",
             contentCredentials: "No documented Premiere automation API for configuring Content Credentials.",
             renderAndReplace: "No documented Premiere ExtendScript or UXP Render and Replace API.",
+            captionTrackStyle: "No documented Premiere ExtendScript, QE DOM, or UXP API creates, edits, or applies caption track styles; call get_caption_style_guidance for Properties-panel and Track Style steps to apply in the Premiere UI.",
           },
         },
       },

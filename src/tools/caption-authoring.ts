@@ -4,9 +4,22 @@ import path from "node:path";
 import {
   buildCaptionArtifact,
   CAPTION_AUTHORING_ROUTES,
+  CAPTION_SHADOW_DEFAULTS,
+  CAPTION_STROKE_PLACEMENTS,
   CAPTION_STYLE_PRESETS,
+  CAPTION_TRACK_STYLE_GUIDANCE,
+  CAPTION_ZONES,
+  buildCustomCaptionStyleSteps,
+  buildPresetCaptionStyleSteps,
+  captionSafeZoneRecommendation,
   checkCaptionSafeZone,
+  CUSTOM_CAPTION_STYLE_LIMITS,
+  customCaptionStyleWarnings,
+  DEFAULT_TRACK_STYLE_NAME,
   describeCaptionStyle,
+  MAX_CAPTION_STROKES,
+  validateCustomCaptionStyle,
+  type CaptionStylePreset,
   MAX_EMPHASIS_WORDS,
   MAX_FILLER_TOKENS,
   MAX_FRAME_DIMENSION,
@@ -20,6 +33,61 @@ import { WORD_TIMELINE_PARAMETER } from "../ai/word-timeline.js";
 
 export const MAX_INLINE_ARTIFACT_BYTES = 512 * 1024;
 const MAX_PATH_LENGTH = 4096;
+const CAPTION_STYLE_VERIFY_ROUTES = ["export_frame", "export_sequence_review_frames"] as const;
+
+const HEX_COLOR_PATTERN = "^#[0-9A-Fa-f]{6}$";
+const LIMITS = CUSTOM_CAPTION_STYLE_LIMITS;
+const shadowNumber = (key: keyof typeof LIMITS.shadow, label: string) => ({
+  type: "number",
+  minimum: LIMITS.shadow[key].min,
+  maximum: LIMITS.shadow[key].max,
+  description: `${label} (default ${CAPTION_SHADOW_DEFAULTS[key]}).`,
+});
+
+const CUSTOM_STYLE_PARAMETER = {
+  type: "object",
+  additionalProperties: false,
+  description: "Optional caption look to translate into concrete Premiere UI steps. Every field is optional; at least one is required. Values are documentation only and are never applied.",
+  properties: {
+    font_family: { type: "string", minLength: 1, maxLength: LIMITS.font_family_max_length, description: "Font family name as shown in Premiere, e.g. Source Han Sans TW." },
+    font_weight: { type: "string", minLength: 1, maxLength: LIMITS.font_weight_max_length, description: "Font weight or style name, e.g. Heavy or Bold." },
+    font_size_px: { type: "integer", minimum: LIMITS.font_size_px.min, maximum: LIMITS.font_size_px.max, description: "Font size in Premiere's caption units (pixels)." },
+    fill_color: { type: "string", pattern: HEX_COLOR_PATTERN, description: "Text fill colour as #RRGGBB." },
+    strokes: {
+      type: "array",
+      maxItems: MAX_CAPTION_STROKES,
+      description: "Up to three strokes in Premiere's Stroke list order; each stroke after the first is added with + next to Stroke. Layered outer strokes need increasing widths.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        description: "One stroke.",
+        properties: {
+          color: { type: "string", pattern: HEX_COLOR_PATTERN, description: "Stroke colour as #RRGGBB." },
+          width_px: { type: "number", minimum: LIMITS.stroke_width_px.min, maximum: LIMITS.stroke_width_px.max, description: "Stroke width." },
+          placement: { type: "string", enum: [...CAPTION_STROKE_PLACEMENTS], description: "Stroke placement (default outer)." },
+        },
+        required: ["color", "width_px"],
+      },
+    },
+    shadow: {
+      type: "object",
+      additionalProperties: false,
+      description: "Drop shadow; omitted fields use the listed defaults.",
+      properties: {
+        color: { type: "string", pattern: HEX_COLOR_PATTERN, description: `Shadow colour as #RRGGBB (default ${CAPTION_SHADOW_DEFAULTS.color}).` },
+        opacity: shadowNumber("opacity", "Shadow opacity percent"),
+        angle: shadowNumber("angle", "Shadow angle in degrees"),
+        distance: shadowNumber("distance", "Shadow distance"),
+        size: shadowNumber("size", "Shadow size"),
+        blur: shadowNumber("blur", "Shadow blur"),
+      },
+    },
+    zone: { type: "string", enum: [...CAPTION_ZONES], description: "Caption region in Premiere's Align and Transform zone grid." },
+    offset_x_px: { type: "integer", minimum: LIMITS.offset_px.min, maximum: LIMITS.offset_px.max, description: "Horizontal position offset from the zone in pixels." },
+    offset_y_px: { type: "integer", minimum: LIMITS.offset_px.min, maximum: LIMITS.offset_px.max, description: "Vertical position offset from the zone in pixels; negative moves up." },
+    track_style_name: { type: "string", minLength: 1, maxLength: LIMITS.track_style_name_max_length, description: `Name for the saved Track Style (default ${DEFAULT_TRACK_STYLE_NAME}).` },
+  },
+} as const;
 
 function absolutePath(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || value.length > MAX_PATH_LENGTH) throw new Error(`${label} must be a non-empty string of at most ${MAX_PATH_LENGTH} characters`);
@@ -198,22 +266,29 @@ export function getCaptionAuthoringTools() {
     },
     get_caption_style_guidance: {
       description:
-        "Returns caption style presets (clean, bold_pop, karaoke, podcast, lecture) with font, position, and styling recommendations, plus Premiere UI steps for applying styles. Read-only guidance; NEVER modifies caption tracks. Use build_caption_artifact for SRT/VTT timing, then import via create_caption_track and apply styles manually in Premiere's UI.",
+        "Read-only caption style guidance: a preset (clean, bold_pop, karaoke, podcast, lecture) and/or a custom_style spec (font, size, fill, up to 3 strokes, shadow, zone, offsets) turned into Premiere 2024+ Properties-panel steps that save a reusable whole-track Track Style. NEVER modifies caption tracks; Premiere has no caption style API.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
         required: [],
         properties: {
-          preset: { type: "string", enum: [...CAPTION_STYLE_PRESETS], description: "Style preset to describe (default clean)." },
+          preset: { type: "string", enum: [...CAPTION_STYLE_PRESETS], description: "Style preset to describe (default clean when custom_style is omitted)." },
+          custom_style: CUSTOM_STYLE_PARAMETER,
         },
       },
-      handler: async (args: { preset?: string }) => {
+      handler: async (args: Record<string, unknown>) => {
         try {
-          const preset = (args.preset ?? "clean") as any;
-          if (!CAPTION_STYLE_PRESETS.includes(preset)) {
+          if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("arguments must be an object");
+          if (args.preset !== undefined && (typeof args.preset !== "string" || !(CAPTION_STYLE_PRESETS as readonly string[]).includes(args.preset))) {
             throw new Error(`preset must be one of: ${CAPTION_STYLE_PRESETS.join(", ")}`);
           }
-          const style = describeCaptionStyle(preset);
+          const custom = args.custom_style === undefined ? undefined : validateCustomCaptionStyle(args.custom_style);
+          const preset = (args.preset ?? (custom ? undefined : "clean")) as CaptionStylePreset | undefined;
+          const presetStyle = preset ? describeCaptionStyle(preset) : undefined;
+          const style = custom
+            ? { ...(presetStyle ?? { preset: null }), custom_style: custom, source: presetStyle ? "preset_with_custom_style" : "custom_style" }
+            : presetStyle!;
+          const premiereUiSteps = custom ? buildCustomCaptionStyleSteps(custom, preset) : buildPresetCaptionStyleSteps(presetStyle!);
           return {
             success: true,
             data: {
@@ -223,29 +298,21 @@ export function getCaptionAuthoringTools() {
                 "Step 2: Import the caption file into Premiere project",
                 "Step 3: Call create_caption_track with action:import and the imported item_id",
                 "Step 4: Inspect the track with read_sequence_captions or inspect_caption_tracks_uxp",
-                "Step 5: Apply font/color/position/background styles manually in Premiere UI",
+                "Step 5: Style one caption in Premiere's Properties panel and save it as a Track Style (premiere_ui_steps); it applies to the whole caption track",
               ],
-              premiere_ui_steps: [
-                `1. Select the caption track in the timeline`,
-                `2. Open Essential Graphics panel (Window > Essential Graphics)`,
-                `3. In the Edit tab, adjust Text properties:`,
-                `   - Font Family: ${style.font_family_suggestion}`,
-                `   - Font Weight: ${style.font_weight}`,
-                `   - Font Size: approximately ${style.font_size_percent_of_height}% of frame height`,
-                `   - Position: x=${style.position.x * 100}%, y=${style.position.y * 100}% (normalized, center-anchored)`,
-                `   - Alignment: ${style.alignment}`,
-                `   - Stroke: ${style.stroke ? "enabled" : "disabled"}`,
-                `   - Background: ${style.background ? "enabled with opacity" : "disabled"}`,
-                ...(style.word_highlight
-                  ? ["   - Word Highlight: enabled for karaoke-style progressive reveal"]
-                  : []),
-                ...(style.uppercase_recommended
-                  ? ["   - Transform: uppercase recommended for this preset"]
-                  : []),
-              ],
-              mutation_refused: "This tool provides guidance only. MCP for Adobe Premiere Pro does not expose a CaptionTrack style mutation API because Premiere does not expose one through documented ExtendScript, QE DOM, or UXP surfaces. Apply caption styles manually in the Essential Graphics panel.",
-              safe_zones: style.safe_zone_recommendation,
-              routes: [...CAPTION_AUTHORING_ROUTES, ...SAFE_ZONE_ROUTES],
+              premiere_ui_steps: premiereUiSteps,
+              track_style: {
+                name: custom?.track_style_name ?? (custom ? DEFAULT_TRACK_STYLE_NAME : `${preset} captions`),
+                scope: CAPTION_TRACK_STYLE_GUIDANCE.scope,
+                reusable: CAPTION_TRACK_STYLE_GUIDANCE.reusable,
+                project_item: CAPTION_TRACK_STYLE_GUIDANCE.project_item,
+              },
+              limitations: [...CAPTION_TRACK_STYLE_GUIDANCE.limitations],
+              warnings: custom ? customCaptionStyleWarnings(custom) : [],
+              applied: false,
+              mutation_refused: "This tool provides guidance only. MCP for Adobe Premiere Pro does not expose a CaptionTrack style mutation API because Premiere does not expose one through documented ExtendScript, QE DOM, or UXP surfaces. Apply caption styles manually in Premiere's Properties panel (or Essential Graphics) and save them as a Track Style.",
+              safe_zones: presetStyle?.safe_zone_recommendation ?? captionSafeZoneRecommendation(),
+              routes: [...CAPTION_AUTHORING_ROUTES, ...SAFE_ZONE_ROUTES, ...CAPTION_STYLE_VERIFY_ROUTES],
             },
           };
         } catch (error) {

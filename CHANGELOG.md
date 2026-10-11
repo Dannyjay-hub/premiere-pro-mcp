@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `get_caption_style_guidance` accepts an optional, bounded `custom_style` (font family/weight, font size 8-400 px, `#RRGGBB` fill, up to three strokes with width and outer/inner/center placement, drop shadow, one of nine zones, X/Y offsets, Track Style name) and returns that spec with numbered Premiere UI steps carrying the exact values. Each extra stroke is added with + next to Stroke, and the look is saved via Track Style > + Create style. Preset steps use the same workflow. Results add `track_style` (whole-track scope, reuse from the Track Style dropdown in other sequences, project item in the Project panel), `limitations`, `warnings` (for example, layered outer strokes that do not grow wider) and `applied: false`. It is still guidance only: Premiere exposes no caption style API, so nothing is applied. Verify the look with `export_frame` or `export_sequence_review_frames`. Calls that pass only `preset` keep their `style` fields.
+- The platform capability report lists `captionTrackStyle` under the CEP `unsupported` map, so clients see that caption track styling cannot be automated and are pointed to `get_caption_style_guidance`.
+
 ### Fixed
 
 - Registered tools accept optional request-scoped `expected_project_path`; generated CEP commands refuse a different, missing or unsaved active project before the tool body. UXP and After Effects refuse this CEP-only guard. Omitting the guard preserves existing behavior.
