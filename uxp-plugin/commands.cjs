@@ -13,7 +13,8 @@
     const operationLedger = Ledger.createOperationLedger({ storage: deps.storage, sessionId: deps.sessionId, digest: Transcript.transcriptRevision, requireDurability: deps.requireOperationDurability === true });
     let mutationTail = Promise.resolve();
     let anonymousOperation = 0;
-    const invocationSession = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    let invocationSession = null;
+    try { invocationSession = Ledger.createSecureSessionId("invocation"); } catch (_) {}
     const completedOperations = new Map();
     const inFlightOperations = new Map();
     const inFlightBindings = new Map();
@@ -260,6 +261,7 @@
       const input = args || {};
       const operationId = validateOperationId(input.operationId);
       if (definition.readOnly) return definition.handler(input);
+      if (!invocationSession || !operationLedger.secureIdentityAvailable) throw commandError("UXP_SECURE_IDENTITY_UNAVAILABLE", "Documented UXP cryptographic entropy is unavailable; no host mutation was dispatched. Run the matching panel in a supported Premiere host");
       const identity = await operationIdentity(false);
       const operationKey = operationId || "anonymous:" + operationLedger.sessionId + ":" + invocationSession + ":" + (++anonymousOperation);
       const binding = operationLedger.bind(command, input, identity);
@@ -310,7 +312,8 @@
         const definition = definitions[name], apiSupported = !definition.probe || await definition.probe();
         const pathValidationSupported = !definition.requiresWorkspace || workspaceState.canonicalPathValidation === "available";
         const replaySupported = definition.readOnly || deps.requireOperationDurability !== true || operationLedger.durable;
-        const supported = apiSupported && pathValidationSupported && replaySupported;
+        const secureIdentitySupported = definition.readOnly || !!(invocationSession && operationLedger.secureIdentityAvailable);
+        const supported = apiSupported && pathValidationSupported && replaySupported && secureIdentitySupported;
         commands[name] = {
           supported, backend: "uxp", documented: true,
           readOnly: !!definition.readOnly, destructive: !!definition.destructive,
@@ -322,6 +325,7 @@
         if (definition.conditionalWorkspace) commands[name].workspaceRequired = "path_variant_only";
         if (definition.targetCapabilityProbe) commands[name].targetCapabilityProbe = "invocation";
         if (!apiSupported) commands[name].reason = "Required Premiere UXP API is unavailable in this host";
+        else if (!secureIdentitySupported) commands[name].reason = "Documented UXP cryptographic entropy is unavailable; mutations are disabled";
         else if (!replaySupported) commands[name].reason = "Persistent operation storage is unavailable; mutations are disabled";
         else if (!pathValidationSupported) commands[name].reason = "canonical path validation is not implemented in this build; use the CEP fallback for path-based workflows";
       }

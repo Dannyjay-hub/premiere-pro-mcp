@@ -7,13 +7,23 @@ import { guardToolHandler, resolveCapabilities } from "../../src/security/capabi
 import { getExportTools } from "../../src/tools/export.js";
 import { withInvocationContext } from "../../src/workflows/invocation-context.js";
 import { resetWorkflowJobs } from "../../src/workflows/job-contract.js";
+const frozenSource = vi.hoisted(() => ({ value: null as null | { path: string; metadata: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number } }, descriptors: new Set<number>() }));
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual,
+    lstatSync: (path: string) => { const stats = actual.lstatSync(path); return path === frozenSource.value?.path ? Object.assign(stats, frozenSource.value.metadata) : stats; },
+    openSync: (path: string, flags: string | number) => { const descriptor = actual.openSync(path, flags); if (path === frozenSource.value?.path) frozenSource.descriptors.add(descriptor); return descriptor; },
+    fstatSync: (descriptor: number) => { const stats = actual.fstatSync(descriptor); return frozenSource.descriptors.has(descriptor) && frozenSource.value ? Object.assign(stats, frozenSource.value.metadata) : stats; },
+    closeSync: (descriptor: number) => { frozenSource.descriptors.delete(descriptor); actual.closeSync(descriptor); },
+  };
+});
 vi.mock("../../src/bridge/file-bridge.js", () => ({sendCommand:vi.fn().mockResolvedValue({success:true,data:{reasons:[],sequenceId:"seq"}}),getTempDir:()=>"/tmp/test"}));
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 
 let folder: string;
 let outputCounter = 0;
 beforeEach(()=> {folder=mkdtempSync(join(tmpdir(),"mcp-execution-"));outputCounter=0;vi.mocked(sendCommand).mockReset().mockResolvedValue({success:true,data:{reasons:[],sequenceId:"seq"}});});
-afterEach(()=> {rmSync(folder,{recursive:true,force:true});resetWorkflowJobs();});
+afterEach(()=> {frozenSource.value=null;frozenSource.descriptors.clear();rmSync(folder,{recursive:true,force:true});resetWorkflowJobs();});
 const definition=(handler: any, properties: Record<string,unknown>={}, required: string[]=[]) => ({description:"Test registered operation",parameters:{type:"object",properties,required},handler});
 const string={type:"string"};
 function catalog() {
@@ -108,8 +118,16 @@ describe("export evidence composition",()=>{
     const {tools,values}=setup();const args=reviewArgs();const oldDate=new Date("2010-01-01T00:00:00Z");utimesSync(args.before_video,oldDate,oldDate);
     const initial=statSync(args.before_video);
     values.generate_media_contact_sheet.handler.mockImplementationOnce(async({media_path,output_path})=>{writeFileSync(media_path,"x".repeat(initial.size));utimesSync(media_path,oldDate,oldDate);writeFileSync(output_path,"grid from replacement");return {success:true,data:{created:true}};});
-    expect(await tools.build_edit_review_evidence.handler(args)).toMatchObject({success:false,error:expect.stringContaining("ARTIFACT_SOURCE_CHANGED"),data:{outcome:"committed_unverified"}});
+    expect(await tools.build_edit_review_evidence.handler(args)).toMatchObject({success:false,error:expect.stringMatching(/ARTIFACT_(SOURCE|CHECKSUM)_CHANGED/),data:{outcome:"committed_unverified"}});
     expect(statSync(args.before_video).size).toBe(initial.size);expect(statSync(args.before_video).mtimeMs).toBe(initial.mtimeMs);expect(existsSync(args.before_sheet)).toBe(false);
+  });
+  it("checks real source bytes before sheet publication when observed file metadata stays unchanged",async()=>{
+    const {tools,values}=setup();const args=reviewArgs();const date=new Date("2010-01-01T00:00:00Z");utimesSync(args.before_video,date,date);const initial=statSync(args.before_video);
+    frozenSource.value={path:args.before_video,metadata:{dev:initial.dev,ino:initial.ino,size:initial.size,mtimeMs:initial.mtimeMs,ctimeMs:initial.ctimeMs}};
+    values.generate_media_contact_sheet.handler.mockImplementationOnce(async({media_path,output_path})=>{writeFileSync(media_path,"x".repeat(initial.size));utimesSync(media_path,date,date);writeFileSync(output_path,"grid from changed source");return {success:true,data:{created:true}};});
+    expect(await tools.build_edit_review_evidence.handler(args)).toMatchObject({success:false,error:expect.stringContaining("ARTIFACT_CHECKSUM_CHANGED"),data:{outcome:"committed_unverified",steps:[{phase:"before",published:false}]}});
+    const current=statSync(args.before_video);expect(current.ino).toBe(initial.ino);expect(current.size).toBe(initial.size);expect(current.mtimeMs).toBe(initial.mtimeMs);expect(readFileSync(args.before_video,"utf8")).toBe("x".repeat(initial.size));
+    expect(existsSync(args.before_sheet)).toBe(false);expect(existsSync(args.after_sheet)).toBe(false);expect(readdirSync(folder).some(name=>name.startsWith(".mcp-review-"))).toBe(false);
   });
   it("rechecks the before source after processing the after source",async()=>{
     const {tools,values}=setup();const args=reviewArgs();const original=values.generate_media_contact_sheet.handler.getMockImplementation()!;

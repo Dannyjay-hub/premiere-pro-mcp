@@ -241,6 +241,7 @@ export function getExecutionWorkflowTools(bridgeOptions: BridgeOptions, options:
               assertArtifactUnchanged(video, snapshot);
               const sha256 = await hashStableArtifact(staging, staged, "REVIEW_CONTACT_SHEET");
               assertArtifactUnchanged(video, snapshot);
+              await confirmArtifactChecksum(video, snapshot, evidence.data);
               const published = await publishArtifactExclusive(staging, sheet, staged, sha256);
               steps[steps.length - 1] = { phase, evidence: evidence.data, contact: { ...record(contact.data), outputPath: sheet, sha256, sizeBytes: staged.size }, published: true };
               removeOwnedStaging(staging, staged);

@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, statSync } from "node:fs";
+import { rmSync, writeFileSync, mkdirSync, symlinkSync, statSync } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import vm from "node:vm";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
 import { getTimelineEditorialTools } from "../../src/tools/timeline-editorial.js";
 import { getExtendedEditPlanTools, validateExtendedEditPlan } from "../../src/tools/extended-edit-plans.js";
 import { getSceneReviewWorkflowTools } from "../../src/tools/scene-review-workflow.js";
 import { snapshotRevision, predictEdits, type TimelineSnapshot } from "../../src/ai/timeline-contract.js";
 import { secondsToTicks } from "../../src/ai/exact-time.js";
 import { resolveCapabilities } from "../../src/security/capabilities.js";
+import { inspectWindowsBridgeDirectoryAcl } from "../../src/bridge/file-bridge.js";
 
-const directories: string[] = [];
-const workspace = () => { const root = mkdtempSync(path.join(os.tmpdir(), "editorial-boundary-")); directories.push(root); return root; };
-afterEach(() => { for (const root of directories.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const workspace = () => makePrivateBridgeTempDir("editorial-boundary-");
+afterEach(cleanupTempDirs);
 const ok = (data: unknown) => ({ success: true, data });
 const no = (error: string) => ({ success: false, error });
 const sec = secondsToTicks;
@@ -45,7 +45,14 @@ describe("local tool evidence boundaries", () => {
   it("keeps checkpoints private and refuses symlinked or oversized records", async () => {
     const root = workspace(), tools = getTimelineEditorialTools({ tempDir: root }); const checkpoint = { schema_version: 1, project_id: "p", sequence_id: "s", snapshot_revision: "r", backup_reference: "backup", sequence_checkpoint_reference: null, operations: [{ operation_id: "done", tool: "enable_disable_clip", state: "completed", receipt_digest: null }] };
     const saved = await tools.save_workflow_checkpoint.handler({ checkpoint }), file = path.join(root, `workflow-checkpoint-${saved.data.checkpoint_id}.json`);
-    expect(statSync(file).mode & 0o777).toBe(0o600); expect(await tools.inspect_workflow_checkpoint.handler({ checkpoint_id: saved.data.checkpoint_id })).toMatchObject({ data: { checkpoint: { automatic_replay: false, recovery_required: false } } });
+    // Node's POSIX mode bits cannot describe the inherited Windows file ACL.
+    if (process.platform === "win32") {
+      const acl = inspectWindowsBridgeDirectoryAcl(file, false, { file: true, readAccess: true });
+      expect(acl.currentUserSid).toMatch(/^S-1-/);
+      expect(acl.unsafeWriteAces).toEqual([]);
+      expect(acl.unsafeAncestorEntries).toEqual([]);
+    } else expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(await tools.inspect_workflow_checkpoint.handler({ checkpoint_id: saved.data.checkpoint_id })).toMatchObject({ data: { checkpoint: { automatic_replay: false, recovery_required: false } } });
     rmSync(file); const outside = workspace(); writeFileSync(path.join(outside, "record"), "{}"); symlinkSync(path.join(outside, "record"), file); await expect(tools.inspect_workflow_checkpoint.handler({ checkpoint_id: saved.data.checkpoint_id })).rejects.toThrow("bounded regular"); rmSync(file); writeFileSync(file, "x".repeat(1024 * 1024 + 1)); await expect(tools.inspect_workflow_checkpoint.handler({ checkpoint_id: saved.data.checkpoint_id })).rejects.toThrow("bounded regular");
   });
 });

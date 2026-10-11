@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, readFileSync } from "node:fs";
-import os from "node:os";
+import { writeFileSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
 import { getTimelineEditorialTools, timelineSnapshotScript, stackedCameraApplyScript } from "../../src/tools/timeline-editorial.js";
 import { getExtendedEditPlanTools, validateExtendedEditPlan } from "../../src/tools/extended-edit-plans.js";
 import { getSceneReviewWorkflowTools } from "../../src/tools/scene-review-workflow.js";
@@ -13,9 +13,8 @@ import { runWithExpectedHostTarget, expectedHostTarget } from "../../src/bridge/
 import { buildToolScript } from "../../src/bridge/script-builder.js";
 import { resolveCapabilities } from "../../src/security/capabilities.js";
 
-const folders: string[] = [];
-afterEach(() => { for (const f of folders.splice(0)) rmSync(f, { recursive: true, force: true }); });
-const workspace = () => { const root = mkdtempSync(path.join(os.tmpdir(), "timeline-editorial-")); folders.push(root); return root; };
+afterEach(cleanupTempDirs);
+const workspace = () => makePrivateBridgeTempDir("timeline-editorial-");
 const time = secondsToTicks;
 function snapshot(): TimelineSnapshot {
   const s: TimelineSnapshot = { schema_version: 1, backend: "cep", project_id: "p", sequence_id: "s", session_id: "session", revision: "", frame_rate: { numerator: 24, denominator: 1 }, display_start_ticks: "0", tracks: [{ id: "video:0", type: "video", index: 0, locked: false, sync_locked: true, targeted: true, muted: false }, { id: "audio:0", type: "audio", index: 0, locked: false, sync_locked: true, targeted: false, muted: false }], clips: [{ id: "clip", source_id: "source", track_id: "video:0", start_ticks: "0", end_ticks: time(2), in_ticks: time(1), out_ticks: time(3), source_duration_ticks: time(60), speed: { numerator: 1, denominator: 1 }, reversed: false, enabled: true, linked_ids: [], identity: "host", effects: [], nested: false }], completeness: { clips: true, links: true, locks: true, effects: true, transitions: true, markers: true }, transitions: [], markers: [], pagination: { offset: 0, total: 1, next_offset: null } };

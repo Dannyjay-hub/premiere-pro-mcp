@@ -107,8 +107,8 @@ partially commit; fresh structural readback is separate from playback.
 
 Unknown host outcomes require `inspect_operation_recovery` and reviewed,
 revision-bound `acknowledge_operation_recovery`. Consumed IDs remain consumed.
-UXP edits require matching command/receipt versions and durable ledger storage;
-older unversioned panels remain read-only. Bounded clip snapshots do not replace
+UXP edits require matching command/receipt versions, durable ledger storage and
+native cryptographic entropy; older unversioned panels remain read-only. Bounded clip snapshots do not replace
 actual effect/source reconciliation, and reconnecting never grants ID replay.
 Only local analysis workers support `cancel_workflow_job`; request cancellation
 or a stopped wait cannot cancel accepted native Premiere/AME jobs.

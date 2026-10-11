@@ -69,6 +69,9 @@ export async function createReviewClip(input: string, output: string, start: num
   if (!isAbsolute(input) || !isAbsolute(output) || extname(output).toLowerCase() !== ".mp4" || existsSync(output)) throw new Error("REVIEW_CLIP_PATH: choose an existing absolute input and a new .mp4 destination");
   if (!Number.isFinite(start) || start < 0 || start > 86400 || !Number.isFinite(duration) || duration <= 0 || duration > 30) throw new Error("REVIEW_CLIP_RANGE: start must be 0..86400 and duration >0..30 seconds");
   const before = snapshotArtifact(input, "REVIEW_CLIP_INPUT");
+  // Windows change timestamps can remain unchanged after an in-place write and
+  // restored mtime. Pin content as well as metadata before reading the source.
+  const sourceSha256 = await hashStableArtifact(input, before, "REVIEW_CLIP_SOURCE");
   const staging = join(dirname(output), `.mcp-review-${randomUUID()}.mp4`);
   let staged: ArtifactSnapshot | undefined;
   let linked = false;
@@ -84,12 +87,12 @@ export async function createReviewClip(input: string, output: string, start: num
     assertArtifactUnchanged(staging, staged, "REVIEW_CLIP_STAGING");
     const sha256 = await hashStableArtifact(staging, staged, "REVIEW_CLIP_STAGING");
     assertInvocationNotCancelled();
-    assertArtifactUnchanged(input, before, "REVIEW_CLIP_SOURCE");
+    if (await hashStableArtifact(input, before, "REVIEW_CLIP_SOURCE") !== sourceSha256) throw new Error("REVIEW_CLIP_SOURCE_CHANGED: source checksum changed during encoding");
     const published = await publishArtifactExclusive(staging, output, staged, sha256);
     linked = true;
-    assertArtifactUnchanged(input, before, "REVIEW_CLIP_SOURCE");
+    if (await hashStableArtifact(input, before, "REVIEW_CLIP_SOURCE") !== sourceSha256) throw new Error("REVIEW_CLIP_SOURCE_CHANGED: source checksum changed during publication");
     assertArtifactUnchanged(output, published, "REVIEW_CLIP_PUBLICATION");
-    return {path:output,sha256,bytes:staged.size,requestedStartSeconds:start,requestedDurationSeconds:duration,observedDurationSeconds:Number(measured.format.duration),decodedFrames:Number(video.nb_read_frames),renderVerified:false,verificationScope:"Decoded local review excerpt; visual comparison, audio quality and Premiere lineage remain unverified"};
+    return {path:output,sha256,sourceSha256,bytes:staged.size,requestedStartSeconds:start,requestedDurationSeconds:duration,observedDurationSeconds:Number(measured.format.duration),decodedFrames:Number(video.nb_read_frames),renderVerified:false,verificationScope:"Decoded local review excerpt with stable source checksum; visual comparison, audio quality and Premiere lineage remain unverified"};
   } catch (error) {
     if (linked && staged) { try { if (sameIdentity(staged, lstatSync(output))) unlinkSync(output); } catch { /* never remove a replacement owned by another writer */ } }
     throw error;

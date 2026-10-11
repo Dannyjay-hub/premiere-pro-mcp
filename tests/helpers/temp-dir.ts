@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateBridgeDirectory } from "../../src/bridge/file-bridge.js";
 
 const created: string[] = [];
 
@@ -8,6 +9,13 @@ const created: string[] = [];
 export function makeTempDir(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   created.push(directory);
+  return directory;
+}
+
+/** Create a new bridge directory through production ownership and ACL initialization. */
+export function makePrivateBridgeTempDir(prefix: string): string {
+  const directory = join(makeTempDir(prefix), "bridge");
+  ensurePrivateBridgeDirectory(directory);
   return directory;
 }
 

@@ -1,24 +1,21 @@
 import { runWithExpectedProject } from "../../src/bridge/project-guard.js";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import {
   UxpBridgeError,
   UxpWebSocketBridge,
 } from "../../src/bridge/uxp-websocket-bridge.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
 
 const TOKEN = "test-token-at-least-16-characters";
 const bridges: UxpWebSocketBridge[] = [];
-const directories: string[] = [];
 
 async function createBridge(options: {
   requestTimeoutMs?: number;
   handshakeTimeoutMs?: number;
 } = {}) {
-  const tempDir = mkdtempSync(join(tmpdir(), "uxp-transport-lease-")); directories.push(tempDir);
+  const tempDir = makePrivateBridgeTempDir("uxp-transport-lease-");
   const bridge = new UxpWebSocketBridge({
     tempDir,
     token: TOKEN,
@@ -61,7 +58,7 @@ async function connectHost(
 
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.stop()));
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  cleanupTempDirs();
 });
 
 describe("UXP WebSocket bridge", () => {

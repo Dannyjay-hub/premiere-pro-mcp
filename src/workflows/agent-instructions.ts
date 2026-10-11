@@ -8,7 +8,7 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   };
 
   route(["can_execute", "inspect_operation_recovery"],
-    "Preflight the exact proposed invocation. Named refusal and unknown reasons are actionable; evidence is advisory and dispatch revalidates targets. Unknown host outcomes block dependent edits until reviewed recovery. UXP edits require matching command/receipt versions and durable ledger storage; older unversioned panels remain read-only. Recovery inspection is a bounded clip snapshot, not complete effect/source reconciliation. Never replay a consumed operation ID, reset its ledger to retry, or silently switch backend.");
+    "Preflight the exact proposed invocation. Named refusal and unknown reasons are actionable; evidence is advisory and dispatch revalidates targets. Unknown host outcomes block dependent edits until reviewed recovery. UXP edits require matching command/receipt versions, durable ledger storage and native cryptographic entropy; older unversioned panels remain read-only. Recovery inspection is a bounded clip snapshot, not complete effect/source reconciliation. Never replay a consumed operation ID, reset its ledger to retry, or silently switch backend.");
   route(["inspect_timeline_snapshot", "predict_timeline_edit", "verify_timeline_postconditions"],
     "Keep decimal tick strings and rational frame rates intact. Check snapshot completeness and session/project/sequence identity; unknown locks, links, effects, transitions or source bounds cannot authorize edits. Synthetic interchange IDs never authorize host mutations. Verify affected and unaffected A/V ranges from fresh readback.");
   route(["preview_extended_edit_plan", "apply_extended_edit_plan"],

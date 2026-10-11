@@ -6,7 +6,7 @@ import {join} from "node:path";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {createReviewClip,hashStableArtifact,publishArtifactExclusive,removeOwnedStaging,snapshotArtifact} from "../../src/workflows/review-artifacts.js";
 import {withInvocationContext} from "../../src/workflows/invocation-context.js";
-const hooks=vi.hoisted(()=>({run:null as null|((file:string,args:string[],options:unknown)=>Promise<{stdout:string;stderr:string}>),beforeLink:null as null|((source:string,destination:string)=>void),afterLink:null as null|((source:string,destination:string)=>void)}));
+const hooks=vi.hoisted(()=>({run:null as null|((file:string,args:string[],options:unknown)=>Promise<{stdout:string;stderr:string}>),beforeLink:null as null|((source:string,destination:string)=>void),afterLink:null as null|((source:string,destination:string)=>void),frozenSource:null as null|{path:string;metadata:{dev:number;ino:number;size:number;mtimeMs:number;ctimeMs:number}},sourceDescriptors:new Set<number>()}));
 vi.mock("node:child_process",async importOriginal=>{
  const actual=await importOriginal<typeof import("node:child_process")>();const {promisify}=await import("node:util");const native=promisify(actual.execFile);
  const execFile=actual.execFile.bind(null);
@@ -14,10 +14,15 @@ vi.mock("node:child_process",async importOriginal=>{
  return {...actual,execFile};
 });
 vi.mock("node:fs",async importOriginal=>{
- const actual=await importOriginal<typeof import("node:fs")>();return {...actual,linkSync:(source:string,destination:string)=>{hooks.beforeLink?.(source,destination);actual.linkSync(source,destination);hooks.afterLink?.(source,destination);}};
+ const actual=await importOriginal<typeof import("node:fs")>();return {...actual,
+  lstatSync:(path:string)=>{const stats=actual.lstatSync(path);return path===hooks.frozenSource?.path ? Object.assign(stats,hooks.frozenSource.metadata):stats;},
+  openSync:(path:string,flags:string|number)=>{const descriptor=actual.openSync(path,flags);if(path===hooks.frozenSource?.path)hooks.sourceDescriptors.add(descriptor);return descriptor;},
+  fstatSync:(descriptor:number)=>{const stats=actual.fstatSync(descriptor);return hooks.sourceDescriptors.has(descriptor) && hooks.frozenSource ? Object.assign(stats,hooks.frozenSource.metadata):stats;},
+  closeSync:(descriptor:number)=>{hooks.sourceDescriptors.delete(descriptor);actual.closeSync(descriptor);},
+  linkSync:(source:string,destination:string)=>{hooks.beforeLink?.(source,destination);actual.linkSync(source,destination);hooks.afterLink?.(source,destination);}};
 });
 let directory:string;
-afterEach(()=>{hooks.run=null;hooks.beforeLink=null;hooks.afterLink=null;if(directory)rmSync(directory,{recursive:true,force:true});});
+afterEach(()=>{hooks.run=null;hooks.beforeLink=null;hooks.afterLink=null;hooks.frozenSource=null;hooks.sourceDescriptors.clear();if(directory)rmSync(directory,{recursive:true,force:true});});
 function fixture() {directory=mkdtempSync(join(tmpdir(),"mcp-review-race-"));const input=join(directory,"input.mp4"),output=join(directory,"output.mp4");writeFileSync(input,"source fixture");return {input,output};}
 function fakeEncoder(onProbe?:(staging:string)=>void) {
  hooks.run=async(file,args)=>{const staging=args.at(-1)!;if(file==="ffmpeg"){writeFileSync(staging,"encoded review fixture");return {stdout:"",stderr:""};}onProbe?.(staging);return {stdout:JSON.stringify({streams:[{codec_type:"video",nb_read_frames:"24"}],format:{duration:"1"}}),stderr:""};};
@@ -38,6 +43,16 @@ describe("create-only review excerpts",()=>{
   fakeEncoder(()=>{writeFileSync(input,"x".repeat(initial.size));utimesSync(input,date,date);});
   await expect(createReviewClip(input,output,0,1)).rejects.toThrow("REVIEW_CLIP_SOURCE_CHANGED");
   expect(statSync(input).size).toBe(initial.size);expect(statSync(input).mtimeMs).toBe(initial.mtimeMs);expect(existsSync(output)).toBe(false);expect(readdirSync(directory).some(name=>name.startsWith(".mcp-review-"))).toBe(false);
+ });
+ it.each(["encoding","publication"])("rejects actual source content changed during %s even when every observed timestamp and identity stays unchanged",async(stage)=>{
+  const {input,output}=fixture();const date=new Date("2010-01-01T00:00:00Z");utimesSync(input,date,date);const initial=statSync(input);
+  hooks.frozenSource={path:input,metadata:{dev:initial.dev,ino:initial.ino,size:initial.size,mtimeMs:initial.mtimeMs,ctimeMs:initial.ctimeMs}};
+  const mutate=()=>{writeFileSync(input,"x".repeat(initial.size));utimesSync(input,date,date);};
+  // Keep real file bytes and descriptors; model unchanged Windows metadata only.
+  fakeEncoder(stage==="encoding" ? mutate:undefined);if(stage==="publication")hooks.afterLink=mutate;
+  await expect(createReviewClip(input,output,0,1)).rejects.toThrow("REVIEW_CLIP_SOURCE_CHANGED");
+  const current=statSync(input);expect(current.ino).toBe(initial.ino);expect(current.size).toBe(initial.size);expect(current.mtimeMs).toBe(initial.mtimeMs);
+  expect(readFileSync(input,"utf8")).toBe("x".repeat(initial.size));expect(existsSync(output)).toBe(false);expect(readdirSync(directory).some(name=>name.startsWith(".mcp-review-"))).toBe(false);
  });
  it("refuses probe metadata for a staging file replaced before hashing",async()=>{
   const {input,output}=fixture();let replaced="";
@@ -66,7 +81,7 @@ let decoders=true;try{execFileSync("ffmpeg",["-version"],{stdio:"ignore"});execF
 it.skipIf(!decoders)("creates a decoded bounded excerpt, refuses an empty range and cleans only staging",async()=>{
  directory=mkdtempSync(join(tmpdir(),"mcp-review-render-"));const input=join(directory,"input.mp4"),output=join(directory,"output.mp4");
  execFileSync("ffmpeg",["-nostdin","-v","error","-n","-f","lavfi","-i","color=c=red:s=160x90:r=24:d=2","-c:v","libx264",input],{timeout:30000});
- expect(await createReviewClip(input,output,0.5,1)).toMatchObject({path:output,renderVerified:false,decodedFrames:24,observedDurationSeconds:1});expect(existsSync(output)).toBe(true);
+ expect(await createReviewClip(input,output,0.5,1)).toMatchObject({path:output,sourceSha256:createHash("sha256").update(readFileSync(input)).digest("hex"),renderVerified:false,decodedFrames:24,observedDurationSeconds:1});expect(existsSync(output)).toBe(true);
  await expect(createReviewClip(input,join(directory,"empty.mp4"),10,1)).rejects.toThrow("REVIEW_CLIP_EMPTY");
  expect(readdirSync(directory).some(name=>name.startsWith('.mcp-review-'))).toBe(false);
 },60000);

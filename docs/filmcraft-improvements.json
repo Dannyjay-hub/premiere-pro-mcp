@@ -9,7 +9,7 @@
       "title": "Bound replay identity",
       "recommendation": "Bind replay IDs to canonical arguments, backend session, project, and target. Reusing an operation ID for a different edit must produce a conflict, not an old success receipt.",
       "implementation": "uxp-plugin/operation-ledger.cjs",
-      "boundary": "Changed arguments, project, sequence or session conflict; bounded hashed reservations.",
+      "boundary": "Changed arguments, project, sequence or session conflict; bounded hashed reservations and documented UXP cryptographic session identities.",
       "licensedHostEvidence": "not_run"
     },
     {

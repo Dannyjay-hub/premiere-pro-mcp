@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { createServer } from "../src/server.js";
 import { inspectHostRecovery } from "../src/bridge/host-lease.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "./helpers/temp-dir.js";
 
-const controls = vi.hoisted(() => ({ afterWrite: undefined as (() => void) | undefined }));
+const controls = vi.hoisted(() => ({ afterWrite: undefined as (() => void) | undefined, afterCancellation: undefined as (() => void) | undefined }));
 vi.mock("../src/tools/project.js", async () => {
   const { sendCommand } = await import("../src/bridge/file-bridge.js");
   const { assertInvocationNotCancelled, currentInvocation, markHostDispatch } = await import("../src/workflows/invocation-context.js");
@@ -26,7 +26,7 @@ vi.mock("../src/tools/project.js", async () => {
         if (args.mode === "cancel") {
           const signal = currentInvocation()?.signal;
           if (!signal?.aborted) await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
-          assertInvocationNotCancelled();
+          try { assertInvocationNotCancelled(); } finally { controls.afterCancellation?.(); }
         }
         if (args.mode === "unknown") return { success: false, data: { outcome: "unknown", partialSteps: [{ writeAccepted: true }] }, error: "fixture readback unavailable" };
         return { success: true, data: { outcome: "verified" } };
@@ -46,35 +46,45 @@ vi.mock("../src/tools/project.js", async () => {
 });
 
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { controls.afterWrite = undefined; for (const cleanup of cleanups.splice(0)) await cleanup(); });
+afterEach(async () => { controls.afterWrite = undefined; controls.afterCancellation = undefined; for (const cleanup of cleanups.splice(0)) await cleanup(); cleanupTempDirs(); });
 async function connected() {
-  const tempDir = mkdtempSync(join(tmpdir(), "premiere-server-recovery-"));
+  const tempDir = makePrivateBridgeTempDir("premiere-server-recovery-");
   const accepted: string[] = [], replied = new Set<string>();
   // Exercise the real private-file transport and ownership lease. This simulated
   // panel acknowledges package IPC only; it is not live Premiere evidence.
-  const panel = watch(tempDir, (_event, filename) => {
-    const commandName = String(filename || "");
-    if (!/^cmd_[a-f0-9-]+\.jsx$/.test(commandName) || replied.has(commandName)) return;
-    let script: string;
-    try { script = readFileSync(join(tempDir, commandName), "utf8"); } catch { return; }
-    replied.add(commandName);
-    if (script.includes("fixture-host-mutation")) accepted.push(commandName);
-    const snapshot = script.includes("snapshot.clips.push")
-      ? { projectId: "project-1", sequenceId: "sequence-1", clips: [] }
-      : { outcome: "verified" };
-    writeFileSync(join(tempDir, commandName.replace(/^cmd_/, "res_").replace(/\.jsx$/, ".json")), JSON.stringify({ success: true, data: snapshot }), { mode: 0o600 });
-  });
+  const respondToPublishedCommands = () => {
+    // macOS can coalesce directory notifications and omit individual filenames.
+    // Scan only atomically published commands, just as the real panel polls IPC.
+    for (const commandName of readdirSync(tempDir)) {
+      if (!/^cmd_[a-f0-9-]+\.jsx$/.test(commandName) || replied.has(commandName)) continue;
+      let script: string;
+      try { script = readFileSync(join(tempDir, commandName), "utf8"); } catch { continue; }
+      replied.add(commandName);
+      if (script.includes("fixture-host-mutation")) accepted.push(commandName);
+      const snapshot = script.includes("snapshot.clips.push")
+        ? { projectId: "project-1", sequenceId: "sequence-1", clips: [] }
+        : { outcome: "verified" };
+      writeFileSync(join(tempDir, commandName.replace(/^cmd_/, "res_").replace(/\.jsx$/, ".json")), JSON.stringify({ success: true, data: snapshot }), { mode: 0o600 });
+    }
+  };
+  const panel = watch(tempDir, respondToPublishedCommands);
+  // The production panel polls commands. Keep that fallback here as directory
+  // watch notifications are hints rather than a reliable execution queue.
+  const panelPoll = setInterval(respondToPublishedCommands, 25);
   const server = createServer({ tempDir, timeoutMs: 500 }, {
     toolPacks: "full", telemetry: { enabled: false, capture() {}, async shutdown() {} },
   });
   const client = new Client({ name: "server-workflow-recovery-test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  cleanups.push(async () => { await client.close(); await server.close(); panel.close(); rmSync(tempDir, { recursive: true, force: true }); });
+  cleanups.push(async () => { await client.close(); await server.close(); clearInterval(panelPoll); panel.close(); });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return { client, tempDir, accepted };
 }
 async function reviewedAcknowledge(client: Client) {
   const inspected = await client.callTool({ name: "inspect_operation_recovery", arguments: { backend: "cep" } });
+  expect(inspected.structuredContent?.error, "Recovery inspection must succeed before using its revisions").toBeUndefined();
+  expect(inspected, "Recovery inspection must succeed before using its revisions").toMatchObject({ structuredContent: { ok: true, data: { recoveryRevision: expect.any(String), hostStateRevision: expect.any(String) } } });
+  expect(inspected.isError).toBeFalsy();
   const data = (inspected.structuredContent as { data: { recoveryRevision: string; hostStateRevision: string } }).data;
   const acknowledged = await client.callTool({ name: "acknowledge_operation_recovery", arguments: {
     backend: "cep", expected_recovery_revision: data.recoveryRevision, expected_host_state_revision: data.hostStateRevision, reviewed: true,
@@ -98,21 +108,25 @@ describe("server persists uncertain multi-command host workflows under their lea
   });
   it("records cancelled readback before releasing the lease to an already queued edit", async () => {
     const { client, tempDir, accepted } = await connected();
-    let firstWriteAccepted = () => {};
-    const written = new Promise<void>((resolve) => { firstWriteAccepted = resolve; });
-    controls.afterWrite = firstWriteAccepted;
+    let firstWriteAccepted = false, cancellationHandled = false;
+    controls.afterWrite = () => { firstWriteAccepted = true; };
+    controls.afterCancellation = () => { cancellationHandled = true; };
     const abort = new AbortController();
     const cancelled = client.callTool({ name: "set_host_recovery_fixture", arguments: { mode: "cancel" } }, { signal: abort.signal });
     const observedCancellation = cancelled.then(() => "returned", () => "cancelled");
-    await written;
+    await vi.waitFor(() => expect(firstWriteAccepted).toBe(true), { timeout: 2000 });
     const queued = client.callTool({ name: "set_host_recovery_fixture", arguments: { mode: "verified" } });
     abort.abort();
     expect(await observedCancellation).toBe("cancelled");
+    await vi.waitFor(() => expect(cancellationHandled).toBe(true), { timeout: 2000 });
     expect(await queued).toMatchObject({ isError: true, structuredContent: { error: expect.stringContaining("HOST_RECOVERY_REQUIRED") } });
     expect(accepted).toHaveLength(1);
     expect(inspectHostRecovery(tempDir).recoveryRequired).toBe(true);
+    await vi.waitFor(() => expect(existsSync(join(tempDir, ".host-owner-lease"))).toBe(false), { timeout: 2000 });
     await reviewedAcknowledge(client);
-    await expect(client.callTool({ name: "set_host_recovery_fixture", arguments: { mode: "verified" } })).resolves.toMatchObject({ structuredContent: { ok: true, receipt: { outcome: "verified" } } });
+    const resumed = await client.callTool({ name: "set_host_recovery_fixture", arguments: { mode: "verified" } });
+    expect(resumed.structuredContent?.error).toBeUndefined();
+    expect(resumed).toMatchObject({ structuredContent: { ok: true, receipt: { outcome: "verified" } } });
     expect(accepted).toHaveLength(2);
   });
   it("does not create host recovery for local failures or host preflight refusals", async () => {

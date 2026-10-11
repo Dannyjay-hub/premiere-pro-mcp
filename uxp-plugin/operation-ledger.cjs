@@ -8,6 +8,28 @@
   const MAX_OPERATIONS = 4096;
   const MAX_STORAGE_CHARS = 1024 * 1024;
   function failure(code, message) { const error = new Error(message); error.code = code; return error; }
+  function createSecureSessionId(prefix) {
+    // These global UXP Crypto APIs are documented since UXP 6.2 (Premiere
+    // 25.6 includes UXP 8.1). Never substitute time or Math.random for entropy.
+    // https://developer.adobe.com/premiere-pro/uxp/uxp-api/reference-js/global-members/crypto/crypto
+    const crypto = typeof globalThis !== "undefined" && globalThis.crypto;
+    if (crypto && typeof crypto.randomUUID === "function") {
+      try {
+        const uuid = crypto.randomUUID();
+        if (typeof uuid === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(uuid)) return prefix + "-" + uuid;
+      } catch (_) {}
+    }
+    if (crypto && typeof crypto.getRandomValues === "function") {
+      try {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        let hex = "";
+        for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+        return prefix + "-" + hex;
+      } catch (_) {}
+    }
+    throw failure("UXP_SECURE_IDENTITY_UNAVAILABLE", "Documented UXP cryptographic entropy is unavailable; mutations are disabled until the panel runs in a supported host");
+  }
   function canonical(value, depth) {
     if ((depth || 0) > 32) throw failure("UXP_INVALID_ARGUMENT", "Invocation exceeds maximum object depth");
     if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -24,7 +46,10 @@
     const storage = options.storage;
     const digest = options.digest;
     const durable = !!(storage && typeof storage.getItem === "function" && typeof storage.setItem === "function");
-    let sessionId = options.sessionId || "panel-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    // Explicit sessionId is a dependency-injected fixture identity. Production
+    // supplies no override; reloads retain their validated durable binding.
+    let sessionId = options.sessionId || null;
+    if (sessionId && (typeof sessionId !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(sessionId))) throw failure("UXP_INVALID_ARGUMENT", "Invalid injected operation session identity");
     const records = new Map();
     let corrupt = false;
     function refresh(initial) {
@@ -49,14 +74,19 @@
       } catch (_) { corrupt = true; }
     }
     refresh(true);
+    if (!sessionId) { try { sessionId = createSecureSessionId("panel"); } catch (_) {} }
+    function assertSecureIdentity() {
+      if (!sessionId) throw failure("UXP_SECURE_IDENTITY_UNAVAILABLE", "Documented UXP cryptographic entropy is unavailable; no host mutation was dispatched");
+    }
     function persist() {
+      assertSecureIdentity();
       if (!storage || typeof storage.setItem !== "function") return;
       const raw = JSON.stringify({ version: 1, sessionId, records: Array.from(records.values()) });
       if (raw.length > MAX_STORAGE_CHARS) throw failure("UXP_OPERATION_LEDGER_FULL", "Operation ledger is full; reconnect alone does not make retry safe");
       try { storage.setItem(STORAGE_KEY, raw); } catch (_) { throw failure("UXP_OPERATION_LEDGER_UNAVAILABLE", "Cannot preserve operation reservation; no new host mutation was dispatched"); }
     }
     function scope(identity) { return digest(canonical({ backend: "uxp", sessionId, project: identity.projectGuid || null })); }
-    function bind(command, args, identity) { refresh(false); return digest(canonical({ version: 1, backend: "uxp", sessionId, command, args, identity })); }
+    function bind(command, args, identity) { refresh(false); assertSecureIdentity(); return digest(canonical({ version: 1, backend: "uxp", sessionId, command, args, identity })); }
     function inspect(identity) {
       refresh(false);
       const targetScope = scope(identity);
@@ -66,6 +96,7 @@
     }
     return {
       get sessionId() { return sessionId; },
+      get secureIdentityAvailable() { return !!sessionId; },
       durable,
       bind,
       get(id, binding) {
@@ -77,6 +108,7 @@
       assertReady(identity) { if (inspect(identity).recoveryRequired) throw failure("UXP_RECOVERY_REQUIRED", "An earlier mutation has unknown outcome. Inspect operation recovery and current project state before acknowledging reviewed reconciliation"); },
       reserve(id, binding, identity) {
         refresh(false);
+        assertSecureIdentity();
         if (records.has(id)) throw failure("UXP_OPERATION_CONSUMED", "Operation ID was already reserved by another panel context; inspect its outcome before proceeding");
         if (options.requireDurability === true && !durable) throw failure("UXP_OPERATION_LEDGER_UNAVAILABLE", "Persistent operation storage is unavailable; no host mutation was dispatched");
         if (corrupt) throw failure("UXP_RECOVERY_REQUIRED", "Stored operation ledger cannot be validated; mutations are blocked");
@@ -99,5 +131,5 @@
       }
     };
   }
-  return { createOperationLedger, canonical, STORAGE_KEY, MAX_OPERATIONS };
+  return { createOperationLedger, createSecureSessionId, canonical, STORAGE_KEY, MAX_OPERATIONS };
 });

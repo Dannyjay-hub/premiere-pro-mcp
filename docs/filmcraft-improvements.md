@@ -30,7 +30,7 @@ The checked-in host matrix therefore keeps every host case `not_run`.
 
 | ID | Change | Main implementation | Contract and remaining boundary |
 | --- | --- | --- | --- |
-| 01 | Bound replay identity | [`uxp-plugin/operation-ledger.cjs`](../uxp-plugin/operation-ledger.cjs) | Changed arguments, project, sequence or session conflict; bounded hashed reservations. |
+| 01 | Bound replay identity | [`uxp-plugin/operation-ledger.cjs`](../uxp-plugin/operation-ledger.cjs) | Changed arguments, project, sequence or session conflict; bounded hashed reservations and documented UXP cryptographic session identities. |
 | 02 | Consumed unknown receipts | [`uxp-plugin/operation-ledger.cjs`](../uxp-plugin/operation-ledger.cjs) | Durable hashed tombstones survive panel reload; unexpected post-dispatch errors are never retry permission. Capacity is 4,096 IDs / 1 MiB; full, corrupt or unwritable storage refuses new writes. Reviewed acknowledgement does not erase consumed IDs. |
 | 03 | Explicit MCP hints | [`src/workflows/tool-metadata.ts`](../src/workflows/tool-metadata.ts) | Definition annotations win; mixed actions remain conservative and authority is independently enforced. |
 | 04 | Exact invocation preflight | [`src/tools/execution-workflows.ts`](../src/tools/execution-workflows.ts) | can_execute validates schema, authority, files and bounded CEP targets; unavailable UXP action predicates remain unknown. |
@@ -93,6 +93,8 @@ require reviewed recovery rather than replay.
 
 Install the matching UXP panel before editing. Missing command/receipt versions
 leave an older panel read-only; unavailable durable ledger storage refuses writes.
+Unavailable native cryptographic entropy also refuses writes while inspection
+and capability diagnostics remain available.
 Ledger storage is bounded and consumed IDs are retained. Reconnecting or
 acknowledging recovery does not reset that storage or authorize an ID replay.
 Recovery snapshots inspect bounded active-sequence clip identities/ranges;

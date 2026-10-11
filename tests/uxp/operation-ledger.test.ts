@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 const require = createRequire(import.meta.url);
 const Ledger = require("../../uxp-plugin/operation-ledger.cjs");
 const Commands = require("../../uxp-plugin/commands.cjs");
@@ -19,6 +19,73 @@ function host(storage?: ReturnType<typeof stored>) {
   const registry = Commands.createCommandRegistry({ ppro: { Project: { getActiveProject: async () => project } }, Protocol, storage, Workflows: { createWorkflowDefinitions: () => ({ "test.mutate": { handler: mutation } }) } });
   return { registry, project, sequence, mutation };
 }
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+describe("documented UXP cryptographic session identity", () => {
+  it("uses native randomUUID and retains the durable session across reloads", async () => {
+    // Deterministic CSPRNG outputs are explicitly injected test fixtures only.
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000003");
+    vi.stubGlobal("crypto", { randomUUID });
+    const weakRandom = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("Weak entropy is forbidden"); });
+    const storage = stored(), first = host(storage);
+    await first.registry.dispatch("test.mutate", { value: 1 });
+    const restored = host(storage);
+    await restored.registry.dispatch("test.mutate", { value: 2 });
+    const persisted = JSON.parse(storage.values.get(Ledger.STORAGE_KEY)!);
+    expect(persisted.sessionId).toBe("panel-00000000-0000-4000-8000-000000000001");
+    expect(persisted.records.map((record: { id: string }) => record.id)).toEqual([
+      "anonymous:panel-00000000-0000-4000-8000-000000000001:invocation-00000000-0000-4000-8000-000000000002:1",
+      "anonymous:panel-00000000-0000-4000-8000-000000000001:invocation-00000000-0000-4000-8000-000000000003:1",
+    ]);
+    expect(randomUUID).toHaveBeenCalledTimes(3);
+    expect(weakRandom).not.toHaveBeenCalled();
+  });
+  it.each([undefined, () => { throw new Error("randomUUID unavailable"); }, () => "invalid-uuid"])("uses getRandomValues CSPRNG when randomUUID is unavailable or invalid (%s)", (randomUUID) => {
+    const getRandomValues = vi.fn((bytes: Uint8Array) => { for (let index = 0; index < bytes.length; index++) bytes[index] = index; return bytes; });
+    vi.stubGlobal("crypto", { randomUUID, getRandomValues });
+    const weakRandom = vi.spyOn(Math, "random");
+    const value = Ledger.createOperationLedger({ digest });
+    expect(value.sessionId).toBe("panel-000102030405060708090a0b0c0d0e0f");
+    expect(value.secureIdentityAvailable).toBe(true);
+    expect(getRandomValues).toHaveBeenCalledOnce();
+    expect(getRandomValues.mock.calls[0][0]).toHaveLength(16);
+    expect(weakRandom).not.toHaveBeenCalled();
+  });
+  it.each([undefined, {}, { randomUUID: () => { throw new Error("entropy unavailable"); }, getRandomValues: () => { throw new Error("entropy unavailable"); } }])("keeps inspection available and refuses all mutations without secure entropy (%s)", async (crypto) => {
+    vi.stubGlobal("crypto", crypto);
+    const storage = stored(), value = Ledger.createOperationLedger({ storage, digest });
+    expect(value.inspect(identity)).toMatchObject({ sessionId: null, recoveryRequired: false });
+    expect(value.secureIdentityAvailable).toBe(false);
+    expect(() => value.bind("test.mutate", {}, identity)).toThrow(/cryptographic entropy/);
+    expect(() => value.reserve("cannot-dispatch", digest("cannot-dispatch"), identity)).toThrow(/no host mutation was dispatched/);
+    const panel = host(storage);
+    const capabilities = await panel.registry.dispatch("capabilities.get", {});
+    expect(capabilities.commands["operations.recovery.inspect"].supported).toBe(true);
+    expect(capabilities.commands["test.mutate"]).toMatchObject({ supported: false, reason: expect.stringContaining("cryptographic entropy") });
+    await expect(panel.registry.dispatch("operations.recovery.inspect", {})).resolves.toMatchObject({ sessionId: null });
+    for (const args of [{}, { operationId: "caller-supplied-id" }]) await expect(panel.registry.dispatch("test.mutate", args)).rejects.toMatchObject({ code: "UXP_SECURE_IDENTITY_UNAVAILABLE", noHostDispatch: true, dispatchEvidence: "panel_pre_dispatch" });
+    expect(panel.mutation).not.toHaveBeenCalled();
+    expect(storage.values.size).toBe(0);
+  });
+  it("preserves persisted replay bindings without allowing an entropy-free registry to write", async () => {
+    const storage = stored(), first = host(storage);
+    await first.registry.dispatch("test.mutate", { operationId: "reserved", value: 1 });
+    const previous = await first.registry.dispatch("operations.recovery.inspect", {});
+    vi.stubGlobal("crypto", undefined);
+    const restored = host(storage);
+    await expect(restored.registry.dispatch("operations.recovery.inspect", {})).resolves.toMatchObject({ sessionId: previous.sessionId });
+    await expect(restored.registry.dispatch("test.mutate", { operationId: "new", value: 2 })).rejects.toMatchObject({ code: "UXP_SECURE_IDENTITY_UNAVAILABLE", noHostDispatch: true });
+    expect(restored.mutation).not.toHaveBeenCalled();
+    expect(JSON.parse(storage.values.get(Ledger.STORAGE_KEY)!).records).toHaveLength(1);
+  });
+  it("allows explicitly injected deterministic ledger fixture identities but rejects invalid overrides", () => {
+    vi.stubGlobal("crypto", undefined);
+    expect(ledger().sessionId).toBe("session-1");
+    expect(() => Ledger.createOperationLedger({ digest, sessionId: "invalid/session" })).toThrow(/Invalid injected/);
+  });
+});
 describe("canonical operation binding and durable consumed receipts", () => {
   it("canonicalizes nested objects without depending on property order", () => {
     expect(Ledger.canonical({ b: [{ z: 1, a: "x" }], a: true })).toBe(Ledger.canonical({ a: true, b: [{ a: "x", z: 1 }] }));

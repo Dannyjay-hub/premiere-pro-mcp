@@ -1,18 +1,16 @@
 import { once } from "node:events";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readdirSync } from "node:fs";
 import { WebSocket } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UxpWebSocketBridge } from "../../src/bridge/uxp-websocket-bridge.js";
 import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { currentInvocation, withInvocationContext } from "../../src/workflows/invocation-context.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
 const active: UxpWebSocketBridge[] = [];
-const directories: string[] = [];
-afterEach(async () => { await Promise.all(active.splice(0).map((bridge) => bridge.stop())); for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+afterEach(async () => { await Promise.all(active.splice(0).map((bridge) => bridge.stop())); cleanupTempDirs(); });
 async function connected(schema: number | null = 1, receipt: number | null = 1, replayPersistence = "durable_hashed_tombstones") {
   const token = "fault-test-token-at-least-sixteen";
-  const tempDir = mkdtempSync(join(tmpdir(), "uxp-fault-lease-")); directories.push(tempDir);
+  const tempDir = makePrivateBridgeTempDir("uxp-fault-lease-");
   const bridge = new UxpWebSocketBridge({ token, port: 0, requestTimeoutMs: 30, tempDir }); active.push(bridge); await bridge.start();
   const address = bridge.address(), client = new WebSocket(`ws://${address.host}:${address.port}${address.path}?token=${token}`);
   await once(client, "open"); const ready = once(bridge, "connected");
