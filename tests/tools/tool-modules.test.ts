@@ -930,8 +930,8 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain("my-srt-file");
       expect(script).toContain("createCaptionTrack");
       expect(script).toContain("__captionTrackCount");
-      expect(script).toContain("no caption track appeared in host readback");
-      expect(script).toContain("accepted: true");
+      expect(script).toContain("readback did not show exactly one new track");
+      expect(script).toContain("accepted: !!result");
     });
   });
 
