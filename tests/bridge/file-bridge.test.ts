@@ -16,6 +16,8 @@ import {
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { runWithUndoTracking, undoTrackingEnabled } from "../../src/bridge/undo-tracking.js";
+import { currentInvocation, withInvocationContext } from "../../src/workflows/invocation-context.js";
 import {
   getDarwinUserTempDirectory,
   getTempDir,
@@ -27,10 +29,21 @@ import {
   MAX_BRIDGE_RESPONSE_BYTES,
   sendCommand,
   sendRawCommand,
+  withBridgeWorkflow,
   cleanupTempDir,
 } from "../../src/bridge/file-bridge.js";
 
 // Mock fs module
+// File transport unit tests isolate ownership; real multi-process lease behavior
+// is exercised by host-lease.test.ts using the actual filesystem.
+vi.mock("../../src/bridge/host-lease.js", () => ({
+  withHostLease: async (_directory: string, _timeout: number, work: () => Promise<unknown>) => work(),
+  ownsHostLease: () => false,
+  inspectHostRecovery: () => ({ version: 1, recoveryRequired: false, recoveryRevision: null }),
+  markHostRecovery: vi.fn(),
+  HostLeaseError: class extends Error {},
+}));
+
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
@@ -201,6 +214,44 @@ describe("sendCommand", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("records implicit legacy edit dispatch and measured stages while explicit read-only preflights stay undispatched", async () => {
+    mockedExistsSync.mockImplementation((path) => !String(path).endsWith("bridge-heartbeat.json"));
+    mockedReadFileSync.mockReturnValue('{"success":true,"data":{"verified":true}}');
+    for (const send of [sendCommand, sendRawCommand]) {
+      await withInvocationContext({}, () => runWithUndoTracking(true, async () => {
+        await send("var verified = true;", { tempDir: "/tmp/test-bridge" });
+        const context = currentInvocation()!;
+        expect(context.dispatched).toBe(true);
+        expect(context.stages).toMatchObject({ queue_wait: expect.any(Number), dispatch: expect.any(Number), host_wait: expect.any(Number), readback: expect.any(Number) });
+      }));
+      await withInvocationContext({}, () => runWithUndoTracking(true, async () => {
+        await send("var inspected = true;", { tempDir: "/tmp/test-bridge", mutating: false, mutationOnTimeout: false });
+        expect(currentInvocation()?.dispatched).toBe(false);
+      }));
+    }
+  });
+
+  it("preserves each queued workflow's invocation and mutation context after another request finishes", async () => {
+    mockedExistsSync.mockReturnValue(true);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let firstContext: unknown, secondContext: unknown;
+    const first = withInvocationContext({}, () => runWithUndoTracking(true, () => {
+      firstContext = currentInvocation();
+      return withBridgeWorkflow({ tempDir: "/tmp/test-bridge" }, async () => { await blocked; });
+    }));
+    const second = withInvocationContext({}, () => runWithUndoTracking(false, () => {
+      secondContext = currentInvocation();
+      return withBridgeWorkflow({ tempDir: "/tmp/test-bridge" }, async () => {
+        expect(currentInvocation()).toBe(secondContext);
+        expect(currentInvocation()).not.toBe(firstContext);
+        expect(undoTrackingEnabled()).toBe(false);
+      });
+    }));
+    release();
+    await Promise.all([first, second]);
   });
 
   it("creates temp directory if it does not exist", async () => {
@@ -715,7 +766,7 @@ describe("sendCommand", () => {
     vi.setSystemTime(new Date(10_000));
     mockedExistsSync.mockImplementation((path) => {
       const value = String(path);
-      if (value.includes("res_")) return false;
+      if (value.includes("res_") || value.includes("bridge-heartbeat")) return false;
       if (value.includes("busy_previous.json")) return true;
       if (value.includes("busy_")) return false;
       return true; // the cmd file remains unclaimed while the earlier command owns the panel

@@ -1,5 +1,8 @@
-import { expectedProjectPath } from "./project-guard.js";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { expectedProjectPath, expectedHostTarget } from "./project-guard.js";
+import { randomUUID, timingSafeEqual, createHash } from "node:crypto";
+import { assertInvocationNotCancelled, currentInvocation, markHostDispatch, measureStage, measureStageSync, type InvocationContext } from "../workflows/invocation-context.js";
+import { getTempDir, withBridgeWorkflow, type BridgeOptions } from "./file-bridge.js";
+import { inspectHostRecovery, markHostRecovery } from "./host-lease.js";
 import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
@@ -9,6 +12,8 @@ const LOOPBACK_HOST = "127.0.0.1";
 const SUPPORTED_PROTOCOLS = new Set([1, 2]);
 /** Must match MAX_COMMAND_BYTES in uxp-plugin/protocol.cjs. */
 export const MAX_UXP_COMMAND_BYTES = 64 * 1024;
+export const UXP_COMMAND_SCHEMA_VERSION = 1;
+export const UXP_RECEIPT_VERSION = 1;
 
 export interface UxpBridgeOptions {
   token: string;
@@ -16,6 +21,7 @@ export interface UxpBridgeOptions {
   path?: string;
   requestTimeoutMs?: number;
   handshakeTimeoutMs?: number;
+  tempDir?: string;
 }
 
 export interface UxpCapability {
@@ -47,9 +53,11 @@ export type UxpConnectionState =
 
 interface PendingRequest {
   command: string;
+  mutating?: boolean;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  context?: InvocationContext;
 }
 
 export class UxpBridgeError extends Error {
@@ -81,7 +89,8 @@ function validPort(value: number): number {
  * CEP after a UXP command has been sent.
  */
 export class UxpWebSocketBridge extends EventEmitter {
-  private readonly options: Required<UxpBridgeOptions>;
+  private readonly options: Required<Omit<UxpBridgeOptions, "tempDir">>;
+  private readonly hostBridgeOptions: BridgeOptions;
   private httpServer: Server | null = null;
   private wsServer: WebSocketServer | null = null;
   private socket: WebSocket | null = null;
@@ -89,6 +98,24 @@ export class UxpWebSocketBridge extends EventEmitter {
   private connectedAt: string | null = null;
   private handshakeTimer: NodeJS.Timeout | null = null;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly uncertainOperations = new Map<string, { requestId: string; command: string }>();
+
+  getOperationRecovery() {
+    const operations = Array.from(this.uncertainOperations.values());
+    return { recoveryRequired: operations.length > 0, operations, recoveryRevision: createHash("sha256").update(JSON.stringify(operations)).digest("hex"), boundary: "server_transport_receipt" };
+  }
+
+  private recordUncertain(requestId: string, command: string): void {
+    this.uncertainOperations.set(requestId, { requestId, command });
+    // The in-memory transport guard remains active if the disk is unavailable.
+    // The lease implementation retains ownership when a recovery write fails.
+    try { markHostRecovery(getTempDir(this.hostBridgeOptions), "unknown_command_outcome"); } catch { /* retained owner lease prevents another cooperating writer */ }
+  }
+
+  acknowledgeOperationRecovery(expectedRevision: string, reviewed: boolean): void {
+    if (reviewed !== true || expectedRevision !== this.getOperationRecovery().recoveryRevision) throw new UxpBridgeError("UXP_STALE_RECOVERY", "Transport recovery revision changed; inspect current host state again");
+    this.uncertainOperations.clear();
+  }
 
   constructor(options: UxpBridgeOptions) {
     super();
@@ -97,6 +124,7 @@ export class UxpWebSocketBridge extends EventEmitter {
     if (!token || token.length < 16) {
       throw new Error("PREMIERE_UXP_TOKEN must contain at least 16 characters");
     }
+    this.hostBridgeOptions = { tempDir: options.tempDir ?? getTempDir() };
     this.options = {
       token,
       port: validPort(options.port ?? 7777),
@@ -199,7 +227,12 @@ export class UxpWebSocketBridge extends EventEmitter {
     args: Record<string, unknown> = {},
     requestOptions: UxpRequestOptions = {},
   ): Promise<unknown> {
-    if (expectedProjectPath() !== undefined) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.hello) throw new UxpBridgeError("UXP_NOT_CONNECTED", "Premiere UXP bridge is not connected");
+    return withBridgeWorkflow(this.hostBridgeOptions, () => measureStage("host_wait", () => this.requestOwned(command, args, requestOptions)));
+  }
+
+  private async requestOwned(command: string, args: Record<string, unknown>, requestOptions: UxpRequestOptions): Promise<unknown> {
+    if (expectedProjectPath() !== undefined || expectedHostTarget() !== undefined) {
       throw new UxpBridgeError("UXP_PROJECT_GUARD_UNSUPPORTED", "expected_project_path is a CEP-only guard; use the UXP workflow expected_snapshot identity guard instead");
     }
     const socket = this.socket;
@@ -227,6 +260,12 @@ export class UxpWebSocketBridge extends EventEmitter {
       );
     }
 
+    const mutating = hello.commands[command]?.readOnly !== true && !/^(?:capabilities\.get|state\.get|operations\.recovery\.|operation\.cancel)/.test(command);
+    if (mutating && inspectHostRecovery(getTempDir(this.hostBridgeOptions)).recoveryRequired) throw new UxpBridgeError("UXP_RECOVERY_REQUIRED", "Shared Premiere execution state is uncertain; inspect operation recovery before another backend writes");
+    if (mutating && this.uncertainOperations.size > 0) throw new UxpBridgeError("UXP_RECOVERY_REQUIRED", "An earlier UXP reply was lost; inspect operation recovery and current host state before another mutation");
+    if (mutating && (hello.commandSchemaVersion !== UXP_COMMAND_SCHEMA_VERSION || hello.receiptVersion !== UXP_RECEIPT_VERSION)) throw new UxpBridgeError("UXP_SCHEMA_INCOMPATIBLE", "Panel command/receipt schema is absent or incompatible; install the matching panel before editing");
+    if (mutating && hello.replayPersistence !== "durable_hashed_tombstones") throw new UxpBridgeError("UXP_REPLAY_UNAVAILABLE", "Panel cannot preserve consumed operation IDs; install the matching panel and restore its persistent storage before editing");
+
     // The panel cannot see through links on Premiere 26.5 UXP (#640), so refuse
     // symlinked path segments here, before anything reaches the host.
     try {
@@ -245,6 +284,7 @@ export class UxpWebSocketBridge extends EventEmitter {
     const frame = JSON.stringify({
       protocolVersion: hello.protocolVersion,
       type: "command",
+      ...(hello.commandSchemaVersion === undefined ? {} : { commandSchemaVersion: UXP_COMMAND_SCHEMA_VERSION, receiptVersion: UXP_RECEIPT_VERSION }),
       requestId,
       command,
       args,
@@ -257,20 +297,29 @@ export class UxpWebSocketBridge extends EventEmitter {
         `UXP command '${command}' is larger than the panel's 64 KiB limit. Send less data (for example a narrower metadata update). No command was sent to Premiere.`,
       );
     }
+    assertInvocationNotCancelled();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
+        if (mutating) this.recordUncertain(requestId, command);
         reject(new UxpBridgeError("UXP_TIMEOUT", `UXP command '${command}' timed out`));
       }, requestTimeoutMs);
-      this.pending.set(requestId, { command, resolve, reject, timer });
-      socket.send(frame, (error) => {
+      this.pending.set(requestId, { command, mutating, resolve, reject, timer, context: currentInvocation() });
+      const sendFailed = (error?: Error) => {
         if (!error) return;
         const pending = this.pending.get(requestId);
         if (!pending) return;
         clearTimeout(pending.timer);
         this.pending.delete(requestId);
+        if (pending.mutating) this.recordUncertain(requestId, command);
         pending.reject(new UxpBridgeError("UXP_SEND_FAILED", error.message));
-      });
+      };
+      try {
+        measureStageSync("dispatch", () => {
+          if (mutating) markHostDispatch();
+          socket.send(frame, sendFailed);
+        });
+      } catch (error) { sendFailed(error instanceof Error ? error : new Error(String(error))); }
     });
   }
 
@@ -354,17 +403,22 @@ export class UxpWebSocketBridge extends EventEmitter {
     if (message?.type !== "result" || typeof message.requestId !== "string") return;
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
+    measureStageSync("readback", () => {
     clearTimeout(pending.timer);
     this.pending.delete(message.requestId);
     if (message.payload?.ok === true) {
+      const result = message.payload.result;
+      if (pending.mutating && (result?.recoveryRequired === true || result?.outcome === "unknown" || result?.mutationOutcome === "unknown")) this.recordUncertain(message.requestId, pending.command);
       pending.resolve(message.payload.result);
     } else {
       const error = message.payload?.error;
+      if (pending.mutating && !(error?.noHostDispatch === true && error?.dispatchEvidence === "panel_pre_dispatch")) this.recordUncertain(message.requestId, pending.command);
       pending.reject(new UxpBridgeError(
         error?.code ?? "UXP_COMMAND_FAILED",
         error?.message ?? `UXP command '${pending.command}' failed`,
       ));
     }
+    }, pending.context);
   }
 
   private clearConnection(error: Error): void {
@@ -375,7 +429,8 @@ export class UxpWebSocketBridge extends EventEmitter {
     this.hello = null;
     this.connectedAt = null;
     if (socket?.readyState === WebSocket.OPEN) socket.close();
-    for (const pending of this.pending.values()) {
+    for (const [requestId, pending] of this.pending) {
+      if (pending.mutating) this.recordUncertain(requestId, pending.command);
       clearTimeout(pending.timer);
       pending.reject(error);
     }

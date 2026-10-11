@@ -137,17 +137,21 @@ describe("guarded documented UXP append-only track-item duplicate workflow", () 
   });
 
   it("rejects missing confirmation/replay, stale state, and non-final sources before action creation", async () => {
-    const value = cloneHost();
-    await expect(value.registry.dispatch("trackItem.clone", { ...targetCoordinates, expectedSnapshot, operationId: "missing-confirmation" })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
-    await expect(value.registry.dispatch("trackItem.clone", { ...targetCoordinates, expectedSnapshot, confirmDuplicate: true })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("trackItem.clone", {
-      ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, source: { ...source, outSeconds: 31 } }, confirmDuplicate: true, operationId: "stale",
-    })).rejects.toMatchObject({ code: "UXP_STALE_TRACK_ITEM" });
+    const attempts = [
+      { args: { ...targetCoordinates, expectedSnapshot, operationId: "missing-confirmation" }, code: "UXP_CONFIRMATION_REQUIRED" },
+      { args: { ...targetCoordinates, expectedSnapshot, confirmDuplicate: true }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...targetCoordinates, expectedSnapshot: { ...expectedSnapshot, source: { ...source, outSeconds: 31 } }, confirmDuplicate: true, operationId: "stale" }, code: "UXP_STALE_TRACK_ITEM" },
+    ];
+    for (const attempt of attempts) {
+      const value = cloneHost();
+      await expect(value.registry.dispatch("trackItem.clone", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    }
     const nonFinal = cloneHost();
     nonFinal.states.push({ projectItemId: "later-1", start: 10, end: 20, inPoint: 0, outPoint: 10, speed: 1, reversed: false });
     nonFinal.items.push({ ...nonFinal.items[0], getProjectItem: vi.fn(async () => ({ getId: vi.fn(async () => "later-1") })) });
     await expect(nonFinal.registry.dispatch("trackItem.clone.inspect", targetCoordinates)).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
-    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    expect(nonFinal.project.executeTransaction).not.toHaveBeenCalled();
   });
 
   it("replays a completed operation ID without creating a second host transaction", async () => {

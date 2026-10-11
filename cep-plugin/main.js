@@ -248,6 +248,8 @@ function writeBridgeHeartbeat() {
   try {
     fs.writeFileSync(stagedPath, JSON.stringify({
       protocolVersion: 1,
+      commandSchemaVersion: 1,
+      receiptVersion: 1,
       state: bridgeRunning ? "running" : "waiting"
     }), "utf-8");
     fs.renameSync(stagedPath, heartbeatPath);

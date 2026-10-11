@@ -1,0 +1,20 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const matrix = JSON.parse(readFileSync(join(root, "docs/temporal-render-fixtures.matrix.json"), "utf8"));
+const [provenancePath, outputPath] = process.argv.slice(2);
+if (!provenancePath || !outputPath || process.argv.length !== 4) throw new Error("Usage: node scripts/create-temporal-host-report.mjs <provenance.json> <new report.json>");
+const bytes = readFileSync(provenancePath);
+if (bytes.length > 64 * 1024) throw new Error("Provenance exceeds 64 KiB");
+const provenance = JSON.parse(bytes.toString("utf8"));
+const required = ["premiereBuild", "os", "locale", "backend", "panelSha256", "serverCommit", "clientVersion", "fixtureSha256", "capabilityIds"];
+if (!provenance || typeof provenance !== "object" || Array.isArray(provenance) || Object.keys(provenance).some(key => !required.includes(key)) || required.some(key => !(key in provenance))) throw new Error("Provenance fields are missing or unknown");
+for (const key of ["premiereBuild", "locale", "clientVersion"]) if (typeof provenance[key] !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(provenance[key])) throw new Error(`Invalid ${key}`);
+if (!["Windows", "macOS"].includes(provenance.os) || !["cep", "uxp"].includes(provenance.backend)) throw new Error("Unsupported OS/backend");
+for (const key of ["panelSha256", "fixtureSha256", "serverCommit"]) if (!new RegExp(`^[a-f0-9]{${key === "serverCommit" ? 40 : 64}}$`).test(provenance[key])) throw new Error(`Invalid ${key}`);
+if (!Array.isArray(provenance.capabilityIds) || provenance.capabilityIds.length > 256 || new Set(provenance.capabilityIds).size !== provenance.capabilityIds.length || provenance.capabilityIds.some(value => typeof value !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(value))) throw new Error("Invalid capabilityIds");
+const report = { schemaVersion: "premiere-mcp.temporal-host-report.v1", matrixId: matrix.id, provenance, cases: matrix.fixtures.map(fixture => ({ id: fixture.id, status: "not_run", evidence: [], requiredEvidence: fixture.evidence })), compatibilityEligible: false };
+writeFileSync(outputPath, JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+console.log(JSON.stringify({ matrixId: report.matrixId, cases: report.cases.length, status: "not_run", compatibilityEligible: false }));

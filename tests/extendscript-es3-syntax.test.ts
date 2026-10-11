@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 vi.mock("../src/bridge/file-bridge.js", () => ({
   sendCommand: vi.fn().mockResolvedValue({ success: false, error: "stop" }),
+  withBridgeWorkflow: async (_options: unknown, work: () => Promise<unknown>) => work(),
   sendRawCommand: vi.fn().mockResolvedValue({ success: false, error: "stop" }),
   getTempDir: vi.fn().mockReturnValue("/tmp/x"), cleanupTempDir: vi.fn(),
 }));

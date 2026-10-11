@@ -22,12 +22,14 @@ import {
   parseMotionPeakCandidates,
   parseTransientCandidates,
 } from "../../src/tools/media-analysis.js";
+import { withInvocationContext } from "../../src/workflows/invocation-context.js";
+import { clearAnalysisCache } from "../../src/workflows/analysis-cache.js";
 
 afterAll(cleanupTempDirs);
 
 const tools = getMediaAnalysisTools({ tempDir: "/tmp/test" });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); clearAnalysisCache(); });
 
 function fixture(extension = ".mov") {
   const directory = makeTempDir("premiere-media-analysis-");
@@ -164,6 +166,44 @@ describe("media analysis tool contracts", () => {
     await expect(tools.inspect_media_streams.handler({ media_path: mediaPath })).resolves.toMatchObject({
       success: true, data: { mediaPath, streamCount: 1, format: { format_name: "mov" } },
     });
+    expect(mockedExecFileAsync.mock.calls.at(-1)?.[2]).toMatchObject({ encoding: "utf8" });
+  });
+
+  it("preserves Buffer decoding and invocation cancellation for finite video scopes", async () => {
+    const mediaPath = fixture();
+    const controller = new AbortController();
+    mockedExecFileAsync.mockImplementationOnce(async (_command: string, _args: string[], options: { encoding?: string }) => ({
+      stdout: options.encoding === "buffer" ? Buffer.alloc(320 * 180 * 3, 128) : Buffer.alloc(320 * 180 * 3, 128).toString("utf8"),
+      stderr: options.encoding === "buffer" ? Buffer.alloc(0) : "",
+    }));
+    const result = await withInvocationContext({ signal: controller.signal }, () => tools.read_video_scopes.handler({ media_path: mediaPath }));
+    expect(mockedExecFileAsync.mock.calls.at(-1)?.[2]).toMatchObject({ encoding: "buffer", signal: controller.signal });
+    expect(result).toMatchObject({ success: true, data: { waveform: { median: 50.2 }, rgbParade: { red: { median: 50.2 }, green: { median: 50.2 }, blue: { median: 50.2 } } } });
+    const reading = result.data as ReturnType<typeof analyzeRgbScopes>;
+    for (const value of [reading.waveform, ...Object.values(reading.rgbParade), reading.saturation, reading.rgbExtremes]) {
+      expect(Object.values(value).every(Number.isFinite)).toBe(true);
+    }
+  });
+
+  it("refuses nonbinary or truncated scope frames without caching a false success", async () => {
+    const mediaPath = fixture();
+    for (const stdout of ["x".repeat(320 * 180 * 3), Buffer.alloc(320 * 180 * 3 - 1)]) {
+      mockedExecFileAsync.mockResolvedValueOnce({ stdout, stderr: "" });
+      await expect(tools.read_video_scopes.handler({ media_path: mediaPath, use_cache: true })).resolves.toMatchObject({ success: false, error: expect.stringContaining("complete binary RGB scope frame") });
+    }
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: Buffer.alloc(320 * 180 * 3, 128), stderr: Buffer.alloc(0) });
+    await expect(tools.read_video_scopes.handler({ media_path: mediaPath, use_cache: true })).resolves.toMatchObject({ success: true, data: { waveform: { median: 50.2 }, analysisCache: { hit: false } } });
+    expect(mockedExecFileAsync).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps requested inspection source paths when identical files use the cache", async () => {
+    const first = fixture(), second = fixture();
+    for (const mediaPath of [first, second]) {
+      mockedExecFileAsync.mockResolvedValueOnce({ stdout: JSON.stringify({ format: { filename: mediaPath }, streams: [] }), stderr: "" });
+      await expect(tools.inspect_media_streams.handler({ media_path: mediaPath, use_cache: true })).resolves.toMatchObject({ success: true, data: { mediaPath, format: { filename: mediaPath }, analysisCache: { hit: false } } });
+    }
+    await expect(tools.inspect_media_streams.handler({ media_path: second, use_cache: true })).resolves.toMatchObject({ success: true, data: { mediaPath: second, format: { filename: second }, analysisCache: { hit: true } } });
+    expect(mockedExecFileAsync).toHaveBeenCalledTimes(2);
   });
 
   it("returns bounded transient, interlace, and picture findings", async () => {

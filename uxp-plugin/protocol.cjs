@@ -5,6 +5,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const PROTOCOL_VERSION = 2;
+  const COMMAND_SCHEMA_VERSION = 1;
+  const RECEIPT_VERSION = 1;
   const MAX_COMMAND_BYTES = 64 * 1024;
   const MAX_RESULT_BYTES = 1024 * 1024;
   const COMMAND_NAME = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$/;
@@ -57,6 +59,8 @@
     const value = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!isPlainObject(value) || value.type !== "command" || typeof value.command !== "string" || !COMMAND_NAME.test(value.command)) throw new Error("Invalid UXP bridge command");
     if (value.protocolVersion != null && value.protocolVersion !== PROTOCOL_VERSION) throw new Error("Unsupported UXP protocol version: " + value.protocolVersion);
+    if (value.commandSchemaVersion != null && value.commandSchemaVersion !== COMMAND_SCHEMA_VERSION) throw new Error("Unsupported UXP command schema; install the matching MCP panel");
+    if (value.receiptVersion != null && value.receiptVersion !== RECEIPT_VERSION) throw new Error("Unsupported UXP receipt schema; install the matching MCP panel");
     if (value.requestId != null && (typeof value.requestId !== "string" || value.requestId.length < 1 || value.requestId.length > 128)) throw new Error("requestId must be a non-empty string of at most 128 characters");
     if (value.args != null && !isPlainObject(value.args)) throw new Error("command args must be an object");
     return { requestId: value.requestId || null, command: value.command, args: value.args || {} };
@@ -136,6 +140,8 @@
   function joinPath(dir, name) { return /[\\\/]$/.test(dir) ? dir + name : dir + "/" + name; }
   return {
     PROTOCOL_VERSION,
+    COMMAND_SCHEMA_VERSION,
+    RECEIPT_VERSION,
     MAX_COMMAND_BYTES,
     MAX_RESULT_BYTES,
     envelope,

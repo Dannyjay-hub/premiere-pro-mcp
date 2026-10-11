@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,7 +79,11 @@ describe("export_frame and capture_frame report straight alpha", () => {
 
   it("capture_frame reports alpha on the inline image", async () => {
     const path = pngFile("capture.png", 6);
-    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { outputPath: path } });
+    mockedSendCommand.mockImplementationOnce(async script => {
+      const owned = JSON.parse('"' + /var outputPath = "([^"\n]+)";/.exec(script)![1] + '"');
+      renameSync(path, owned);
+      return { success: true, data: { outputPath: owned } };
+    });
     await expect(getExportTools({}).capture_frame.handler({})).resolves.toMatchObject({
       success: true,
       data: { captured: true, hasAlpha: true, alphaNote: expect.stringContaining("straight alpha"), mimeType: "image/png" },

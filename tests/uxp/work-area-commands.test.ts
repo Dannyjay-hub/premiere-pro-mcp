@@ -74,18 +74,18 @@ describe("UXP WorkAreaUtils commands", () => {
   });
 
   it("fails closed for stale, invalid, rejected, and unretained work-area updates", async () => {
-    const value = workAreaHost();
-    await expect(value.registry.dispatch("workArea.set", { ...validSet, expectedSequenceGuid: "other" }))
-      .rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
-    await expect(value.registry.dispatch("workArea.set", { ...validSet, expectedWorkArea: { inSeconds: 0, outSeconds: 30 } }))
-      .rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
-    await expect(value.registry.dispatch("workArea.set", { ...validSet, inSeconds: 20, outSeconds: 10 }))
-      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("workArea.set", { ...validSet, outSeconds: 90 }))
-      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("workArea.set", { ...validSet, extra: true }))
-      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    expect(value.setWorkAreaInOutPoints).not.toHaveBeenCalled();
+    const attempts = [
+      { args: { ...validSet, expectedSequenceGuid: "other" }, code: "UXP_STALE_SEQUENCE" },
+      { args: { ...validSet, expectedWorkArea: { inSeconds: 0, outSeconds: 30 } }, code: "UXP_STALE_RANGE" },
+      { args: { ...validSet, inSeconds: 20, outSeconds: 10 }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...validSet, outSeconds: 90 }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...validSet, extra: true }, code: "UXP_INVALID_ARGUMENT" },
+    ];
+    for (const attempt of attempts) {
+      const value = workAreaHost();
+      await expect(value.registry.dispatch("workArea.set", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.setWorkAreaInOutPoints).not.toHaveBeenCalled();
+    }
 
     await expect(workAreaHost({ accept: false }).registry.dispatch("workArea.set", validSet))
       .rejects.toMatchObject({ code: "UXP_ACTION_REJECTED" });

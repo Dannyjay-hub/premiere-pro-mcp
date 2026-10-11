@@ -1,0 +1,424 @@
+{
+  "schemaVersion": 1,
+  "referenceCommit": "4e2d0bc2d3646f9cf27ef7aa8b2095c6858c7efe",
+  "sourceBase": "3b433ad34daaad66a03bacd846d92feb18187916",
+  "evidenceScope": "bounded_package_contracts; licensed_host_not_run",
+  "items": [
+    {
+      "id": "01",
+      "title": "Bound replay identity",
+      "recommendation": "Bind replay IDs to canonical arguments, backend session, project, and target. Reusing an operation ID for a different edit must produce a conflict, not an old success receipt.",
+      "implementation": "uxp-plugin/operation-ledger.cjs",
+      "boundary": "Changed arguments, project, sequence or session conflict; bounded hashed reservations and documented UXP cryptographic session identities.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "02",
+      "title": "Consumed unknown receipts",
+      "recommendation": "Retain a consumed/unknown operation receipt after an error following host dispatch. Avoid accidentally repeating a partially applied edit.",
+      "implementation": "uxp-plugin/operation-ledger.cjs",
+      "boundary": "Durable hashed tombstones survive panel reload; unexpected post-dispatch errors are never retry permission. Capacity is 4,096 IDs / 1 MiB; full, corrupt or unwritable storage refuses new writes. Reviewed acknowledgement does not erase consumed IDs.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "03",
+      "title": "Explicit MCP hints",
+      "recommendation": "Register explicit per-tool MCP annotations and check them against authority and action semantics. Clients should receive accurate edit/destructive hints.",
+      "implementation": "src/workflows/tool-metadata.ts",
+      "boundary": "Definition annotations win; mixed actions remain conservative and authority is independently enforced.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "04",
+      "title": "Exact invocation preflight",
+      "recommendation": "Add an invocation-aware `can_execute` preflight: tool + exact targets → enabled, reasons, required state, and evidence age. Reduce failed calls and guessed prerequisites.",
+      "implementation": "src/tools/execution-workflows.ts",
+      "boundary": "can_execute validates schema, authority, files and bounded CEP targets; unavailable UXP action predicates remain unknown.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "05",
+      "title": "Common mutation receipts",
+      "recommendation": "Normalize mutation receipts across CEP, UXP, AE, local artifacts, and orchestrators. Give clients one reliable way to understand partial work.",
+      "implementation": "src/workflows/mutation-receipt.ts",
+      "boundary": "Versioned dispatch/outcome/boundary/partial-step/output evidence; existing detailed handler outcomes preserved.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "06",
+      "title": "Cooperating host ownership",
+      "recommendation": "Coordinate cooperating MCP processes and multi-command workflows through one host-owner lease. Prevent read/write interleaving across separate clients.",
+      "implementation": "src/bridge/host-lease.ts",
+      "boundary": "Cross-process lease spans protected workflows for shared private bridge directory. Premiere UI and unrelated extensions are outside the lease.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "07",
+      "title": "Expected host targets",
+      "recommendation": "Standardize project/sequence/clip identity and expected-state envelopes for legacy setters as well as new workflows. Prevent active-project or track-index surprises.",
+      "implementation": "src/bridge/project-guard.ts",
+      "boundary": "expected_cep_target guards project document, sequence, source, clip exact ticks and effect parameter before generated body; no UXP fallback.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "08",
+      "title": "Reviewed recovery gate",
+      "recommendation": "Put targets with an unknown mutation outcome into a recovery-required state. Surface a clear pending-operation status instead of letting later tools build on uncertain state.",
+      "implementation": "src/tools/operation-recovery.ts",
+      "boundary": "Unknown outcomes block dependent writes until exact latest ledger/host revision is reviewed and acknowledged. Consumed IDs remain consumed.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "09",
+      "title": "Schema/receipt negotiation",
+      "recommendation": "Negotiate command/schema and receipt versions in addition to transport protocol and host capabilities. Detect an old panel paired with a new server before editing.",
+      "implementation": "uxp-plugin/protocol.cjs",
+      "boundary": "UXP writes require matching command schema/receipt versions and durable hashed tombstone storage; older unversioned panels allow reads only. CEP heartbeat/doctor reports its independent compatibility boundary, including legacy transport. Host API support is probed separately.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "10",
+      "title": "Strict nested validation",
+      "recommendation": "Standardize named errors and strict nested/cross-field argument validation. Make invalid units and contradictory fields diagnosable before host dispatch.",
+      "implementation": "src/workflows/strict-schema.ts",
+      "boundary": "Named unknown-field and nonfinite/depth/breadth errors; intentionally open metadata maps preserved. Existing typed cross-field validation retained.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "11",
+      "title": "Lossless tick contract",
+      "recommendation": "Preserve decimal tick strings end to end; use BigInt and rational rates in Node planning. Keep seconds as a convenience view.",
+      "implementation": "src/ai/exact-time.ts",
+      "boundary": "BigInt decimal ticks stay lossless in canonical planning; legacy convenience seconds are accepted only when safe for selected workflows.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "12",
+      "title": "Rational rates/timecode",
+      "recommendation": "Centralize frame-grid, rational-frame-rate, drop-frame timecode, and exclusive-end conversions. Remove subtly different conversions between tools.",
+      "implementation": "src/ai/exact-time.ts",
+      "boundary": "Signed frame/sample/time conversion, exclusive ends and 29.97/59.94 drop-frame minute rules; host code remains ES3.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "13",
+      "title": "Canonical snapshots",
+      "recommendation": "Define one versioned, bounded project/sequence snapshot format with source ranges, links, locks, targeting, transitions, effects, markers, and timing domains.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Version, session/project/sequence, exact ranges, descriptors, completeness and revision. Missing CEP links/locks/effects/transitions/markers remain unknown.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "14",
+      "title": "Expected-edit algebra",
+      "recommendation": "Add a pure expected-edit model that predicts an affected-state diff before applying supported operations. Catch collateral edits early.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Pure insert/overwrite/trim/split/move/remove/ripple/enable subset predicts exact diffs; synthetic additions never authorize host mutation.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "15",
+      "title": "Extended typed compound plans",
+      "recommendation": "Expand compound plans beyond insert/remove to supported trim, split, move, enable, effect, and keyframe operations. Reduce fragile client-side sequences.",
+      "implementation": "src/tools/extended-edit-plans.ts",
+      "boundary": "Single-use previews compose supported trim/split/move/enable/effect/keyframe handlers with exact target guards; sequential partial work is explicit.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "16",
+      "title": "Source/neighbor constraints",
+      "recommendation": "Share source-handle and neighbor preflight across trims, transitions, duplicate, slide, slip, and nesting. Avoid shortened transitions and destroyed neighboring material.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Shared source-handle/neighbor preflight in the canonical model and compound routes complements existing physical-duration checks in legacy trim/slide/slip tools. Unknown mappings refuse.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "17",
+      "title": "Explicit ripple scope",
+      "recommendation": "Reuse one documented sync-lock/targeting/ripple scope model. Give clients an exact list of tracks and clips that will move.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Model names every participating track/clip and requires known locks/sync state. Existing native ripple route remains separately guarded.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "18",
+      "title": "A/V continuity verification",
+      "recommendation": "Verify linked A/V partners and source continuity as shared postconditions, including split and reverse boundaries. Catch tiny duplicate pieces or missing sound.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Exact links/source/ranges/speed/reverse/nesting and unaffected-neighbor comparison; structural proof does not establish audible synchronization.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "19",
+      "title": "Effect descriptor identity",
+      "recommendation": "Make effect/parameter discovery the shared descriptor contract: stable match identity where available, display name, type, units, animation state, and verified writability.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Stable match and exact indexed parameter identity, type/units/writability/animation evidence. Compound writes refuse built-ins and unknown descriptors.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "20",
+      "title": "Keyframe timing domains",
+      "recommendation": "Carry explicit source, clip-relative, and sequence time domains through keyframe plans and receipts. Extend existing time-base protections to retiming and nested clips.",
+      "implementation": "src/ai/timeline-contract.ts",
+      "boundary": "Explicit source/relative/sequence tick mappings for supported forward 1x clips. Nonlinear retiming/nesting refuse without a measured adapter.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "21",
+      "title": "Progress and job status",
+      "recommendation": "Wire existing host-job/event information into MCP progress notifications and a unified job status contract. Keep long work observable and inspection responsive.",
+      "implementation": "src/workflows/invocation-context.ts",
+      "boundary": "Bounded MCP progress, local/native job observation and exact tracked-receipt identity. Missing receipts never mean completion.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "22",
+      "title": "Owned local cancellation",
+      "recommendation": "Define cancellation separately for local processes, not-yet-dispatched work, and accepted native host jobs. Prevent misleading “cancelled” receipts.",
+      "implementation": "src/workflows/job-contract.ts",
+      "boundary": "Undispatched jobs and local subprocesses use AbortSignal; stopped waits never claim accepted native work was cancelled.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "23",
+      "title": "Export lineage receipts",
+      "recommendation": "Correlate each export with its exact job, project/sequence/range, preset, destination, and observed artifact. Avoid treating unrelated encoder events as our completion.",
+      "implementation": "uxp-plugin/events.cjs",
+      "boundary": "Exact bounded project/sequence/item/range/preset/destination lineage is SHA-256 bound in Node. Pinned EncoderManager returns Boolean; generic terminal events normalize to unknown/reconciliation-required, with no completion claim. nativeJobId is absent unless actually supplied.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "24",
+      "title": "Guarded delivery orchestration",
+      "recommendation": "Add a guarded export-and-verify workflow that composes preflight, dispatch, wait where supported, file validation, ffprobe conformance, and optional decoded QC.",
+      "implementation": "src/tools/execution-workflows.ts",
+      "boundary": "Saved exact CEP project/sequence guard, new output, validated preset/contract, direct render, checksum/conformance and optional decoded QC. Visual rendering remains a separate check.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "25",
+      "title": "Decoded temporal harness",
+      "recommendation": "Build a temporal render validation harness for effects, transitions, speed, and interpolation. Prove the produced video, not just a stored parameter or QE still.",
+      "implementation": "src/tools/temporal-render-evidence.ts",
+      "boundary": "Actual multi-frame video decoding, sampled RGB/ROI and optional decoded PCM RMS against a measured oracle. A generated dissolve passes and wrong expectations fail.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "26",
+      "title": "Checked capture restoration",
+      "recommendation": "Make preview capture restore state with checked cleanup and explicit evidence if restoration fails. Avoid moving the editor's playhead or selection unnoticed.",
+      "implementation": "src/bridge/script-builder.ts",
+      "boundary": "Temporary-mark ownership and restore readback propagate recovery-required uncertainty; concurrent UI changes are not overwritten silently.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "27",
+      "title": "Owned image evidence",
+      "recommendation": "Standardize image responses with target sequence, requested/actual time, capture method, resolution, freshness, and unique request-owned files. Make visual evidence understandable.",
+      "implementation": "src/tools/export.ts",
+      "boundary": "UUID capture paths, exact target/time evidence/method/resolution, PNG header and stable regular-file checks; no arbitrary panel path read/unlink.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "28",
+      "title": "Before/after review artifacts",
+      "recommendation": "Combine existing clip/marker review frames into bounded contact sheets and short before/after review clips at risky edits. Reduce visual review effort.",
+      "implementation": "src/tools/execution-workflows.ts",
+      "boundary": "Bounded contact sheets plus optional create-only <=30-second MP4 excerpts, hashes and decoded frame counts. Comparison remains human/explicit-oracle work.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "29",
+      "title": "Rendered output scopes",
+      "recommendation": "Analyze actual exported output for grade/scopes and color-management QC, with declared transfer/range/primaries and HDR policy. Avoid grading from source-only proxies.",
+      "implementation": "src/tools/execution-workflows.ts",
+      "boundary": "Actual local output RGB sampling and ffprobe encoded color metadata, caller declarations kept separate. RGB proxy does not establish HDR/legal-range correctness.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "30",
+      "title": "Content/revision analysis cache",
+      "recommendation": "Cache expensive analysis by media identity, source/timeline revision, tool version, and options. Invalidate only affected evidence.",
+      "implementation": "src/workflows/analysis-cache.ts",
+      "boundary": "Opt-in six allowlisted read analyses keyed by canonical source identity, content hash, options, revision and tool version; bounded LRU, concurrent insertion accounting, source stability checks and clone isolation.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "31",
+      "title": "Synchronization proposal",
+      "recommendation": "Add a local audio/timecode/marker synchronization planner with confidence and ambiguous-match reporting. Help users prepare multicamera sessions safely.",
+      "implementation": "src/ai/editorial-workflows.ts",
+      "boundary": "Bounded PCM correlation or measured timecode/marker anchors return confidence and ambiguous alternatives; never automatically shifts native media.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "32",
+      "title": "Stacked camera executor",
+      "recommendation": "Add a reviewed executor for the existing stacked-camera angle plan, with master-audio preservation and an exact expected diff.",
+      "implementation": "src/tools/timeline-editorial.ts",
+      "boundary": "Reviewed ordinary pre-razored tracks are cloned, video enabled states checked, master-audio structural ranges preserved. Native multicam switching is unsupported.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "33",
+      "title": "Transcript readiness composition",
+      "recommendation": "Compose native transcription start → readiness → transcript inspection → revision-bound planning. Avoid repeated transcription dispatch and premature editing.",
+      "implementation": "src/tools/timeline-editorial.ts",
+      "boundary": "Existing native has/start/readiness/segment routes, persistent start claims and revision-bound evidence; uncertain starts are never blindly resent.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "34",
+      "title": "Repeated word placement",
+      "recommendation": "Extend transcript-to-timeline mapping through repeated source placements and supported nesting/retiming. Keep unsupported mappings explicitly review-only.",
+      "implementation": "src/ai/editorial-workflows.ts",
+      "boundary": "Distinct occurrence IDs across repeated forward 1x placements with exact ticks; nested/nonlinear retime mappings remain unsupported.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "35",
+      "title": "Caption render evidence contract",
+      "recommendation": "Validate rendered captions/titles for clipping, glyph coverage, line breaks, bidirectional text, and platform safe zones. Close the gap between artifact timing and readable output.",
+      "implementation": "src/ai/editorial-workflows.ts",
+      "boundary": "Checks caller-measured rendered bounds, glyphs, line breaks, bidi and safe zones with SHA-256 provenance. No OCR or unmeasured visual success claim.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "36",
+      "title": "Deterministic music remix plan",
+      "recommendation": "Offer a deterministic music-remix planning workflow: measured beat grid, protected intro/outro, proposed joins, optional crossfades.",
+      "implementation": "src/ai/editorial-workflows.ts",
+      "boundary": "Measured beat-grid shortening, protected intro/outro and explicit proposed joins/crossfades. No DSP renderer or native Adobe Remix API claim.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "37",
+      "title": "Reviewed scene application",
+      "recommendation": "Connect scene-change candidates to a reviewed marker/subclip/bin workflow with false-positive review. Make existing scene detection useful end to end.",
+      "implementation": "src/tools/scene-review-workflow.ts",
+      "boundary": "Approved candidates, exact saved project/source and physical bounds; actual source markers/subclips/bin composition. Audio inclusion requested, decoded audio preservation remains unverified.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "38",
+      "title": "Source/proxy provenance",
+      "recommendation": "Carry source/proxy provenance through analysis, planning, and delivery checks. Avoid assuming a proxy represents the full-resolution camera original.",
+      "implementation": "src/ai/editorial-workflows.ts",
+      "boundary": "Content/revision/provider identity travels in bounded planning evidence; delivery cannot assume proxy evidence represents the original.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "39",
+      "title": "Project handoff manifest",
+      "recommendation": "Produce a consolidated-project handoff manifest with expected/observed dependencies, byte inventory completeness, missing media, and source identity.",
+      "implementation": "src/tools/timeline-editorial.ts",
+      "boundary": "Expected/observed dependencies and contained-file byte inventory, missing/unresolved/truncated states. Completeness needs explicit project dependency evidence.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "40",
+      "title": "Persistent workflow checkpoints",
+      "recommendation": "Join existing checkpoints/backups/recovery inspection to operation receipts and versioned workflow state. Make interrupted sessions reviewable on restart.",
+      "implementation": "src/tools/timeline-editorial.ts",
+      "boundary": "Private bounded versioned receipt/state references survive restart; inspection never restores or replays uncertain host edits.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "41",
+      "title": "Honest native OTIO capability",
+      "recommendation": "Reconcile OTIO capability reporting and qualify interchange export receipts. Users should see the actual runtime boundary and artifact evidence.",
+      "implementation": "src/platform-capabilities.ts",
+      "boundary": "Documented UXP OTIO and XML probes are independent; Boolean export acceptance is committed_unverified. Optional fresh bounded artifact readback needs filesystem authority.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "42",
+      "title": "Bounded offline OTIO",
+      "recommendation": "Add bounded OTIO inspection and snapshot conversion around the existing native exporter. Support offline timeline planning without guessing undocumented `.prproj` internals.",
+      "implementation": "src/interchange/otio.ts",
+      "boundary": "Exact rational-time inspection and supported snapshot conversion. Effects/nests/metadata/schema loss is refused or explicitly reported; no prproj parser.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "43",
+      "title": "Feature-level loss reports",
+      "recommendation": "Emit per-feature interchange loss reports for FCP7 XML, FCPXML, OTIO, EDL, AAF, and OMF. Warn precisely about nests, effects, links, retiming, captions, and metadata loss.",
+      "implementation": "src/interchange/evidence.ts",
+      "boundary": "OTIO, FCP7 xmeml, modern FCPXML, EDL, AAF and OMF support/loss/unknown matrix; opaque native formats remain unknown.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "44",
+      "title": "Canonical interchange fixtures",
+      "recommendation": "Add canonical interchange round-trip fixtures with exact timing and explicit loss expectations. Catch schema changes before turnover.",
+      "implementation": "tests/tools/interchange-workflows.test.ts",
+      "boundary": "Retained seeded rational-rate parse/serialize/parse fixtures and exact supported snapshot projection; destination-editor/native fidelity remains a host gate.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "45",
+      "title": "Audio-post turnover contract",
+      "recommendation": "Build an audio-post turnover workflow around existing AAF/OMF exporters: handle ranges, channel mapping, sample rate, gain automation, media manifest, and reference picture.",
+      "implementation": "src/interchange/facility.ts",
+      "boundary": "Existing AAF/OMF native routes with explicit handles/range/channel/rate/gain/media/reference-picture plan and post-export checks. No new opaque serializer.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "46",
+      "title": "Spreadsheet-safe review markers",
+      "recommendation": "Export review markers as bounded CSV and JSON with IDs, comments, color, duration, rational rate, tick/timecode columns, and spreadsheet-safe text.",
+      "implementation": "src/interchange/facility.ts",
+      "boundary": "Create-only bounded CSV/JSON with IDs/comments/colors/rational rate/exact ticks/drop-frame display and escaped multiline/formula text.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "47",
+      "title": "Facility metadata adapter",
+      "recommendation": "Add an ALE or facility metadata table intake/export adapter using existing bounded field-level metadata tools. Improve assistant-editor handoffs.",
+      "implementation": "src/interchange/facility.ts",
+      "boundary": "Bounded ALE intake/export reports duplicates/missing sources/unsupported fields; proposals route separately through existing named-field metadata readback.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "48",
+      "title": "Retained property seeds",
+      "recommendation": "Add randomized/property-based edit-model tests with retained failing seeds. Broaden assurance beyond individual mocked examples.",
+      "implementation": "tests/ai/expected-edit-properties.test.ts",
+      "boundary": "Retained seeds cover 480 individual edits and 240 eight-operation sequences, plus exact-time properties across rational rates. Unsupported mappings/refusals and collateral-state checks are explicit.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "49",
+      "title": "Licensed-host fixture matrix",
+      "recommendation": "Turn licensed-host sweep templates into a repeatable fixture workflow matrix with actual before/after, Undo/reopen, playback, and exported-artifact evidence.",
+      "implementation": "docs/temporal-render-fixtures.matrix.json",
+      "boundary": "Repeatable host reports require pinned environment/capabilities and hashed before/after, Undo/reopen, playback and export evidence. All licensed-host cells remain not_run.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "50",
+      "title": "Transport fault injection",
+      "recommendation": "Expand transport fault injection for disconnects, duplicate requests, changed arguments, late replies, panel reloads, job disappearance, and concurrency.",
+      "implementation": "tests/bridge/uxp-execution-faults.test.ts",
+      "boundary": "Disconnects/late/wrong/duplicate replies, changed arguments, panel reload, cache expiry, recovery and independent-process concurrency are covered without resend.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "51",
+      "title": "Dependency boundary gate",
+      "recommendation": "Enforce dependency boundaries between pure planning, security/schema, bridge adapters, and tool orchestration. Keep local-only helpers auditable as local-only.",
+      "implementation": "scripts/check-dependency-boundaries.mjs",
+      "boundary": "npm run check:layers gates pure planning/security dependencies; two existing parser reuse edges are explicit exceptions, not blanket permissions.",
+      "licensedHostEvidence": "not_run"
+    },
+    {
+      "id": "52",
+      "title": "Bounded performance evidence",
+      "recommendation": "Expose bounded local performance diagnostics: queue wait, host wait, dispatch, readback, payload size, analysis-cache hit, and artifact-validation cost. Optimize measured bottlenecks.",
+      "implementation": "src/workflows/performance-diagnostics.ts",
+      "boundary": "Content-free bounded numeric stage medians/p95/payload/cache counts plus generated 100/1,000/10,000-clip benchmark. Unmeasured stages remain null; no host latency claim.",
+      "licensedHostEvidence": "not_run"
+    }
+  ]
+}

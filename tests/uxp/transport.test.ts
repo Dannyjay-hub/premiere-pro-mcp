@@ -6,6 +6,7 @@ import {
   UxpBridgeError,
   UxpWebSocketBridge,
 } from "../../src/bridge/uxp-websocket-bridge.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir } from "../helpers/temp-dir.js";
 
 const TOKEN = "test-token-at-least-16-characters";
 const bridges: UxpWebSocketBridge[] = [];
@@ -14,7 +15,9 @@ async function createBridge(options: {
   requestTimeoutMs?: number;
   handshakeTimeoutMs?: number;
 } = {}) {
+  const tempDir = makePrivateBridgeTempDir("uxp-transport-lease-");
   const bridge = new UxpWebSocketBridge({
+    tempDir,
     token: TOKEN,
     port: 0,
     ...options,
@@ -45,6 +48,7 @@ async function connectHost(
     payload: {
       backend: "uxp",
       protocolVersion: 1,
+      commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones",
       commands,
     },
   }));
@@ -54,6 +58,7 @@ async function connectHost(
 
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.stop()));
+  cleanupTempDirs();
 });
 
 describe("UXP WebSocket bridge", () => {
@@ -84,30 +89,18 @@ describe("UXP WebSocket bridge", () => {
     client.close();
   });
 
-  it("correlates concurrent command results by request id", async () => {
+  it("correlates serialized command results by request id and ignores unrelated replies", async () => {
     const bridge = await createBridge();
     const client = await connectHost(bridge);
     const commands: any[] = [];
     client.on("message", (data) => {
-      const message = JSON.parse(data.toString());
-      commands.push(message);
-      if (commands.length !== 2) return;
-      for (const command of [...commands].reverse()) {
-        client.send(JSON.stringify({
-          protocolVersion: 1,
-          type: "result",
-          requestId: command.requestId,
-          payload: { ok: true, result: { command: command.command } },
-        }));
-      }
+      const command = JSON.parse(data.toString()); commands.push(command);
+      client.send(JSON.stringify({ protocolVersion: 1, type: "result", requestId: "unrelated-request", payload: { ok: true, result: { wrong: true } } }));
+      client.send(JSON.stringify({ protocolVersion: 1, type: "result", requestId: command.requestId, payload: { ok: true, result: { command: command.command } } }));
     });
-
-    const [state, frame] = await Promise.all([
-      bridge.request("state.get"),
-      bridge.request("frame.export", { filename: "frame.png" }),
-    ]);
-    expect(state).toEqual({ command: "state.get" });
-    expect(frame).toEqual({ command: "frame.export" });
+    const [state, frame] = await Promise.all([bridge.request("state.get"), bridge.request("frame.export", { filename: "frame.png" })]);
+    expect(state).toEqual({ command: "state.get" }); expect(frame).toEqual({ command: "frame.export" });
+    expect(commands.map((command) => command.command)).toEqual(["state.get", "frame.export"]);
     client.close();
   });
 
@@ -141,7 +134,7 @@ describe("UXP WebSocket bridge", () => {
       const message = JSON.parse(String(data));
       sent.push(message.command);
       const result = message.command === "capabilities.get"
-        ? { backend: "uxp", protocolVersion: 1, commands: { "capabilities.get": { supported: true }, "frame.export": { supported: true } } }
+        ? { backend: "uxp", protocolVersion: 1, commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones", commands: { "capabilities.get": { supported: true }, "frame.export": { supported: true } } }
         : { exported: true };
       client.send(JSON.stringify({ protocolVersion: 1, type: "result", requestId: message.requestId, payload: { ok: true, result } }));
     });

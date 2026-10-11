@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "premiere-mcp.temporal-fixture-matrix.v1",
+  "id": "bounded-editorial-render-v1",
+  "verificationBoundary": "Only measured host cells with actual evidence may become compatibility claims",
+  "fixtures": [
+    { "id": "TR-EFFECT-001", "purpose": "Compare baseline and effect-enabled exports at start, middle and end; detect ignored effect rendering", "evidence": ["before_state", "after_state", "temporal_video", "decoded_audio", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-TRANSITION-001", "purpose": "Measure outgoing, transition midpoint and incoming exported frames with source handles preserved", "evidence": ["before_state", "after_state", "temporal_video", "decoded_audio", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-INTERPOLATION-001", "purpose": "Measure actual exported animated motion at several times; QE still/property equality is insufficient", "evidence": ["before_state", "after_state", "temporal_video", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-SPEED-001", "purpose": "Measure source continuity, cut timing and decoded audio after supported speed edits", "evidence": ["before_state", "after_state", "temporal_video", "decoded_audio", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-SLIP-SLIDE-001", "purpose": "Measure linked source continuity, adjacent handles and timeline duration after slip/slide", "evidence": ["before_state", "after_state", "temporal_video", "decoded_audio", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-DUPLICATE-001", "purpose": "Prove duplicated fixture preserves exact clip ends and linked audio before altering copy", "evidence": ["before_state", "after_state", "temporal_video", "decoded_audio", "undo", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-INTERCHANGE-001", "purpose": "Native export/import round trip of declared OTIO/XML supported subset; offline parser round trip remains separate", "evidence": ["before_state", "after_state", "interchange_artifact", "reopen", "playback"], "status": "not_run" },
+    { "id": "TR-AUDIO-POST-001", "purpose": "AAF/OMF destination DAW import measures range, handles, channels, automation and audible alignment", "evidence": ["before_state", "after_state", "interchange_artifact", "decoded_audio", "destination_import"], "status": "not_run" }
+  ]
+}

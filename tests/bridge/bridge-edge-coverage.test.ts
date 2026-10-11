@@ -22,6 +22,22 @@ import {
   type UxpHello,
 } from "../../src/bridge/uxp-websocket-bridge.js";
 
+// UXP socket unit cases do not use the separately tested filesystem lease.
+vi.mock("../../src/bridge/file-bridge.js", async (original) => ({
+  ...await original<typeof import("../../src/bridge/file-bridge.js")>(),
+  withBridgeWorkflow: async (_options: unknown, work: () => Promise<unknown>) => work(),
+}));
+
+// File transport unit tests isolate ownership; real multi-process lease behavior
+// is exercised by host-lease.test.ts using the actual filesystem.
+vi.mock("../../src/bridge/host-lease.js", () => ({
+  withHostLease: async (_directory: string, _timeout: number, work: () => Promise<unknown>) => work(),
+  ownsHostLease: () => false,
+  inspectHostRecovery: () => ({ version: 1, recoveryRequired: false, recoveryRevision: null }),
+  markHostRecovery: vi.fn(),
+  HostLeaseError: class extends Error {},
+}));
+
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),

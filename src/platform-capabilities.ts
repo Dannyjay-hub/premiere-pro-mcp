@@ -293,7 +293,7 @@ export function buildPlatformCapabilityReport(
           presetValidation: true,
           postExportChecksum: ["sha256", "sha512"],
           unsupported: {
-            otio: "No documented Premiere ExtendScript or UXP OTIO import/export API.",
+            otio: "CEP has no documented OTIO exporter. UXP ProjectConverter.exportAsOpenTimelineIO is documented and exposed by export_interchange_uxp when that format-specific method is available at runtime; import/round-trip compatibility is a separate boundary.",
             edl: "No documented Premiere ExtendScript or UXP EDL import/export API.",
             cloudPublish: "No documented Premiere automation API for publishing to cloud destinations.",
             contentCredentials: "No documented Premiere automation API for configuring Content Credentials.",

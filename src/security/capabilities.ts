@@ -57,6 +57,25 @@ export const UNSAFE_TOOL_NAMES = new Set(["execute_extendscript", "send_raw_scri
 
 const INSPECT_TOOL_NAMES = new Set([
   "ping",
+  "can_execute",
+  "get_operation_performance",
+  "inspect_workflow_job",
+  "wait_workflow_job",
+  "inspect_operation_recovery",
+  "convert_timeline_time",
+  "predict_timeline_edit",
+  "verify_timeline_postconditions",
+  "map_keyframe_time_domain",
+  "plan_media_synchronization",
+  "map_word_timeline_occurrences",
+  "plan_music_remix",
+  "plan_scene_segments",
+  "verify_caption_render_evidence",
+  "bind_media_provenance",
+  "preview_extended_edit_plan",
+  "preview_stacked_camera_edit",
+  "preview_otio_snapshot_export",
+  "plan_audio_post_turnover",
   "get_capabilities",
   // Read-only queries whose names miss the read prefixes.
   "has_proxy",
@@ -152,6 +171,26 @@ const FILESYSTEM_TOOL_NAMES = new Set([
 // inferred safely from their names. Keep them explicit: a preview reads an
 // approved folder, authoring mutates a saved AE project and exports a file.
 const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[]>> = {
+  start_local_analysis_job: ["filesystem"],
+  cancel_workflow_job: ["filesystem"],
+  export_and_verify: ["inspect", "export", "filesystem"],
+  inspect_rendered_video_scopes: ["inspect", "filesystem"],
+  build_edit_review_evidence: ["inspect", "filesystem"],
+  inspect_otio_interchange: ["inspect", "filesystem"],
+  inspect_interchange_artifact: ["inspect", "filesystem"],
+  inspect_interchange_loss_report: ["inspect", "filesystem"],
+  preview_facility_metadata_intake: ["inspect", "filesystem"],
+  export_review_markers: ["export", "filesystem"],
+  export_facility_metadata_table: ["export", "filesystem"],
+  verify_temporal_render_artifact: ["inspect", "filesystem"],
+  build_project_handoff_manifest: ["inspect", "filesystem"],
+  save_workflow_checkpoint: ["filesystem"],
+  inspect_workflow_checkpoint: ["inspect", "filesystem"],
+  acknowledge_operation_recovery: ["inspect", "edit"],
+  apply_extended_edit_plan: ["inspect", "edit", "filesystem"],
+  prepare_transcript_workflow: ["inspect"],
+  preview_scene_review_workflow: ["inspect", "filesystem"],
+  apply_scene_review_workflow: ["inspect", "edit", "filesystem"],
   // Source bounds read the underlying media file through ffprobe.
   trim_clip: ["edit", "filesystem"],
   slip_edit: ["edit", "filesystem"],
@@ -372,6 +411,8 @@ export function capabilityForTool(toolName: string): Capability {
 
 /** Resolve authority at the action level for consolidated multi-action tools. */
 export function capabilitiesForToolInvocation(toolName: string, args: unknown): readonly Capability[] {
+  if (toolName === "export_interchange_uxp" && args && typeof args === "object" && (args as Record<string, unknown>).verify_artifact === true) return ["export", "filesystem"];
+  if (toolName === "prepare_transcript_workflow" && args && typeof args === "object" && (args as Record<string, unknown>).start_if_missing === true) return ["inspect", "edit"];
   const actionMap = ACTION_CAPABILITIES[toolName];
   if (toolName === "set_metadata" && args && typeof args === "object" && (args as Record<string, unknown>).packet === "xmp") {
     // XMP field writes land in the source media file, not just the project.

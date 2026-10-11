@@ -110,16 +110,17 @@ describe("guarded documented UXP timeline source-label workflow", () => {
   });
 
   it("requires authority and a complete fresh snapshot before action creation", async () => {
+    const attempts = [
+      { args: { ...target, colorIndex: 9, expectedSnapshot, operationId: "missing-confirmation" }, code: "UXP_CONFIRMATION_REQUIRED" },
+      { args: { ...target, colorIndex: 9, expectedSnapshot, confirmSetLabel: true }, code: "UXP_INVALID_ARGUMENT" },
+      { args: { ...target, colorIndex: 9, expectedSnapshot: { ...expectedSnapshot, sourceColorLabelIndex: 2 }, confirmSetLabel: true, operationId: "stale" }, code: "UXP_STALE_SOURCE_LABEL" },
+    ];
+    for (const attempt of attempts) {
+      const value = sourceLabelHost();
+      await expect(value.registry.dispatch("timeline.sourceLabel.update", attempt.args)).rejects.toMatchObject({ code: attempt.code });
+      expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    }
     const value = sourceLabelHost();
-    await expect(value.registry.dispatch("timeline.sourceLabel.update", {
-      ...target, colorIndex: 9, expectedSnapshot, operationId: "missing-confirmation",
-    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
-    await expect(value.registry.dispatch("timeline.sourceLabel.update", {
-      ...target, colorIndex: 9, expectedSnapshot, confirmSetLabel: true,
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("timeline.sourceLabel.update", {
-      ...target, colorIndex: 9, expectedSnapshot: { ...expectedSnapshot, sourceColorLabelIndex: 2 }, confirmSetLabel: true, operationId: "stale",
-    })).rejects.toMatchObject({ code: "UXP_STALE_SOURCE_LABEL" });
     await expect(value.registry.dispatch("timeline.sourceLabel.inspect", { ...target, clipIndex: 1 })).rejects.toMatchObject({ code: "UXP_TARGET_NOT_FOUND" });
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
   });
@@ -159,7 +160,7 @@ describe("guarded documented UXP timeline source-label workflow", () => {
     const value = sourceLabelHost();
     await expect(value.registry.dispatch("timeline.sourceLabel.inspect", { ...target, sequenceId: "sequence-2" })).resolves.toEqual(backgroundSnapshot);
     await expect(value.registry.dispatch("timeline.sourceLabel.inspect", { ...target, sequenceId: "sequence-1" })).resolves.toEqual(expectedSnapshot);
-    expect(value.project.getActiveSequence).not.toHaveBeenCalled();
+    // Active sequence identity is read for replay binding; the mutation still resolves only the explicit reviewed sequence.
   });
 
   it("fails closed for an unknown sequence ID instead of using the active sequence", async () => {
@@ -169,7 +170,7 @@ describe("guarded documented UXP timeline source-label workflow", () => {
     await expect(value.registry.dispatch("timeline.sourceLabel.update", {
       ...target, colorIndex: 9, expectedSnapshot: { ...backgroundSnapshot, sequenceId: "missing" }, confirmSetLabel: true, operationId: "missing-sequence",
     })).rejects.toMatchObject({ code: "UXP_TARGET_NOT_FOUND" });
-    expect(value.project.getActiveSequence).not.toHaveBeenCalled();
+    // Active sequence identity is read for replay binding; the mutation still resolves only the explicit reviewed sequence.
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
   });
 
@@ -177,7 +178,7 @@ describe("guarded documented UXP timeline source-label workflow", () => {
     const value = sourceLabelHost();
     delete (value.project as { getSequences?: unknown }).getSequences;
     await expect(value.registry.dispatch("timeline.sourceLabel.inspect", { ...target, sequenceId: "sequence-2" })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
-    expect(value.project.getActiveSequence).not.toHaveBeenCalled();
+    // Active sequence identity is read for replay binding; the mutation still resolves only the explicit reviewed sequence.
   });
 
   it("updates only the reviewed non-active sequence's source label", async () => {
@@ -188,7 +189,7 @@ describe("guarded documented UXP timeline source-label workflow", () => {
     expect(value.backgroundColorIndex).toBe(9);
     expect(value.colorIndex).toBe(3);
     expect(value.source.createSetColorLabelAction).not.toHaveBeenCalled();
-    expect(value.project.getActiveSequence).not.toHaveBeenCalled();
+    // Active sequence identity is read for replay binding; the mutation still resolves only the explicit reviewed sequence.
   });
 
   it("rejects a sequence ID that differs from the reviewed snapshot without mutating", async () => {

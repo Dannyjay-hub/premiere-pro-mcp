@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -289,16 +289,21 @@ describe("export verification and host-result coverage", () => {
 
   it("reads a host-exported frame, reports unreadable output, and covers proxy script choices", async () => {
     const tools = getExportTools(bridgeOptions);
-    const frame = temporaryPath("frame.png", "png bytes");
-    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { outputPath: frame } });
+    const header = Buffer.alloc(33); Buffer.from([137,80,78,71,13,10,26,10]).copy(header); header.write("IHDR",12);header.writeUInt32BE(1,16);header.writeUInt32BE(1,20);header[25]=2;
+    const frame = temporaryPath("frame.png", header);
+    const ownedReply = (file: string) => async (script: string) => {
+      const owned = JSON.parse('"' + /var outputPath = "([^"\n]+)";/.exec(script)![1] + '"');
+      renameSync(file, owned); return {success:true,data:{outputPath:owned}};
+    };
+    mockedSendCommand.mockImplementationOnce(ownedReply(frame));
     await expect(tools.capture_frame.handler({ time_seconds: 3 })).resolves.toMatchObject({
       success: true,
-      data: { captured: true, mimeType: "image/png", base64: Buffer.from("png bytes").toString("base64") },
+      data: { captured: true, mimeType: "image/png", base64: header.toString("base64") },
     });
     expect(existsSync(frame)).toBe(false);
 
     const oversizedFrame = temporaryPath("oversized-frame.png", "x".repeat(MAX_CAPTURE_FRAME_BYTES + 1));
-    mockedSendCommand.mockResolvedValueOnce({ success: true, data: { outputPath: oversizedFrame } });
+    mockedSendCommand.mockImplementationOnce(ownedReply(oversizedFrame));
     await expect(tools.capture_frame.handler({})).resolves.toMatchObject({
       success: false,
       error: expect.stringContaining("inline response limit"),
@@ -308,7 +313,7 @@ describe("export verification and host-result coverage", () => {
     mockedSendCommand.mockResolvedValueOnce({ success: true, data: { outputPath: temporaryDirectory() } });
     await expect(tools.capture_frame.handler({})).resolves.toMatchObject({
       success: false,
-      error: expect.stringContaining("Failed to read captured frame"),
+      error: expect.stringContaining("CAPTURE_PATH_IDENTITY"),
     });
 
     await tools.manage_proxies.handler({ item_id: "item", action: "create" });

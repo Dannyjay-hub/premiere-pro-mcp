@@ -1,7 +1,7 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { closeSync, createReadStream, openSync, readFileSync, readSync, unlinkSync, existsSync, statSync, readdirSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { closeSync, createReadStream, openSync, readFileSync, readSync, unlinkSync, existsSync, statSync, lstatSync, readdirSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -989,6 +989,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         required: ["output_path"],
       },
       handler: async (args: { output_path: string; preset_path?: string; range?: "entire" | "in_to_out" | "work_area"; work_area_only?: boolean; overwrite?: boolean; timeout_minutes?: number }) => {
+        if (args.range !== undefined && args.work_area_only !== undefined && (args.work_area_only !== (args.range === "work_area"))) return { success: false, error: "CONTRADICTORY_RANGE: range and work_area_only disagree; no command was sent" };
         const range = args.range ?? (args.work_area_only ? "work_area" : "entire");
         if (args.preset_path) {
           try {
@@ -1806,7 +1807,9 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         },
       },
       handler: async (args: { time_seconds?: number }) => {
-        const tempPath = join(tmpdir(), `mcp_frame_capture_${Date.now()}.png`);
+        const captureId = randomUUID();
+        const captureStartedAt = Date.now();
+        const tempPath = join(tmpdir(), `mcp_frame_capture_${captureId}.png`);
         const escapedPath = escapeForExtendScript(tempPath);
 
         const script = buildToolScript(`
@@ -1818,7 +1821,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           var res = __exportStillFrame(outputPath, ticks);
           if (!res.ok) return __error(res.error + " [" + res.notes.join("; ") + "]");
 
-          return __result({ exported: true, outputPath: res.path, method: res.method });
+          var seq = app.project.activeSequence;
+          var actualTicks = ticks;
+          if (actualTicks === null && seq) { try { actualTicks = String(seq.getPlayerPosition().ticks); } catch (ePosition) {} }
+          return __result({ exported: true, outputPath: res.path, method: res.method, sequenceId: seq ? String(seq.sequenceID) : null, actualTicks: actualTicks });
         `);
 
         const result = await sendCommand(script, { ...bridgeOptions, timeoutMs: 60000 });
@@ -1828,13 +1834,18 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         // path other than the one we asked for (Media Encoder appends a frame number to
         // still exports), so read back the path it reports rather than the one we chose.
         const framePath = (result.data as { outputPath?: string } | undefined)?.outputPath ?? tempPath;
+        // Never read or unlink an arbitrary panel-returned path. Still exporters
+        // may append frame numbers, but the UUID-owned prefix must stay intact.
+        if (!resolve(framePath).startsWith(resolve(tempPath).replace(/\.png$/, ""))) return { success: false, error: "CAPTURE_PATH_IDENTITY: host returned a file outside this capture's unique prefix" };
 
         if (!existsSync(framePath)) {
           return { success: false, error: "Frame export reported success but no file exists at: " + framePath };
         }
 
         try {
-          const frameSize = statSync(framePath).size;
+          const frameStat = lstatSync(framePath);
+          if (!frameStat.isFile() || frameStat.isSymbolicLink()) return { success: false, error: "CAPTURE_FILE_INVALID: expected an owned regular output file" };
+          const frameSize = frameStat.size;
           if (frameSize > MAX_CAPTURE_FRAME_BYTES) {
             return {
               success: false,
@@ -1842,12 +1853,23 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             };
           }
           const bytes = readFileSync(framePath);
+          const afterRead = lstatSync(framePath);
+          if (frameStat.ino !== afterRead.ino || frameStat.dev !== afterRead.dev || frameStat.size !== afterRead.size || frameStat.mtimeMs !== afterRead.mtimeMs) return { success: false, error: "CAPTURE_FILE_CHANGED: output changed while reading" };
           const hasAlpha = pngHasAlpha(bytes);
+          if (hasAlpha === null) return { success: false, error: "CAPTURE_FORMAT_INVALID: owned output is not a readable PNG header" };
           const base64 = bytes.toString("base64");
           return {
             success: true,
             data: {
               captured: true,
+              imageReceipt: {
+                version: 1, captureId, sequenceId: (result.data as Record<string, unknown>)?.sequenceId ?? null,
+                requestedSeconds: args.time_seconds ?? null, actualTicks: (result.data as Record<string, unknown>)?.actualTicks ?? null,
+                actualTimeEvidence: args.time_seconds === undefined ? "playhead_readback" : "requested_time_only; exporter_frame_rounding_unknown",
+                method: (result.data as Record<string, unknown>)?.method ?? "unknown", freshRequestFile: true,
+                captureStartedAt: new Date(captureStartedAt).toISOString(), completedAt: new Date().toISOString(),
+                resolution: bytes.length >= 24 && hasAlpha !== null ? { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) } : null,
+              },
               renderVerified: false,
               verificationScope: "Still-image capture only; a single frame does not verify motion over time, playback or audio.",
               ...(hasAlpha === null ? {} : { hasAlpha }),

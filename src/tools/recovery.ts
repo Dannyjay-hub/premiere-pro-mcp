@@ -14,6 +14,7 @@ import { buildToolScript } from "../bridge/script-builder.js";
 import {
   getTempDir,
   getBridgeLiveness,
+  getBridgeCompatibility,
   sendCommand,
   type BridgeOptions,
   type CommandResult,
@@ -291,6 +292,7 @@ export function collectBridgeTelemetry(
     ...counts,
     oldestPendingAgeMs,
     heartbeat,
+    compatibility: getBridgeCompatibility(bridgeOptions),
     healthy:
       directoryAccessible &&
       heartbeat.state === "running" &&

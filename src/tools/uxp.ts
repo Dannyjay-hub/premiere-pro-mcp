@@ -1,4 +1,7 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { inspectInterchangeArtifact } from "../interchange/evidence.js";
 import { withApplyGuards, withApplySnapshot } from "./uxp-apply-snapshot.js";
 import { planTranscriptRoughCut, previewTranscriptEdit, transcriptRevision } from "./transcript-edits.js";
 import { getUxpAdvancedWorkflowTools } from "./uxp-advanced-workflows.js";
@@ -533,23 +536,43 @@ export function getUxpTools(bridge: UxpWebSocketBridge) {
       },
     },
     export_interchange_uxp: {
-      description: "Export the active sequence as OpenTimelineIO or Final Cut Pro XML with explicit verification.",
+      description: "Export the active sequence through its documented format-specific OpenTimelineIO or Final Cut Pro XML UXP method. Host acceptance is committed_unverified. Opt-in local artifact inspection requires filesystem authority and distinguishes fresh parsed bytes from host/destination/round-trip proof.",
       parameters: {
         type: "object" as const,
         properties: {
           format: { type: "string", enum: ["otio", "fcpxml"], description: "Interchange format." },
           output_file_path: { type: "string", description: "Absolute output file path." },
           suppress_ui: { type: "boolean", description: "Suppress Premiere export UI; defaults to true." },
+          verify_artifact: { type: "boolean", description: "Opt in to bounded Node-side file and structure inspection after export; requires filesystem authority. Only a newly created output can establish freshness. Defaults to false." },
           operation_id: operationId,
         },
         required: ["format", "output_file_path"],
       },
-      handler: async (args: { format: "otio" | "fcpxml"; output_file_path: string; suppress_ui?: boolean; operation_id?: string }) =>
-        invoke(bridge, "interchange.export", {
+      handler: async (args: { format: "otio" | "fcpxml"; output_file_path: string; suppress_ui?: boolean; verify_artifact?: boolean; operation_id?: string }) => {
+        if (!["otio", "fcpxml"].includes(args.format) || typeof args.output_file_path !== "string" || args.output_file_path.length > 4096 || !isAbsolute(args.output_file_path) || /\0/.test(args.output_file_path)) return { success: false, error: "format must be otio/fcpxml and output_file_path must be a bounded absolute path without NUL" };
+        if (args.verify_artifact !== undefined && typeof args.verify_artifact !== "boolean") return { success: false, error: "verify_artifact must be boolean" };
+        const existedBefore = args.verify_artifact === true && existsSync(args.output_file_path);
+        const response = await invoke(bridge, "interchange.export", {
           format: args.format, outputFilePath: args.output_file_path,
           ...(args.suppress_ui === undefined ? {} : { suppressUI: args.suppress_ui }),
           ...(args.operation_id ? { operationId: args.operation_id } : {}),
-        }),
+        });
+        if (!response.success || !("data" in response)) return response;
+        const hostResult = response.data.result && typeof response.data.result === "object" ? response.data.result as Record<string, unknown> : {};
+        const result: Record<string, unknown> = { ...hostResult, outcome: "committed_unverified", outputVerified: false, verificationBoundary: "projectConverter_host_return_only", destinationAcceptance: "not_run", roundTripValidated: false };
+        if (args.verify_artifact === true) {
+          try {
+            const artifact = inspectInterchangeArtifact(args.output_file_path, args.format);
+            result.artifact = { ...artifact, freshOutput: !existedBefore };
+            if (artifact.parsed && !existedBefore) {
+              result.outcome = "verified";
+              result.outputVerified = true;
+              result.verificationBoundary = "fresh_local_artifact_bounded_structure_only";
+            } else result.verificationWarning = "Output existed before dispatch; parsed bytes do not establish export freshness";
+          } catch (error) { result.artifact = { exists: false, parsed: false, error: (error as Error).message }; }
+        }
+        return { success: true, data: { backend: "uxp", result } };
+      },
     },
     get_transcript_languages_uxp: {
       description: "List transcription languages supported by the connected Premiere 26.3+ host.",

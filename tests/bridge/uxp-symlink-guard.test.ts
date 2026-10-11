@@ -1,33 +1,31 @@
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { createRequire } from "node:module";
 import { MAX_UXP_COMMAND_BYTES, UxpWebSocketBridge } from "../../src/bridge/uxp-websocket-bridge.js";
+import { cleanupTempDirs, makePrivateBridgeTempDir, makeTempDir } from "../helpers/temp-dir.js";
 
 const Protocol = createRequire(import.meta.url)("../../uxp-plugin/protocol.cjs");
 
 const TOKEN = "symlink-guard-token-0123456789abcdef";
 const bridges: UxpWebSocketBridge[] = [];
-const dirs: string[] = [];
 
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.stop()));
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  cleanupTempDirs();
 });
 
 describe("UXP bridge symlink confinement (#640)", () => {
   it("refuses symlinked path arguments before sending anything to the host", async () => {
-    const base = mkdtempSync(join(tmpdir(), "uxp-link-"));
-    dirs.push(base);
+    const base = makeTempDir("uxp-link-");
     const outside = join(base, "outside");
     const linked = join(base, "linked");
     mkdirSync(outside);
     symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
 
-    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0 });
+    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0, tempDir: makePrivateBridgeTempDir("uxp-lease-") });
     bridges.push(bridge);
     await bridge.start();
     const address = bridge.address();
@@ -37,7 +35,7 @@ describe("UXP bridge symlink confinement (#640)", () => {
     client.send(JSON.stringify({
       protocolVersion: 1,
       type: "hello",
-      payload: { backend: "uxp", protocolVersion: 1, commands: { "media.import": { supported: true } } },
+      payload: { backend: "uxp", protocolVersion: 1, commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones", commands: { "media.import": { supported: true } } },
     }));
     await connected;
 
@@ -58,7 +56,7 @@ describe("UXP bridge command size limit (#642)", () => {
   });
 
   it("refuses a command over the panel's 64 KiB limit without sending it", async () => {
-    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0 });
+    const bridge = new UxpWebSocketBridge({ token: TOKEN, port: 0, tempDir: makePrivateBridgeTempDir("uxp-lease-") });
     bridges.push(bridge);
     await bridge.start();
     const address = bridge.address();
@@ -68,7 +66,7 @@ describe("UXP bridge command size limit (#642)", () => {
     client.send(JSON.stringify({
       protocolVersion: 1,
       type: "hello",
-      payload: { backend: "uxp", protocolVersion: 1, commands: { "metadata.update": { supported: true } } },
+      payload: { backend: "uxp", protocolVersion: 1, commandSchemaVersion: 1, receiptVersion: 1, replayPersistence: "durable_hashed_tombstones", commands: { "metadata.update": { supported: true } } },
     }));
     await connected;
 

@@ -3,8 +3,16 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeOptions } from "../bridge/file-bridge.js";
+import { withMediaAnalysisCache } from "./media-analysis-cache.js";
+import { currentInvocation } from "../workflows/invocation-context.js";
+import type { ExecFileOptions, ExecFileOptionsWithBufferEncoding, ExecFileOptionsWithStringEncoding } from "node:child_process";
 
-const execFileAsync = promisify(execFile);
+const execFileNative = promisify(execFile);
+function execFileAsync(file: string, args: string[], options: ExecFileOptionsWithBufferEncoding): Promise<{ stdout: Buffer; stderr: Buffer }>;
+function execFileAsync(file: string, args: string[], options?: ExecFileOptionsWithStringEncoding): Promise<{ stdout: string; stderr: string }>;
+function execFileAsync(file: string, args: string[], options: ExecFileOptions = {}): Promise<{ stdout: string | Buffer; stderr: string | Buffer }> {
+  return execFileNative(file, args, { ...options, encoding: options.encoding === undefined ? "utf8" : options.encoding, signal: currentInvocation()?.signal });
+}
 const ANALYSIS_TIMEOUT_MS = 300_000;
 
 type ExecFailure = Error & { killed?: boolean; stderr?: string | Buffer };
@@ -150,8 +158,8 @@ export function compareScopeReadings(reference: VideoScopeReading, target: Video
 }
 
 async function decodeScopeFrame(path: string, time: number): Promise<VideoScopeReading> {
-  const result = await execFileAsync("ffmpeg", ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-vf", "scale=320:180:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], { encoding: "buffer", timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }) as unknown as { stdout: Buffer };
-  if (result.stdout.length !== 320 * 180 * 3) throw new Error("ffmpeg did not return one complete RGB scope frame");
+  const result = await execFileAsync("ffmpeg", ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-vf", "scale=320:180:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], { encoding: "buffer", timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+  if (!Buffer.isBuffer(result.stdout) || result.stdout.length !== 320 * 180 * 3) throw new Error("ffmpeg did not return one complete binary RGB scope frame");
   return analyzeRgbScopes(result.stdout);
 }
 
@@ -189,7 +197,7 @@ export function parseCropDetectOutput(output: string): PictureBounds | null {
 }
 
 export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
-  return {
+  return withMediaAnalysisCache({
     inspect_media_streams: {
       description: "Inspect a local media file with ffprobe and return container, stream, codec, time-base, channel, and chapter metadata. Read-only and independent of Premiere.",
       parameters: { type: "object", properties: { media_path: { type: "string", description: "Existing local media file" } }, required: ["media_path"] },
@@ -367,5 +375,5 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
         } catch (error) { return { success: false, error: failureMessage(error, "active-picture detection") }; }
       },
     },
-  };
+  });
 }

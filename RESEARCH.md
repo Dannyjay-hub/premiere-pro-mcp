@@ -557,3 +557,7 @@ registered alongside the tool catalog in `src/server.ts`; version 1.2.0 also reg
 ## Public workflow research: Filmit (2026-10-04)
 
 Public product research informed five independently implemented local review tools: dialogue candidates, quote paper edits, text changes, synchronization evidence, and owned-footage B-roll placements. Sources: https://filmit.io/jumpcut, https://filmit.io/roughcut, https://filmit.io/textpilot, https://filmit.io/sync, https://filmit.io/broll. Vendor implementation and compatibility claims were not tested. No vendor code, plugin binaries, presets, media or assets are incorporated. These tools accept captured evidence and produce bounded review results only; they do not implement local Whisper, waveform matching, visual inference, native text access or new host mutations.
+
+## Filmcraft-inspired bounded contracts (2026-10-11)
+
+See `docs/filmcraft-improvements.md` for the 52-item implementation ledger, source boundaries and supported workflow routes. This adaptation adds exact local time/edit algebra, replay/recovery protection, explicit delivery evidence and bounded interchange analysis; it does not replace Adobe codecs or claim unrun licensed-host coverage. Documented UXP OTIO import/export remains format-specific and runtime-probed. FCP 7 xmeml is distinct from modern FCPXML.

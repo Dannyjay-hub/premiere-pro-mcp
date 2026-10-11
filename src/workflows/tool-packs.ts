@@ -53,6 +53,8 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
       "Connection, project and sequence inspection, safe edit-plan preview, save, delivery validation, export, and local delivery verification.",
     tools: [
       "verify_premiere_connection",
+      "can_execute",
+      "inspect_operation_recovery",
       "get_project_info",
       "get_active_sequence",
       "get_sequence_structure",
@@ -65,6 +67,7 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
       "export_sequence",
       "verify_delivery_file",
       "verify_delivery_conformance",
+      "export_and_verify",
     ],
   },
   {
@@ -123,6 +126,9 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
       "encode_file",
       "verify_delivery_file",
       "verify_delivery_conformance",
+      "export_and_verify",
+      "verify_temporal_render_artifact",
+      "build_edit_review_evidence",
       "analyze_video_qc",
       "plan_platform_delivery_matrix",
       "validate_platform_publish_package",

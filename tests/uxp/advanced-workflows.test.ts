@@ -6,6 +6,19 @@ const Commands = require("../../uxp-plugin/commands.cjs");
 const Events = require("../../uxp-plugin/events.cjs");
 const Protocol = require("../../uxp-plugin/protocol.cjs");
 
+// Each call separates independent fixture cases after their refusal/readback
+// assertions. Reconciliation consumes the exact inspected IDs; it never permits
+// replay of the refused operation or changes the production recovery guard.
+async function acknowledgeReviewedRefusal(value: { registry: { dispatch: (...args: any[]) => Promise<any> } }, expectedIds?: string[]) {
+  const recovery = await value.registry.dispatch("operations.recovery.inspect", {});
+  expect(recovery.recoveryRequired).toBe(true);
+  expect(recovery.operations.length).toBeGreaterThan(0);
+  expect(recovery.operations.every((operation: { outcome: string }) => operation.outcome === "unknown")).toBe(true);
+  const operationIds = recovery.operations.map((operation: { id: string }) => operation.id);
+  if (expectedIds) expect(operationIds).toEqual(expectedIds);
+  await expect(value.registry.dispatch("operations.recovery.acknowledge", { expectedRecoveryRevision: recovery.recoveryRevision, expectedIdentityRevision: recovery.identityRevision, operationIds, reviewed: true })).resolves.toMatchObject({ acknowledged: true, replayAuthorized: false, reconciledOperationIds: operationIds, recoveryRequired: false });
+}
+
 type MutableItem = {
   id: string;
   name: string;
@@ -522,9 +535,11 @@ describe("advanced stable Premiere UXP workflows", () => {
     const snapshot = { markerGuid: "marker-1", expectedName: "Beat", expectedStartSeconds: 0, expectedDurationSeconds: 0 };
     await expect(value.registry.dispatch("markers.removeMany", { markerSnapshots: [snapshot] }))
       .rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("markers.removeMany", {
       confirmDestructive: true, markerSnapshots: [snapshot, snapshot],
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("markers.removeMany", {
       confirmDestructive: true,
       markerSnapshots: [{ ...snapshot, expectedName: "Changed elsewhere" }],
@@ -539,10 +554,11 @@ describe("advanced stable Premiere UXP workflows", () => {
     const snapshot = { markerGuid: "marker-1", expectedName: "Beat", expectedStartSeconds: 1, expectedDurationSeconds: 0 };
     await expect(value.registry.dispatch("markers.removeMany", { markerSnapshots: [snapshot] }))
       .rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("markers.removeMany", {
       confirmDestructive: true, markerSnapshots: Array.from({ length: 129 }, () => snapshot),
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    expect(value.ppro.Project.getActiveProject).not.toHaveBeenCalled();
+    // Registry may read identity for replay binding; no marker mutation is attempted.
     expect(value.ppro.Markers.getMarkers).not.toHaveBeenCalled();
   });
 
@@ -550,12 +566,14 @@ describe("advanced stable Premiere UXP workflows", () => {
     const value = advancedHost();
     await expect(value.registry.dispatch("markers.add", { name: "Unexpected", confirmDestructive: true }))
       .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("markers.update", {
       markerGuid: "marker-1", name: "Unexpected", markerSnapshots: [],
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("markers.remove", { markerGuid: "marker-1", confirmDestructive: true }))
       .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    expect(value.ppro.Project.getActiveProject).not.toHaveBeenCalled();
+    // Registry may read identity for replay binding; no marker mutation is attempted.
     expect(value.ppro.Markers.getMarkers).not.toHaveBeenCalled();
   });
 
@@ -660,7 +678,7 @@ describe("advanced stable Premiere UXP workflows", () => {
       markerSnapshots: [{ markerGuid: "marker-1", expectedName: "Beat", expectedStartSeconds: 1, expectedDurationSeconds: 0 }],
       operationId: "marker-remove-concurrent",
     });
-    await removalContextEntered;
+    // Protected registry queue keeps the second host preflight behind the first.
     await Promise.resolve();
     await Promise.resolve();
     expect(marker.getName).toHaveBeenCalledTimes(1);
@@ -743,7 +761,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(value.project.createSequenceFromMedia).not.toHaveBeenCalled();
   });
 
-  it("does not cache failures that occur before a subclip transaction is attempted", async () => {
+  it("consumes unclassified handler failures even when a mock knows the action construction failed", async () => {
     const value = advancedHost();
     const implementation = value.clip.createSubClipAction.getMockImplementation();
     value.clip.createSubClipAction.mockImplementationOnce(() => { throw new Error("cannot construct action"); });
@@ -755,10 +773,8 @@ describe("advanced stable Premiere UXP workflows", () => {
     };
     await expect(value.registry.dispatch("silence.deriveSequence", args)).rejects.toThrow("cannot construct action");
     value.clip.createSubClipAction.mockImplementation(implementation!);
-    await expect(value.registry.dispatch("silence.deriveSequence", args)).resolves.toMatchObject({
-      created: true, partial: false,
-    });
-    expect(value.project.createSequenceFromMedia).toHaveBeenCalledTimes(1);
+    await expect(value.registry.dispatch("silence.deriveSequence", args)).rejects.toMatchObject({ code: "UXP_OPERATION_CONSUMED" });
+    expect(value.project.createSequenceFromMedia).not.toHaveBeenCalled();
   });
 
   it("rejects a silence stringout before overflowing the destination bin", async () => {
@@ -836,6 +852,7 @@ describe("advanced stable Premiere UXP workflows", () => {
       { beatTimesSeconds: [1], offsetSeconds: -2 },
     ]) {
       await expect(value.registry.dispatch("markers.addBeatGrid", args)).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+      await acknowledgeReviewedRefusal(value);
     }
     expect(value.project.lockedAccess).not.toHaveBeenCalled();
 
@@ -925,6 +942,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("project.import", {
       mode: "files", paths: ["D:/Approved/broll.mov"], targetBinId: "bin-1",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("project.import", {
       mode: "files", paths: ["D:/Approved/broll.mov"], targetBinId: "bin-1",
       confirmNonUndoable: true, operationId: "import-files",
@@ -1021,6 +1039,10 @@ describe("advanced stable Premiere UXP workflows", () => {
       ...target, expectedSnapshot, point: { x: 1100, y: 600 }, confirmSetPoint: true, operationId: "point-stale",
     })).rejects.toMatchObject({ code: "UXP_STALE_POINT_PARAMETER" });
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value, ["point-stale"]);
+    await expect(value.registry.dispatch("parameters.point.set", {
+      ...target, expectedSnapshot, point: { x: 1100, y: 600 }, confirmSetPoint: true, operationId: "point-stale",
+    })).rejects.toMatchObject({ code: "UXP_OPERATION_CONSUMED" });
 
     await expect(value.registry.dispatch("parameters.point.set", {
       ...target, expectedSnapshot, point: { x: 1100, y: 600 }, confirmSetPoint: true,
@@ -1133,6 +1155,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(value.parameter.createKeyframe).toHaveBeenCalledWith(expect.objectContaining(update));
     expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
     await expect(value.registry.dispatch(`parameters.${kind}.set`, { ...input, operationId: "bad-array-input", [kind]: initial })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value, ["bad-array-input"]);
     await expect(value.registry.dispatch(`parameters.${kind}.set`, { ...input, operationId: "bad-array-snapshot", expectedSnapshot: { ...expectedSnapshot, [kind]: initial } })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
     expect(value.project.executeTransaction).toHaveBeenCalledTimes(1);
   });
@@ -1178,10 +1201,12 @@ describe("advanced stable Premiere UXP workflows", () => {
       confirmSetColor: true, operationId: "color-stale",
     })).rejects.toMatchObject({ code: "UXP_STALE_COLOR_PARAMETER" });
     expect(value.project.executeTransaction).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value, ["color-stale"]);
 
     await expect(value.registry.dispatch("parameters.color.set", {
       ...target, expectedSnapshot, color: { red: 0.9, green: 0.8, blue: 0.7, alpha: 0.6 }, confirmSetColor: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("parameters.color.set", {
       ...target, expectedSnapshot, color: { red: 0.9, green: 0.8, blue: 0.7, alpha: 0.6 }, operationId: "color-unconfirmed",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
@@ -1279,6 +1304,7 @@ describe("advanced stable Premiere UXP workflows", () => {
       expectedDisplayFormats: { audioDisplayFormat: 1, videoDisplayFormat: 26 },
       updates: { audioDisplayFormat: 1 },
     })).rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE_DISPLAY_FORMAT" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("sequence.displayFormat.update", {
       expectedSequenceGuid: "sequence-1",
       expectedDisplayFormats: { audioDisplayFormat: 2, videoDisplayFormat: 26 },
@@ -1721,10 +1747,12 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("parameters.timeVarying.set", {
       ...target, expectedKeyframeTimesSeconds: [1], confirmDisableTimeVarying: true, operationId: "stale-animation",
     })).rejects.toMatchObject({ code: "UXP_STALE_PARAMETER" });
+    await acknowledgeReviewedRefusal(value, ["stale-animation"]);
     await expect(value.registry.dispatch("parameters.timeVarying.set", {
       ...target, expectedKeyframeTimesSeconds: [1, 2], operationId: "unconfirmed-animation",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
     expect(value.parameter.createSetTimeVaryingAction).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value, ["unconfirmed-animation"]);
 
     await expect(value.registry.dispatch("parameters.timeVarying.set", {
       ...target, expectedKeyframeTimesSeconds: [1, 2], confirmDisableTimeVarying: true, operationId: "confirmed-animation",
@@ -1804,6 +1832,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("sequenceSettings.update", {
       updates: { videoFrameRate: 241 },
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await acknowledgeReviewedRefusal(value);
 
     delete (value.project as unknown as Record<string, unknown>).importAEComps;
     await expect(value.registry.capabilities()).resolves.toMatchObject({
@@ -1839,10 +1868,12 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("sequences.createEmpty", { name: "Empty Assembly" }))
       .rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
     expect(value.project.createSequence).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("sequences.createEmpty", {
       name: "Empty Assembly", confirmNonUndoable: true,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
     expect(value.project.createSequence).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value);
 
     await expect(value.registry.dispatch("sequences.createEmpty", {
       name: "Empty Assembly", confirmNonUndoable: true, operationId: "empty-sequence-1",
@@ -1977,6 +2008,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("sequences.close", { sequenceId: "sequence-1024" }))
       .rejects.toMatchObject({ code: "UXP_PROJECT_TOO_LARGE" });
     expect(value.project.closeSequence).not.toHaveBeenCalled();
+    await acknowledgeReviewedRefusal(value);
 
     await expect(value.registry.dispatch("sequences.delete", { confirmNonUndoable: true }))
       .rejects.toMatchObject({ code: "UXP_PROJECT_TOO_LARGE" });
@@ -2082,6 +2114,29 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(emptySequenceValue.sequences).toHaveLength(1024);
   });
 
+  it("binds encode receipts to native sequence mark ticks and exact reviewed destinations", async () => {
+    const value = advancedHost();
+    Object.assign(value.sequence, {
+      getInPoint: vi.fn(async () => ({ ticks: "254016000000", seconds: 1 })),
+      getOutPoint: vi.fn(async () => ({ ticks: "508032000000", seconds: 2 })),
+      getEndTime: vi.fn(async () => ({ ticks: "2540160000000", seconds: 10 })),
+    });
+    const common = { sequenceId: "sequence-1", exportType: "queueToAme", outputFile: "D:/Approved/lineage.mp4", presetFile: "D:/Approved/h264.epr", confirmExternalWrite: true };
+    const receipt = await value.registry.dispatch("encoder.sequence", { ...common, exportFull: false, operationId: "lineage-marks" });
+    expect(receipt.encodeJob).toMatchObject({
+      nativeJobId: null, correlationVerified: false,
+      lineage: { projectId: "project-1", sequenceId: "sequence-1", outputFile: common.outputFile, presetFile: common.presetFile, range: { mode: "sequence_marks", inTicks: "254016000000", outTicks: "508032000000", endPolicy: "native_range_unverified" } },
+    });
+    const full = await value.registry.dispatch("encoder.sequence", { ...common, outputFile: "D:/Approved/full.mp4", operationId: "lineage-full" });
+    expect(full.encodeJob.lineage.range).toMatchObject({ mode: "full_sequence", inTicks: "0", outTicks: "2540160000000" });
+    (value.sequence as any).getInPoint.mockRejectedValueOnce(new Error("marks unavailable"));
+    const unknown = await value.registry.dispatch("encoder.sequence", { ...common, outputFile: "D:/Approved/unknown.mp4", exportFull: false, operationId: "lineage-unknown" });
+    expect(unknown.encodeJob.lineage.range).toMatchObject({ inTicks: null, outTicks: null, endPolicy: "native_range_unverified" });
+    value.manager.exportSequence.mockResolvedValueOnce(false);
+    await expect(value.registry.dispatch("encoder.sequence", { ...common, outputFile: "D:/Approved/rejected.mp4", operationId: "lineage-rejected" })).rejects.toMatchObject({ code: "UXP_HOST_REJECTED" });
+    expect(value.events.listEncodeJobs({ jobId: "lineage-rejected" }).jobs[0]).toMatchObject({ state: "failed", lineage: { outputFile: "D:/Approved/rejected.mp4" } });
+  });
+
   it("clones sequences with identity readback and gates AME writes on explicit confirmation", async () => {
     const value = advancedHost();
     await expect(value.registry.dispatch("sequences.clone", {
@@ -2094,6 +2149,7 @@ describe("advanced stable Premiere UXP workflows", () => {
       sequenceId: "sequence-1", exportType: "queueToAme",
       outputFile: "D:/Approved/output.mp4", presetFile: "D:/Approved/h264.epr",
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await acknowledgeReviewedRefusal(value);
     await expect(value.registry.dispatch("encoder.sequence", {
       sequenceId: "sequence-1", exportType: "queueToAme",
       outputFile: "D:/Approved/output.mp4", presetFile: "D:/Approved/h264.epr",
