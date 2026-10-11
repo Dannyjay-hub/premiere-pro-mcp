@@ -185,12 +185,13 @@ describe("project-item source range units", () => {
     inPoint.seconds = 0.25;
     const outPoint = new MockTime();
     outPoint.seconds = 8;
+    const floorTo24 = (seconds: number) => Math.floor(seconds * 24 + 1e-9) / 24;
     const item = {
       name: "Media",
       setInPoint: vi.fn((seconds: number) => {
-        inPoint.seconds = item.setInPoint.mock.calls.length === 1 ? 9.99 : seconds;
+        inPoint.seconds = item.setInPoint.mock.calls.length === 1 ? 9.99 : floorTo24(seconds);
       }),
-      setOutPoint: vi.fn((seconds: number) => { outPoint.seconds = seconds; }),
+      setOutPoint: vi.fn((seconds: number) => { outPoint.seconds = floorTo24(seconds); }),
       getInPoint: () => inPoint,
       getOutPoint: () => outPoint,
     };
@@ -199,8 +200,9 @@ describe("project-item source range units", () => {
       app: { sourceMonitor: { getProjectItem: () => item } },
     }));
     expect(item.setInPoint).toHaveBeenNthCalledWith(1, 1.5, 4);
-    expect(item.setInPoint).toHaveBeenNthCalledWith(2, 0.25, 4);
-    expect(item.setOutPoint).toHaveBeenCalledWith(8, 4);
+    expect(item.setInPoint.mock.calls[1][0]).toBeCloseTo(0.25 + 1 / 96, 6);
+    expect(item.setInPoint.mock.calls[1][1]).toBe(4);
+    expect(item.setOutPoint.mock.calls.some((call) => Math.abs(Number(call[0]) - 8 - 1 / 96) < 1e-6 && call[1] === 4)).toBe(true);
     expect(item.setOutPoint).not.toHaveBeenCalledWith(5.25, 4);
     expect(result).toMatchObject({
       success: false,
@@ -219,12 +221,13 @@ describe("project-item source range units", () => {
     inPoint.seconds = 0.25;
     const outPoint = new MockTime();
     outPoint.seconds = 8;
+    const floorTo24 = (seconds: number) => Math.floor(seconds * 24 + 1e-9) / 24;
     const item = {
       name: "Media",
-      setInPoint: vi.fn((seconds: number) => { inPoint.seconds = seconds; }),
+      setInPoint: vi.fn((seconds: number) => { inPoint.seconds = floorTo24(seconds); }),
       setOutPoint: vi.fn((seconds: number) => {
         if (seconds === 5.25) throw new Error("host rejected out");
-        outPoint.seconds = seconds;
+        outPoint.seconds = floorTo24(seconds);
       }),
       getInPoint: () => inPoint,
       getOutPoint: () => outPoint,
@@ -234,9 +237,11 @@ describe("project-item source range units", () => {
       app: { sourceMonitor: { getProjectItem: () => item } },
     }));
     expect(item.setInPoint).toHaveBeenNthCalledWith(1, 1.5, 4);
-    expect(item.setInPoint).toHaveBeenNthCalledWith(2, 0.25, 4);
+    expect(item.setInPoint.mock.calls[1][0]).toBeCloseTo(0.25 + 1 / 96, 6);
+    expect(item.setInPoint.mock.calls[1][1]).toBe(4);
     expect(item.setOutPoint).toHaveBeenNthCalledWith(1, 5.25, 4);
-    expect(item.setOutPoint).toHaveBeenNthCalledWith(2, 8, 4);
+    expect(item.setOutPoint.mock.calls[1][0]).toBeCloseTo(8 + 1 / 96, 6);
+    expect(item.setOutPoint.mock.calls[1][1]).toBe(4);
     expect(result).toMatchObject({
       success: false,
       error: expect.stringContaining("Original marks were restored"),
