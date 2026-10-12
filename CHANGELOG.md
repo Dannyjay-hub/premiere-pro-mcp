@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-10-11
+
+### Added
+
+- `get_caption_style_guidance` accepts an optional, bounded `custom_style` (font family/weight, font size 8-400 px, `#RRGGBB` fill, up to three strokes with width and outer/inner/center placement, drop shadow, one of nine zones, X/Y offsets, Track Style name) and returns that spec with numbered Premiere UI steps carrying the exact values. Each extra stroke is added with + next to Stroke, and the look is saved via Track Style > + Create style. Preset steps use the same workflow. Results add `track_style` (whole-track scope, reuse from the Track Style dropdown in other sequences, project item in the Project panel), `limitations`, `warnings` (for example, layered outer strokes that do not grow wider) and `applied: false`. It is still guidance only: Premiere exposes no caption style API, so nothing is applied. Verify the look with `export_frame` or `export_sequence_review_frames`. Calls that pass only `preset` keep their `style` fields.
+- The platform capability report lists `captionTrackStyle` under the CEP `unsupported` map, so clients see that caption track styling cannot be automated and are pointed to `get_caption_style_guidance`.
+
+### Fixed
+
+- `__setItemMarks` now writes the same quarter-grid-biased seconds when applying a temporary overwrite range. Premiere 26.5.2 can floor exact tick-boundary seconds one media frame early, so `unnest_sequence` (16-tick default tolerance) refused a valid nest, or `replace_clip` placed a clip one frame short after the original was already removed. `replace_clip` also pulls a placed end that overshoots the original span by less than one media frame back onto that span.
+
+- `__itemMarksForRestore` now applies that same write bias when it returns DOM marks (no private metadata, or DOM already matching the private range). Those paths previously handed exact tick-boundary seconds to restore, so a normal clip could shrink one media frame after replace/unnest on 26.5.2.
+
 ## [1.23.0] - 2026-10-11
 
 ### Added
@@ -16,11 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bounded OTIO/XML inspection and loss reports, ALE/CSV adapters and audio-post turnover plans. Unsupported native round trips and opaque serializers remain explicit rather than being reported as completed exports.
 - Verified delivery, checksum-pinned review artifacts, local job inspection/cancellation, rendered scopes and actual multi-frame RGB/ROI/PCM evidence tools, plus opt-in analysis caching, performance diagnostics and licensed-host fixture/report helpers.
 
-### Added
-
-- `get_caption_style_guidance` accepts an optional, bounded `custom_style` (font family/weight, font size 8-400 px, `#RRGGBB` fill, up to three strokes with width and outer/inner/center placement, drop shadow, one of nine zones, X/Y offsets, Track Style name) and returns that spec with numbered Premiere UI steps carrying the exact values. Each extra stroke is added with + next to Stroke, and the look is saved via Track Style > + Create style. Preset steps use the same workflow. Results add `track_style` (whole-track scope, reuse from the Track Style dropdown in other sequences, project item in the Project panel), `limitations`, `warnings` (for example, layered outer strokes that do not grow wider) and `applied: false`. It is still guidance only: Premiere exposes no caption style API, so nothing is applied. Verify the look with `export_frame` or `export_sequence_review_frames`. Calls that pass only `preset` keep their `style` fields.
-- The platform capability report lists `captionTrackStyle` under the CEP `unsupported` map, so clients see that caption track styling cannot be automated and are pointed to `get_caption_style_guidance`.
-
 ### Fixed
 
 - Folder imports now verify Premiere project-item readback instead of treating an accepted import call as proof that all requested media was imported. Counts and partial outcomes describe the observed project state.
@@ -30,9 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `unnest_sequence` now refuses, before removing the nested clip, any inner item that also carries the other media type. Premiere 26.5.2's `Track.overwriteClip` places that media on the matching track and overwrites the clips there. Same guard as `replace_clip`. Unnest a nest of video-only or audio-only items, or use Premiere's Unnest command.
 - Shared project-item mark restore after `replace_clip`, `unnest_sequence`, and other `Track.overwriteClip` helpers now writes the quarter-frame-biased seconds from `__itemMarksForRestore`. Writing the exact tick boundary as seconds can floor one media frame early on Premiere 26.5.2 (a soft-subclip Out of `00:00:29:22` stored as `00:00:29:21`), shrinking the source item. `duplicate_clip` and `set_item_in_out` already used those seconds.
-- `__setItemMarks` now writes the same quarter-grid-biased seconds when applying a temporary overwrite range. Premiere 26.5.2 can floor exact tick-boundary seconds one media frame early, so `unnest_sequence` (16-tick default tolerance) refused a valid nest, or `replace_clip` placed a clip one frame short after the original was already removed. `replace_clip` also pulls a placed end that overshoots the original span by less than one media frame back onto that span.
 
-- Shared project-item mark restore after `replace_clip`, `unnest_sequence`, and other `Track.overwriteClip` helpers now writes the quarter-frame-biased seconds from `__itemMarksForRestore`. Writing the exact tick boundary as seconds can floor one media frame early on Premiere 26.5.2 (a soft-subclip Out of `00:00:29:22` stored as `00:00:29:21`), shrinking the source item. `duplicate_clip` and `set_item_in_out` already used those seconds. `__itemMarksForRestore` now applies that same write bias when it returns DOM marks (no private metadata, or DOM already matching the private range). Those paths previously handed exact tick-boundary seconds to restore, so a normal clip could shrink one media frame after replace/unnest on 26.5.2.
 - `export_sequence` without `preset_path` no longer exports at proxy resolution when Media Encoder is not installed. Preset discovery only searched Premiere's `Settings/IngestPresets`, so the default became `IngestPresets/Proxy/00_1024x540 H.264.epr` and a 1080x1920 sequence was exported at 1024x540 while reporting `verified: true` (Premiere 24.0, macOS). Preset discovery now also searches Premiere's own `MediaIO/systempresets` when no Media Encoder presets exist, and the default never comes from `IngestPresets`; if no other H.264 preset is found, the tool asks for `preset_path`.
 
 ### Compatibility and evidence
