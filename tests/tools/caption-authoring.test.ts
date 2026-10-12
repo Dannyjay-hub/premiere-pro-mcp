@@ -63,33 +63,142 @@ describe("caption authoring tool schemas", () => {
 });
 
 describe("get_caption_style_guidance tool", () => {
-  it("returns style descriptors and Premiere UI steps for a preset", async () => {
-    const result = await tools.get_caption_style_guidance.handler({ preset: "karaoke" });
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-    expect(result.data.style.preset).toBe("karaoke");
-    expect(result.data.style.word_highlight).toBe(true);
-    expect(result.data.style.uppercase_recommended).toBe(true);
-    expect(result.data.workflow).toContain("Step 1: Generate caption SRT/VTT with build_caption_artifact (timing/text only)");
-    expect(result.data.premiere_ui_steps).toContain("1. Select the caption track in the timeline");
-    expect(result.data.mutation_refused).toContain("This tool provides guidance only");
-    expect(result.data.mutation_refused).toContain("does not expose a CaptionTrack style mutation API");
+  const guidance = async (args: Record<string, unknown>) => {
+    const result = await tools.get_caption_style_guidance.handler(args);
+    if (!result.success) throw new Error(`expected success, got ${result.error}`);
+    return result.data;
+  };
+  const failure = async (args: Record<string, unknown>) => {
+    const result = await tools.get_caption_style_guidance.handler(args);
+    if (result.success) throw new Error("expected failure");
+    return result.error;
+  };
+  const LAYERED = {
+    font_family: "Source Han Sans TW",
+    font_weight: "Heavy",
+    font_size_px: 80,
+    fill_color: "#ff9f1c",
+    strokes: [
+      { color: "#FFFFFF", width_px: 7, placement: "outer" },
+      { color: "#1A1A1A", width_px: 13, placement: "outer" },
+    ],
+    shadow: { color: "#000000", opacity: 100, angle: 135, distance: 5, size: 2, blur: 0 },
+    zone: "bottom_center",
+    offset_y_px: -150,
+    track_style_name: "Orange Heavy Captions",
+  };
+
+  it("returns style descriptors and Track Style UI steps for a preset", async () => {
+    const data = await guidance({ preset: "karaoke" });
+    expect(data.style.preset).toBe("karaoke");
+    expect(data.style.word_highlight).toBe(true);
+    expect(data.style.uppercase_recommended).toBe(true);
+    expect(data.workflow).toContain("Step 1: Generate caption SRT/VTT with build_caption_artifact (timing/text only)");
+    expect(data.premiere_ui_steps[0]).toMatch(/^1\. Select one caption on the caption track/);
+    expect(data.premiere_ui_steps.join("\n")).toContain("Properties panel");
+    expect(data.premiere_ui_steps.join("\n")).toContain('choose "+ Create style", and name it "karaoke captions"');
+    expect(data.premiere_ui_steps.join("\n")).not.toContain("Essential Graphics panel (Window > Essential Graphics)");
+    expect(data.track_style.name).toBe("karaoke captions");
+    expect(data.mutation_refused).toContain("This tool provides guidance only");
+    expect(data.mutation_refused).toContain("does not expose a CaptionTrack style mutation API");
+    expect(data.applied).toBe(false);
   });
 
-  it("defaults to clean preset", async () => {
-    const result = await tools.get_caption_style_guidance.handler({});
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-    expect(result.data.style.preset).toBe("clean");
-    expect(result.data.style.background).toBe(true);
-    expect(result.data.style.stroke).toBe(false);
+  it("defaults to the clean preset with backward-compatible style fields", async () => {
+    const data = await guidance({});
+    expect(data.style).toMatchObject({ preset: "clean", background: true, stroke: false, alignment: "center", font_weight: "600" });
+    expect(data.style).not.toHaveProperty("custom_style");
+    expect(Object.keys(data.safe_zones)).toContain("tiktok");
+    expect(data.warnings).toEqual([]);
   });
 
   it("rejects invalid presets", async () => {
-    const result = await tools.get_caption_style_guidance.handler({ preset: "invalid" as any });
-    expect(result.success).toBe(false);
-    if (result.success) return;
-    expect(result.error).toContain("preset must be one of:");
+    expect(await failure({ preset: "invalid" })).toContain("preset must be one of:");
+  });
+
+  it("turns a custom layered style into concrete Track Style steps", async () => {
+    const data = await guidance({ custom_style: LAYERED });
+    expect(data.style).toMatchObject({ preset: null, source: "custom_style" });
+    expect(data.style.custom_style).toMatchObject({ fill_color: "#FF9F1C", zone: "bottom_center", offset_y_px: -150 });
+    expect(data.style.custom_style.strokes).toHaveLength(2);
+    const steps = data.premiere_ui_steps.join("\n");
+    expect(steps).toContain('font family "Source Han Sans TW", font weight/style "Heavy", font size 80');
+    expect(steps).toContain("Fill on and set the colour to #FF9F1C");
+    expect(steps).toContain("set the first stroke to colour #FFFFFF, width 7, outer stroke");
+    expect(steps).toContain("press + next to Stroke to add stroke 2, then set it to colour #1A1A1A, width 13, outer stroke");
+    expect(steps).toContain("colour #000000, Opacity 100%, Angle 135°, Distance 5, Size 2, Blur 0");
+    expect(steps).toContain("bottom-center cell");
+    expect(steps).toContain("X 0 and Y -150");
+    expect(steps).toContain('Track Style dropdown in the Properties panel, choose "+ Create style", and name it "Orange Heavy Captions"');
+    expect(steps).toContain('caption track in another sequence and pick "Orange Heavy Captions" from the Track Style dropdown');
+    expect(steps).toContain("project item in the Project panel");
+    expect(steps).toContain("export_sequence_review_frames");
+    expect(data.premiere_ui_steps.every((step: string, index: number) => step.startsWith(`${index + 1}. `))).toBe(true);
+    expect(data.track_style).toMatchObject({ name: "Orange Heavy Captions" });
+    expect(data.track_style.scope).toContain("every caption on the caption track");
+    expect(data.limitations.join(" ")).toMatch(/no documented ExtendScript, QE DOM, or UXP API/);
+    expect(data.limitations.join(" ")).toContain("Premiere Pro 2024");
+    expect(data.routes).toEqual(expect.arrayContaining(["export_frame", "export_sequence_review_frames", "create_caption_track"]));
+    expect(data.warnings).toEqual([]);
+  });
+
+  it("combines a preset with a custom style and fills unset fields from the preset", async () => {
+    const data = await guidance({ preset: "bold_pop", custom_style: { fill_color: "#FFFFFF", shadow: {} } });
+    expect(data.style).toMatchObject({ preset: "bold_pop", source: "preset_with_custom_style", stroke: true });
+    expect(data.style.custom_style.shadow).toEqual({ color: "#000000", opacity: 75, angle: 135, distance: 7, size: 0, blur: 40 });
+    const steps = data.premiere_ui_steps.join("\n");
+    expect(steps).toContain('font family "Montserrat ExtraBold, Impact, Arial Black"');
+    expect(steps).toContain("about 6% of the frame height");
+    expect(steps).toContain("turn Stroke on (preset bold_pop)");
+    expect(steps).toContain('name it "Caption Track Style"');
+  });
+
+  it("warns when layered outer strokes do not grow wider", async () => {
+    const data = await guidance({ custom_style: { strokes: [{ color: "#FFFFFF", width_px: 10 }, { color: "#000000", width_px: 4 }] } });
+    expect(data.style.custom_style.strokes[1].placement).toBe("outer");
+    expect(data.warnings[0]).toContain("outer stroke 2 (4 px) is not wider than outer stroke 1 (10 px)");
+  });
+
+  it("describes turning Stroke off for an empty stroke list", async () => {
+    const data = await guidance({ custom_style: { strokes: [] } });
+    expect(data.premiere_ui_steps.join("\n")).toContain("turn Stroke off");
+  });
+
+  it.each([
+    [{ fill_color: "FF9F1C" }, "custom_style.fill_color must be a hex colour"],
+    [{ fill_color: "#FF9F1" }, "custom_style.fill_color must be a hex colour"],
+    [{ strokes: [{ color: "#GGGGGG", width_px: 2 }] }, "custom_style.strokes[0].color must be a hex colour"],
+    [{ strokes: Array.from({ length: 4 }, () => ({ color: "#FFFFFF", width_px: 2 })) }, "at most 3 strokes"],
+    [{ strokes: [{ color: "#FFFFFF", width_px: 101 }] }, "custom_style.strokes[0].width_px must be between 0 and 100"],
+    [{ strokes: [{ color: "#FFFFFF", width_px: 2, placement: "outside" }] }, "placement must be one of: outer, inner, center"],
+    [{ strokes: [{ color: "#FFFFFF", width_px: 2, glow: true }] }, "unknown field: glow"],
+    [{ font_size_px: 401 }, "font_size_px must be between 8 and 400"],
+    [{ font_size_px: 7 }, "font_size_px must be between 8 and 400"],
+    [{ font_size_px: 80.5 }, "font_size_px must be an integer"],
+    [{ font_family: "x".repeat(129) }, "font_family must be a non-empty string of at most 128 characters"],
+    [{ font_weight: "" }, "font_weight must be a non-empty string"],
+    [{ shadow: { opacity: 120 } }, "custom_style.shadow.opacity must be between 0 and 100"],
+    [{ shadow: { angle: -1 } }, "custom_style.shadow.angle must be between 0 and 360"],
+    [{ zone: "center" }, "custom_style.zone must be one of"],
+    [{ offset_y_px: -2001 }, "offset_y_px must be between -2000 and 2000"],
+    [{ track_style_name: "n".repeat(81) }, "track_style_name must be a non-empty string of at most 80 characters"],
+    [{ outline: true }, "custom_style has an unknown field: outline"],
+    [{}, "custom_style must set at least one field"],
+    ["bold", "custom_style must be an object"],
+  ])("rejects invalid custom_style %#", async (custom_style, message) => {
+    expect(await failure({ custom_style })).toContain(message);
+  });
+
+  it("bounds the custom_style schema", () => {
+    const custom = tools.get_caption_style_guidance.parameters.properties.custom_style;
+    expect(custom.additionalProperties).toBe(false);
+    expect(custom.properties.strokes.maxItems).toBe(3);
+    expect(custom.properties.strokes.items.additionalProperties).toBe(false);
+    expect(custom.properties.font_size_px).toMatchObject({ type: "integer", minimum: 8, maximum: 400 });
+    expect(custom.properties.zone.enum).toHaveLength(9);
+    expect(custom.properties.fill_color.pattern).toBe("^#[0-9A-Fa-f]{6}$");
+    expect(tools.get_caption_style_guidance.description).toMatch(/custom_style/);
+    expect(tools.get_caption_style_guidance.description).toMatch(/Track Style/);
   });
 });
 

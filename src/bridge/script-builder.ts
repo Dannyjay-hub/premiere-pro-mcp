@@ -119,6 +119,33 @@ function __isTrackLocked(track) {
   return false;
 }
 
+// Seconds used to put marks back. Exact tick-boundary seconds can floor one
+// media frame early on 26.5.2; write a quarter grid past the boundary.
+function __restoreSecondsFromTicks(ticks, gridTicks) {
+  var grid = parseFloat(gridTicks);
+  if (!isFinite(grid) || !(grid > 0)) grid = TICKS_PER_SECOND / 24;
+  return (parseFloat(ticks) + grid / 4) / TICKS_PER_SECOND;
+}
+
+function __restoreGridFromItem(item, mediaType) {
+  if (mediaType === 2) return TICKS_PER_SECOND / 48000;
+  try {
+    var fps = parseFloat(item.getFootageInterpretation().frameRate);
+    if (fps > 0) return TICKS_PER_SECOND / fps;
+  } catch (eGrid) {}
+  return TICKS_PER_SECOND / 24;
+}
+
+function __biasedDomMarks(marks, gridTicks) {
+  if (!marks) return marks;
+  return {
+    inTicks: marks.inTicks,
+    outTicks: marks.outTicks,
+    inSeconds: __restoreSecondsFromTicks(marks.inTicks, gridTicks),
+    outSeconds: __restoreSecondsFromTicks(marks.outTicks, gridTicks)
+  };
+}
+
 // Read the private source range before temporarily changing project-item marks.
 function __itemMarksForRestore(item, mediaType) {
   function domMarks() {
@@ -132,7 +159,7 @@ function __itemMarksForRestore(item, mediaType) {
   }
   var dom = domMarks(), xml = "";
   try { if (typeof item.getProjectMetadata === "function") xml = String(item.getProjectMetadata() || ""); } catch (metadataMarkError) { return null; }
-  if (!xml) return dom;
+  if (!xml) return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   if (xml.length > 1000000) return null;
   function field(name, text) {
     var escaped = name.replace(/\\./g, "\\\\.");
@@ -193,7 +220,7 @@ function __itemMarksForRestore(item, mediaType) {
   }
   if (inBlock === null && outBlock === null) {
     if (xml.indexOf("Column.Intrinsic." + kind + "InPoint") >= 0 || xml.indexOf("Column.Intrinsic." + kind + "OutPoint") >= 0) return null;
-    return dom;
+    return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
   // The private VideoOutPoint names the last frame (inclusive): a subclip made
@@ -201,7 +228,12 @@ function __itemMarksForRestore(item, mediaType) {
   if (right && kind !== "Audio") right.ticks += right.frameTicks;
   if (!left || !right || !isFinite(left.ticks) || !isFinite(right.ticks) || left.ticks < 0 || right.ticks > 9007199254740991 || right.ticks <= left.ticks || Math.abs(left.frameTicks - right.frameTicks) > 1) return null;
   var tolerance = Math.max(left.frameTicks, right.frameTicks);
-  if (dom && Math.abs(Number(dom.inTicks) - left.ticks) <= tolerance && Math.abs(Number(dom.outTicks) - right.ticks) <= tolerance) return dom;
+  // DOM already matches the private range. Still bias the write seconds: 26.5.2
+  // floors exact tick-boundary seconds one media frame early, which shrinks a
+  // normal clip after replace/unnest the same way it shrinks a soft subclip.
+  if (dom && Math.abs(Number(dom.inTicks) - left.ticks) <= tolerance && Math.abs(Number(dom.outTicks) - right.ticks) <= tolerance) {
+    return __biasedDomMarks(dom, tolerance);
+  }
   // Premiere floors a written mark to the media's frame (or sample) grid, so a
   // value exactly on the boundary can land one frame early (live 26.5.2: a
   // restored Out of 00:00:29:22 read back 00:00:29:21). Write a quarter frame
@@ -216,18 +248,43 @@ function __itemMarksForRestore(item, mediaType) {
 // empty first; overwrite never shifts neighbours but would replace them.
 // Returns { ok, attempted, marksRestored, error }. attempted=true means the
 // overwrite call ran (or threw), so the timeline may have changed.
+// Media/sample grid for a project-item mark write. Video uses footage fps;
+// audio uses 48 kHz when the host does not expose a rate. Fallback 24 fps is
+// smaller than one frame at 23.976–60 and still larger than float ulp.
+function __mediaGridTicks(item, mediaType) {
+  if (mediaType !== 2) {
+    try {
+      var fps = parseFloat(item.getFootageInterpretation().frameRate);
+      if (fps > 0) return TICKS_PER_SECOND / fps;
+    } catch (eInterp) {}
+    return TICKS_PER_SECOND / 24;
+  }
+  return TICKS_PER_SECOND / 48000;
+}
+
+function __biasedMarkSeconds(ticks, gridTicks) {
+  var grid = parseFloat(gridTicks);
+  if (!isFinite(grid) || !(grid > 0)) grid = TICKS_PER_SECOND / 24;
+  return (parseFloat(ticks) + grid / 4) / TICKS_PER_SECOND;
+}
+
 // Set a project item's In/Out marks, ordering the writes so the In never
 // passes the current Out, and report whether both read back within tolerance
-// ticks (default: exact).
+// ticks (default: exact). Write a quarter grid past the tick boundary: the
+// same 26.5.2 floor that shrinks restored soft-subclip marks also shortens
+// the temporary overwrite range (unnest/replace) when exact seconds are used.
 function __setItemMarks(item, wantIn, wantOut, mediaType, tolerance) {
   var tol = tolerance > __TICK_MATCH_TOL ? tolerance : __TICK_MATCH_TOL;
+  var grid = __mediaGridTicks(item, mediaType);
+  var inSeconds = __biasedMarkSeconds(wantIn, grid);
+  var outSeconds = __biasedMarkSeconds(wantOut, grid);
   var currentOut = parseFloat(item.getOutPoint(mediaType).ticks);
   if (parseFloat(wantIn) >= currentOut) {
-    item.setOutPoint(__ticksToSeconds(wantOut), mediaType);
-    item.setInPoint(__ticksToSeconds(wantIn), mediaType);
+    item.setOutPoint(outSeconds, mediaType);
+    item.setInPoint(inSeconds, mediaType);
   } else {
-    item.setInPoint(__ticksToSeconds(wantIn), mediaType);
-    item.setOutPoint(__ticksToSeconds(wantOut), mediaType);
+    item.setInPoint(inSeconds, mediaType);
+    item.setOutPoint(outSeconds, mediaType);
   }
   return Math.abs(parseFloat(item.getInPoint(mediaType).ticks) - parseFloat(wantIn)) <= tol &&
     Math.abs(parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(wantOut)) <= tol;

@@ -368,7 +368,8 @@ describe("duplicate_clip verification", () => {
     expect(host.copy()?.inPoint.ticks).toBe(String(host.originalIn));
     // The written mark carries a quarter media frame so the host's floor stays on the intended media frame.
     expect(host.item.setInPoint.mock.calls[0][0]).toBeCloseTo((host.originalIn + host.mediaFrame / 4) / ticksPerSecond, 9);
-    expect(host.item.setInPoint.mock.calls.at(-1)).toEqual([0, 4]);
+    expect(host.item.setInPoint.mock.calls.at(-1)?.[0]).toBeCloseTo(host.mediaFrame / 4 / ticksPerSecond, 9);
+    expect(host.item.setInPoint.mock.calls.at(-1)?.[1]).toBe(4);
   });
 
   it("keeps same-rate marks unbiased and uncorrected", async () => {
