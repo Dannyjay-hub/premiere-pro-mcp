@@ -60,10 +60,17 @@ describe("soft subclip restore marks", () => {
   });
   it("falls back to readable DOM marks when metadata is absent, keeping near-equal DOM marks", () => {
     const source = item("");
-    expect(run("__itemMarksForRestore(item, 4)", { item: source })).toMatchObject({ inSeconds: 0, outSeconds: 175.3417 });
+    const absent = run("__itemMarksForRestore(item, 4)", { item: source });
+    expect(absent.inTicks).toBe("0");
+    expect(absent.outTicks).toBe(String(Math.round(175.3417 * T)));
+    expect(absent.inSeconds).toBeCloseTo(0.01, 6);
+    expect(absent.outSeconds).toBeCloseTo(175.3517, 6);
     const near = item(); near.setInPoint(20.03); near.setOutPoint(30.03);
-    // The fake floors to the 25 fps grid like the host, so DOM reads 20 / 30 and matches the metadata.
-    expect(run("__itemMarksForRestore(item, 4)", { item: near }).inSeconds).toBe(20);
+    // The fake floors to the 25 fps grid like the host, so DOM ticks stay 20 / 30
+    // and match the metadata. Write seconds still get a quarter-frame bias so
+    // 26.5.2 cannot floor the restore one frame early.
+    expect(run("__itemMarksForRestore(item, 4)", { item: near }).inSeconds).toBeCloseTo(20.01, 6);
+    expect(run("__itemMarksForRestore(item, 4)", { item: near }).inTicks).toBe(String(20 * T));
     const empty = { getInPoint: () => null, getOutPoint: () => null };
     expect(run("__itemMarksForRestore(item, 4)", { item: empty })).toBeNull();
   });
@@ -81,6 +88,20 @@ describe("soft subclip restore marks", () => {
     expect(run(`__overwriteRangeOnTrack(track, item, "0", "${22*T}", "${24*T}", 1)`, { item: source, track: { overwriteClip: overwrite }, Time })).toMatchObject({ ok: true, marksRestored: true });
     expect(source.getInPoint().seconds).toBe(20); expect(source.getOutPoint().seconds).toBeCloseTo(30.04, 6);
     expect(overwrite).toHaveBeenCalledOnce();
+  });
+  it("biases DOM-matched restore seconds so a 26.5.2-style floor cannot shrink a normal clip", () => {
+    // XML 20-30 matches DOM after the fake floors 20.03/30.03. The previous
+    // return used exact 20/30 seconds; 26.5.2 then stored 19.96 / 29.96.
+    const source = item();
+    source.setInPoint(20.03);
+    source.setOutPoint(30.03);
+    source.setInPoint = vi.fn((seconds: number) => { source.getInPoint = () => ({ ticks: String(Math.round(Math.floor(seconds * 25 - 1e-12) * (T / 25))), seconds }); });
+    source.setOutPoint = vi.fn((seconds: number) => { source.getOutPoint = () => ({ ticks: String(Math.round(Math.floor(seconds * 25 - 1e-12) * (T / 25))), seconds }); });
+    expect(run(`__overwriteRangeOnTrack(track, item, "0", "${22*T}", "${24*T}", 1, ${T / 25})`, { item: source, track: { overwriteClip: vi.fn() }, Time })).toMatchObject({ ok: true, marksRestored: true });
+    expect(Number(source.getInPoint().ticks)).toBe(20 * T);
+    expect(Number(source.getOutPoint().ticks)).toBe(30 * T);
+    expect(source.setInPoint).toHaveBeenLastCalledWith(expect.closeTo(20.01, 6), 1);
+    expect(source.setOutPoint).toHaveBeenLastCalledWith(expect.closeTo(30.01, 6), 1);
   });
   it("writes the quarter-frame-biased restore seconds so a 26.5.2-style floor cannot drop a frame", () => {
     // Live 26.5.2: a value exactly on the media-frame boundary can store one

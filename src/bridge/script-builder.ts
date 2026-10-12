@@ -119,6 +119,33 @@ function __isTrackLocked(track) {
   return false;
 }
 
+// Seconds used to put marks back. Exact tick-boundary seconds can floor one
+// media frame early on 26.5.2; write a quarter grid past the boundary.
+function __restoreSecondsFromTicks(ticks, gridTicks) {
+  var grid = parseFloat(gridTicks);
+  if (!isFinite(grid) || !(grid > 0)) grid = TICKS_PER_SECOND / 24;
+  return (parseFloat(ticks) + grid / 4) / TICKS_PER_SECOND;
+}
+
+function __restoreGridFromItem(item, mediaType) {
+  if (mediaType === 2) return TICKS_PER_SECOND / 48000;
+  try {
+    var fps = parseFloat(item.getFootageInterpretation().frameRate);
+    if (fps > 0) return TICKS_PER_SECOND / fps;
+  } catch (eGrid) {}
+  return TICKS_PER_SECOND / 24;
+}
+
+function __biasedDomMarks(marks, gridTicks) {
+  if (!marks) return marks;
+  return {
+    inTicks: marks.inTicks,
+    outTicks: marks.outTicks,
+    inSeconds: __restoreSecondsFromTicks(marks.inTicks, gridTicks),
+    outSeconds: __restoreSecondsFromTicks(marks.outTicks, gridTicks)
+  };
+}
+
 // Read the private source range before temporarily changing project-item marks.
 function __itemMarksForRestore(item, mediaType) {
   function domMarks() {
@@ -132,7 +159,7 @@ function __itemMarksForRestore(item, mediaType) {
   }
   var dom = domMarks(), xml = "";
   try { if (typeof item.getProjectMetadata === "function") xml = String(item.getProjectMetadata() || ""); } catch (metadataMarkError) { return null; }
-  if (!xml) return dom;
+  if (!xml) return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   if (xml.length > 1000000) return null;
   function field(name, text) {
     var escaped = name.replace(/\\./g, "\\\\.");
@@ -193,7 +220,7 @@ function __itemMarksForRestore(item, mediaType) {
   }
   if (inBlock === null && outBlock === null) {
     if (xml.indexOf("Column.Intrinsic." + kind + "InPoint") >= 0 || xml.indexOf("Column.Intrinsic." + kind + "OutPoint") >= 0) return null;
-    return dom;
+    return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
   // The private VideoOutPoint names the last frame (inclusive): a subclip made
@@ -201,7 +228,12 @@ function __itemMarksForRestore(item, mediaType) {
   if (right && kind !== "Audio") right.ticks += right.frameTicks;
   if (!left || !right || !isFinite(left.ticks) || !isFinite(right.ticks) || left.ticks < 0 || right.ticks > 9007199254740991 || right.ticks <= left.ticks || Math.abs(left.frameTicks - right.frameTicks) > 1) return null;
   var tolerance = Math.max(left.frameTicks, right.frameTicks);
-  if (dom && Math.abs(Number(dom.inTicks) - left.ticks) <= tolerance && Math.abs(Number(dom.outTicks) - right.ticks) <= tolerance) return dom;
+  // DOM already matches the private range. Still bias the write seconds: 26.5.2
+  // floors exact tick-boundary seconds one media frame early, which shrinks a
+  // normal clip after replace/unnest the same way it shrinks a soft subclip.
+  if (dom && Math.abs(Number(dom.inTicks) - left.ticks) <= tolerance && Math.abs(Number(dom.outTicks) - right.ticks) <= tolerance) {
+    return __biasedDomMarks(dom, tolerance);
+  }
   // Premiere floors a written mark to the media's frame (or sample) grid, so a
   // value exactly on the boundary can land one frame early (live 26.5.2: a
   // restored Out of 00:00:29:22 read back 00:00:29:21). Write a quarter frame
