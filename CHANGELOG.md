@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bounded OTIO/XML inspection and loss reports, ALE/CSV adapters and audio-post turnover plans. Unsupported native round trips and opaque serializers remain explicit rather than being reported as completed exports.
 - Verified delivery, checksum-pinned review artifacts, local job inspection/cancellation, rendered scopes and actual multi-frame RGB/ROI/PCM evidence tools, plus opt-in analysis caching, performance diagnostics and licensed-host fixture/report helpers.
 
+### Added
+
+- `get_caption_style_guidance` accepts an optional, bounded `custom_style` (font family/weight, font size 8-400 px, `#RRGGBB` fill, up to three strokes with width and outer/inner/center placement, drop shadow, one of nine zones, X/Y offsets, Track Style name) and returns that spec with numbered Premiere UI steps carrying the exact values. Each extra stroke is added with + next to Stroke, and the look is saved via Track Style > + Create style. Preset steps use the same workflow. Results add `track_style` (whole-track scope, reuse from the Track Style dropdown in other sequences, project item in the Project panel), `limitations`, `warnings` (for example, layered outer strokes that do not grow wider) and `applied: false`. It is still guidance only: Premiere exposes no caption style API, so nothing is applied. Verify the look with `export_frame` or `export_sequence_review_frames`. Calls that pass only `preset` keep their `style` fields.
+- The platform capability report lists `captionTrackStyle` under the CEP `unsupported` map, so clients see that caption track styling cannot be automated and are pointed to `get_caption_style_guidance`.
+
 ### Fixed
 
 - Folder imports now verify Premiere project-item readback instead of treating an accepted import call as proof that all requested media was imported. Counts and partial outcomes describe the observed project state.
