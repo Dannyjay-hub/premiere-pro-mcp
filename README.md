@@ -129,13 +129,13 @@ The current source exposes 434 core tools for supported workflow steps spanning 
 
 <a id="latest-release"></a>
 
-### Latest release: 1.23.0
+### Latest release: 1.24.0
 
-The published v1.23.0 npm artifact contains **434 core tools**, 432 in its default profile,
+The published v1.24.0 npm artifact contains **434 core tools**, 432 in its default profile,
 and 528 with a compatible UXP connection. The development catalog above can include
 unreleased work. See the [versioned facts and package provenance](https://premiere-pro-mcp.com/facts/).
 
-GitHub releases use `v<SemVer>` for both title and tag, such as `v1.23.0`.
+GitHub releases use `v<SemVer>` for both title and tag, such as `v1.24.0`.
 See [release naming and version conventions](docs/release-conventions.md).
 
 ### Try a bounded workflow
@@ -154,6 +154,8 @@ if the connection is unavailable.
 
 ### Release highlights
 
+- **1.24.0 mark-write fixes:** temporary overwrite marks and restored project-item marks are written a quarter media frame past the tick boundary, so Premiere 26.5.2 no longer floors them one frame early in `unnest_sequence`, `replace_clip` and `duplicate_clip`.
+- **1.24.0 caption style guidance:** `get_caption_style_guidance` accepts a bounded `custom_style` and returns Properties panel and Track Style steps; it is guidance only and applies nothing.
 - **1.23.0 bounded workflows:** 41 added core tools and five guided routes cover exact timeline planning, editorial review, interchange/turnover and guarded delivery. The [52-item implementation ledger](docs/filmcraft-improvements.md) records each supported subset and host limit.
 - **1.23.0 execution and recovery:** cooperating processes serialize protected edits, retain recovery for uncertain outcomes and report cancellation/partial work explicitly. UXP writes require the matching updated panel; older unversioned panels remain read-only.
 - **1.23.0 artifact evidence:** review and delivery checks pin source checksums, inspect actual decoded frames/audio and preserve unknown native-job completion. Local decoder checks do not establish Premiere playback or native round-trip compatibility.
@@ -199,7 +201,7 @@ if the connection is unavailable.
   local Premiere processes. See the generated [supported action catalog](docs/supported-actions.md)
   for individual capability and verification contracts.
 
-See the [v1.23.0 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.23.0)
+See the [v1.24.0 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.24.0)
 for complete details. Live installation in Premiere Pro still requires host verification.
 
 ### Current MCP protocol support
@@ -257,7 +259,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > ### Install the published package (verify the name)
 >
 > ```bash
-> npm i -g premiere-pro-mcp@1.23.0
+> npm i -g premiere-pro-mcp@1.24.0
 > ```
 >
 > This repository publishes only **`premiere-pro-mcp`**. A differently named package (`adobe-premiere-pro-mcp`) may also declare a `premiere-pro-mcp` executable. Before configuring a client, confirm:
@@ -265,7 +267,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > | Check | Expected |
 > | --- | --- |
 > | Package name | `premiere-pro-mcp` (not `adobe-premiere-pro-mcp`) |
-> | Version | `1.23.0` |
+> | Version | `1.24.0` |
 > | Homepage / repo | https://premiere-pro-mcp.com/ · https://github.com/leancoderkavy/premiere-pro-mcp |
 >
 > ```bash
@@ -278,9 +280,9 @@ their bins, media rules, and organization rules before a facility uses one.
 
 ### Easiest supported path: Claude Desktop
 
-1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.23.0/premiere-pro-mcp-1.23.0.mcpb).
+1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.24.0/premiere-pro-mcp-1.24.0.mcpb).
 2. In Claude Desktop, open **Settings > Extensions > Advanced settings > Install Extension**, select the downloaded bundle, and restart Claude Desktop.
-3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.23.0/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
+3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.24.0/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
 4. Restart Premiere, open a project, then open **Window > Extensions > MCP for Adobe Premiere Pro**.
 5. In Claude, enter: `Safely check my Premiere connection with verify_premiere_connection. Make no changes.`
 
@@ -584,11 +586,11 @@ From a clone of this repository:
 ```bash
 codex plugin marketplace add .
 codex plugin add premiere-pro@premiere-pro-mcp
-npx -y premiere-pro-mcp@1.23.0 --install-cep
+npx -y premiere-pro-mcp@1.24.0 --install-cep
 ```
 
 Restart Premiere Pro and start a new Codex session after installation. The plugin
-launches `premiere-pro-mcp@1.23.0` through `npx`; the separate CEP installation is
+launches `premiere-pro-mcp@1.24.0` through `npx`; the separate CEP installation is
 required because the MCP server communicates with the running Premiere host through
 the local bridge.
 
@@ -626,7 +628,7 @@ For Claude Code, add this repository as a marketplace and install the plugin:
 Then install the Premiere bridge and start a new Claude Code session:
 
 ```bash
-npx -y premiere-pro-mcp@1.23.0 --install-cep
+npx -y premiere-pro-mcp@1.24.0 --install-cep
 ```
 
 The Claude Code package lives in
