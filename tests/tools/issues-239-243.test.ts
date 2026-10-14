@@ -83,6 +83,54 @@ describe("project-item source range units", () => {
     expect(result.data.appliedInSeconds).toBeCloseTo(floorToFrame(inSeconds), 9);
   });
 
+  it("writes an exact media frame boundary a quarter frame late so 26.5.2 keeps that frame", async () => {
+    // Live 26.5.2: 0.5005 s (frame 12 on 23.976 media) read back as frame 11 and the tool refused it.
+    const fps = 24000 / 1001;
+    const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
+    const script = await scriptFor(tool, { item_id: "media", in_seconds: 0.5005, out_seconds: 2 });
+    const hostFloor = (seconds: number) => Math.floor(seconds * fps * (1 - 1e-12)) / fps;
+    const marks = { in: 0, out: 100 };
+    const item = {
+      nodeId: "media", name: "Media",
+      getFootageInterpretation: () => ({ frameRate: fps }),
+      setInPoint: vi.fn((seconds: number) => { marks.in = hostFloor(seconds); }),
+      setOutPoint: vi.fn((seconds: number) => { marks.out = hostFloor(seconds); }),
+      getInPoint: () => ({ seconds: marks.in, ticks: String(Math.round(marks.in * 254016000000)) }),
+      getOutPoint: () => ({ seconds: marks.out, ticks: String(Math.round(marks.out * 254016000000)) }),
+    };
+    function Time(this: { seconds: number }) { this.seconds = 0; }
+    const result = JSON.parse(runInNewContext(getHelpersSource() + "\n" + script, {
+      Time,
+      app: { project: { rootItem: { children: { 0: item, numItems: 1 } } } },
+    }));
+    expect(result).toMatchObject({ success: true, data: { verified: true, requestedInSeconds: 0.5005 } });
+    expect(result.data.appliedInSeconds).toBeCloseTo(12 / fps, 9);
+    expect(item.setInPoint.mock.calls[0][0]).toBeCloseTo((12.25) / fps, 9);
+    // 2 s is not a frame boundary on 23.976 media; it is written as requested and floors to frame 47.
+    expect(item.setOutPoint).toHaveBeenCalledWith(2, 4);
+    expect(result.data.appliedOutSeconds).toBeCloseTo(47 / fps, 9);
+  });
+
+  it("does not turn the meaningless frame rate of an audio item into a years-wide tolerance", async () => {
+    const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
+    const script = await scriptFor(tool, { item_id: "tone", in_seconds: 0.5 });
+    const item = {
+      nodeId: "tone", name: "Tone",
+      getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }),
+      setInPoint: vi.fn(),
+      setOutPoint: () => {},
+      getInPoint: () => ({ seconds: 3, ticks: String(3 * 254016000000) }),
+      getOutPoint: () => ({ seconds: 10, ticks: String(10 * 254016000000) }),
+    };
+    function Time(this: { seconds: number }) { this.seconds = 0; }
+    const result = JSON.parse(runInNewContext(getHelpersSource() + "\n" + script, {
+      Time,
+      app: { project: { rootItem: { children: { 0: item, numItems: 1 } } } },
+    }));
+    expect(item.setInPoint).toHaveBeenCalledWith(0.5, 4);
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("did not apply the requested project-item in point") });
+  });
+
   it("still fails when Premiere keeps a mark more than a media frame away", async () => {
     const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
     const script = await scriptFor(tool, { item_id: "media", in_seconds: 0.5 });
@@ -172,6 +220,29 @@ describe("project-item source range units", () => {
     }));
     expect(result).toMatchObject({ success: true, data: { verified: true, requestedInSeconds: 0.5, requestedOutSeconds: 2.5 } });
     expect(result.data.appliedInSeconds).toBeCloseTo(floorToFrame(0.5), 9);
+  });
+
+  it("keeps an exact Source Monitor frame boundary that 26.5.2 would floor one frame early", async () => {
+    const fps = 24000 / 1001;
+    const tool = getSourceMonitorTools(bridgeOptions).set_source_in_out;
+    const script = await scriptFor(tool, { in_seconds: 0.5005 });
+    const hostFloor = (seconds: number) => Math.floor(seconds * fps * (1 - 1e-12)) / fps;
+    const marks = { in: 0, out: 100 };
+    const item = {
+      name: "Media",
+      getFootageInterpretation: () => ({ frameRate: fps }),
+      setInPoint: (seconds: number) => { marks.in = hostFloor(seconds); },
+      setOutPoint: (seconds: number) => { marks.out = hostFloor(seconds); },
+      getInPoint: () => ({ seconds: marks.in, ticks: String(Math.round(marks.in * 254016000000)) }),
+      getOutPoint: () => ({ seconds: marks.out, ticks: String(Math.round(marks.out * 254016000000)) }),
+    };
+    function Time(this: { seconds: number }) { this.seconds = 0; }
+    const result = JSON.parse(runInNewContext(getHelpersSource() + "\n" + script, {
+      Time,
+      app: { sourceMonitor: { getProjectItem: () => item } },
+    }));
+    expect(result).toMatchObject({ success: true, data: { verified: true, requestedInSeconds: 0.5005 } });
+    expect(result.data.appliedInSeconds).toBeCloseTo(12 / fps, 9);
   });
 
   it("restores original marks when Source Monitor setter readback mismatches", async () => {

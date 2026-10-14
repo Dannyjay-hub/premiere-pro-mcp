@@ -29,7 +29,7 @@ export interface CmxEdl {
   unrecognizedEventLines: Array<{ line: number; text: string }>;
 }
 
-const EVENT_PATTERN = /^\s*(\d{1,4})\s+(\S+)\s+(\S+)\s+([CDW])(?:\s+(\d{1,3}))?\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})\s+(\d{2}:\d{2}:\d{2}[:;]\d{2})\s*$/i;
+const EVENT_PATTERN = /^\s*(\d{1,4})\s+(\S+)\s+(\S+)\s+([CDW])(?:\s+(\d{1,3}))?\s+(\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2})\s+(\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2})\s+(\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2})\s+(\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2})\s*$/i;
 
 export function parseCmx3600Edl(contents: string): CmxEdl {
   const events: CmxEvent[] = [];
@@ -59,9 +59,11 @@ export function parseCmx3600Edl(contents: string): CmxEdl {
 function nominalRate(rate: CmxFrameRate): number { return rate === 29.97 ? 30 : rate === 59.94 ? 60 : rate; }
 
 export function timecodeToFrames(timecode: string, frameRate: CmxFrameRate): number {
-  const match = timecode.match(/^(\d{2}):(\d{2}):(\d{2})([:;])(\d{2})$/);
-  if (!match) throw new Error(`Invalid timecode: ${timecode}`);
-  const [, hoursText, minutesText, secondsText, separator, framesText] = match;
+  // Drop-frame ends in a semicolon; Premiere also writes the other separators
+  // as semicolons (00;01;00;02). Semicolons before a colon frame separator are refused.
+  const match = timecode.match(/^(\d{2})([:;])(\d{2})([:;])(\d{2})([:;])(\d{2})$/);
+  if (!match || (match[6] === ":" && (match[2] === ";" || match[4] === ";"))) throw new Error(`Invalid timecode: ${timecode}`);
+  const [, hoursText, , minutesText, , secondsText, separator, framesText] = match;
   const hours = Number(hoursText), minutes = Number(minutesText), seconds = Number(secondsText), frames = Number(framesText);
   const nominal = nominalRate(frameRate);
   if (minutes > 59 || seconds > 59 || frames >= nominal) throw new Error(`Invalid timecode fields: ${timecode}`);

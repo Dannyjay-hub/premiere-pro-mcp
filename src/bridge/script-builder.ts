@@ -175,14 +175,15 @@ function __itemMarksForRestore(item, mediaType) {
   var timebase = value(field("Column.Intrinsic.MediaTimebase", xml));
   function point(block, audio) {
     if (block === null) return null;
-    var tc = value(block), match = /^(\\d+):(\\d{2}):(\\d{2})([:;])(\\d+)$/.exec(tc);
-    if (!match) return null;
-    var hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match[3]), last = Number(match[5]);
+    // Drop-frame metadata can use a semicolon for every separator (00;05;26;11).
+    var tc = value(block), match = /^(\\d+)([:;])(\\d{2})([:;])(\\d{2})([:;])(\\d+)$/.exec(tc);
+    if (!match || (match[6] === ":" && (match[2] === ";" || match[4] === ";"))) return null;
+    var hours = Number(match[1]), minutes = Number(match[3]), seconds = Number(match[5]), last = Number(match[7]);
     if (minutes > 59 || seconds > 59) return null;
     var rateText = value(field("frame_rate", block));
     var hz = audio && timebase && (/Hz/i.test(timebase) || parseFloat(timebase) > 240) ? parseFloat(timebase) : NaN;
     if (audio && isFinite(hz) && hz > 0) {
-      if (match[4] === ";" || last >= hz || Math.floor(hz) !== hz) return null;
+      if (match[6] === ";" || last >= hz || Math.floor(hz) !== hz) return null;
       return { ticks: Math.round(((hours * 3600 + minutes * 60 + seconds) * hz + last) * TICKS_PER_SECOND / hz), frameTicks: TICKS_PER_SECOND / hz };
     }
     var frameTicks = rateText !== null ? Number(rateText) : NaN;
@@ -201,7 +202,7 @@ function __itemMarksForRestore(item, mediaType) {
     var actualRate = TICKS_PER_SECOND / frameTicks, nominal = Math.round(actualRate);
     if (nominal < 1 || nominal > 240 || last >= nominal) return null;
     var frames = (hours * 3600 + minutes * 60 + seconds) * nominal + last;
-    if (match[4] === ";") {
+    if (match[6] === ";") {
       var dropped = 0;
       if (nominal === 30) dropped = 2;
       else if (nominal === 60) dropped = 4;
@@ -260,6 +261,38 @@ function __mediaGridTicks(item, mediaType) {
     return TICKS_PER_SECOND / 24;
   }
   return TICKS_PER_SECOND / 48000;
+}
+
+// Video frame ticks of a project item for a caller's requested mark, or 0 when
+// the item has no usable frame rate. Audio items and sequences report a
+// meaningless rate (2.75e-8 on 26.5.2), so only 1-240 fps counts.
+function __requestedMarkFrameTicks(item, mediaType) {
+  if (mediaType === 2) return 0;
+  try {
+    var fps = parseFloat(item.getFootageInterpretation().frameRate);
+    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+  } catch (eRate) {}
+  return 0;
+}
+
+// Accept a requested mark within one media frame (Premiere floors video marks
+// to the media's own grid) or within half a millisecond for sample-floored audio.
+function __requestedMarkToleranceSeconds(item, mediaType) {
+  var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  return frameTicks > 0 ? frameTicks / TICKS_PER_SECOND : 0.0005;
+}
+
+// Seconds to write for a caller's requested mark. 26.5.2 floors an exact frame
+// boundary one frame early (0.5005 s, frame 12 on 23.976 media, reads back as
+// frame 11), so a request on a boundary is written a quarter frame late.
+// Requests between frames are written unchanged and floor as Premiere does.
+function __requestedMarkWriteSeconds(item, mediaType, seconds) {
+  var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  if (!(frameTicks > 0)) return seconds;
+  var frames = seconds * TICKS_PER_SECOND / frameTicks;
+  var nearest = Math.round(frames);
+  if (Math.abs(frames - nearest) > 0.001) return seconds;
+  return __biasedMarkSeconds(nearest * frameTicks, frameTicks);
 }
 
 function __biasedMarkSeconds(ticks, gridTicks) {

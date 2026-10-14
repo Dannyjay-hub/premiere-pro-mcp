@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `convert_timeline_time` now accepts drop-frame timecode written the way Premiere writes it, with a semicolon for every separator (`00;01;00;02`, as shown in Premiere's timecode display and its project metadata). Premiere 26.5.2 users who pasted that form at 29.97 or 59.94 fps were refused with "timecode separator or fields do not match declared policy"; it now gives the same frame as the SMPTE form `00:01:00;02`. The frame separator must still be a semicolon for drop-frame, and non-drop timecode must still use colons only. CMX 3600 EDL inspection and validation accept the same all-semicolon events, and the source-range restore used by `replace_clip`, `unnest_sequence` and other overwrite helpers reads all-semicolon drop-frame In/Out metadata instead of treating it as unreadable.
+- `predict_timeline_edit` no longer refuses every move and trim on CEP with `SOURCE_DURATION_UNKNOWN`. CEP snapshots carry no media duration, but a move keeps the clip's current source In/Out and a shortening trim stays inside it, so those frames are known to exist. These edits are now predicted with every other check unchanged (time mapping, consistent duration, subframe slivers, neighbor overlap). A trim that extends past the current source range still needs a known duration, as do inserted and overwritten clips, whose source range comes from the caller rather than from Premiere. `preview_extended_edit_plan` applies the same rule to its `move_clip` and `trim_clip` steps.
+- `set_item_in_out` and `set_source_in_out` keep a mark that sits exactly on a media frame. Premiere 26.5.2 floors an exact frame boundary one frame early, so `in_seconds: 0.5005` on 23.976 media (frame 12) landed on frame 11 and the tool refused it with "Premiere did not apply the requested project-item in point". A requested boundary is now written a quarter frame late, the same bias 1.24.0 gave the internal mark helpers; requests between frames still floor as Premiere does and report requested and applied seconds. Audio-only items, which report a meaningless frame rate, are no longer given a tolerance of about a year.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added

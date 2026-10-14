@@ -63,10 +63,14 @@ export function frameToTimecode(frame: string, frameRate: RationalRate, dropFram
   return `${negative ? "-" : ""}${pad(totalSeconds / 3600n)}:${pad(totalSeconds / 60n % 60n)}:${pad(totalSeconds % 60n)}${drop ? ";" : ":"}${pad(frames)}`;
 }
 export function timecodeToFrame(value: string, frameRate: RationalRate, dropFrame = false): string {
-  const match = /^(-?)([0-9]{2,10}):([0-5][0-9]):([0-5][0-9])([:;])([0-9]{2,3})$/.exec(value);
-  if (!match || (match[5] === ";") !== dropFrame) throw new Error("timecode separator or fields do not match declared policy");
+  const match = /^(-?)([0-9]{2,10})([:;])([0-5][0-9])([:;])([0-5][0-9])([:;])([0-9]{2,3})$/.exec(value);
+  // Drop-frame needs a semicolon before the frames. Premiere writes every
+  // separator as a semicolon (00;01;00;02), SMPTE only the last (00:01:00;02).
+  // Non-drop timecode stays all colons.
+  const separators = match ? match[3] + match[5] + match[7] : "";
+  if (!match || (dropFrame ? match[7] !== ";" : separators !== ":::")) throw new Error("timecode separator or fields do not match declared policy");
   const { nominal, drop } = timecodeRate(frameRate, dropFrame);
-  const hours = BigInt(match[2]), minutes = BigInt(match[3]), seconds = BigInt(match[4]), frames = BigInt(match[6]);
+  const hours = BigInt(match[2]), minutes = BigInt(match[4]), seconds = BigInt(match[6]), frames = BigInt(match[8]);
   if (frames >= nominal || (drop && minutes % 10n !== 0n && seconds === 0n && frames < drop)) throw new Error("timecode names a skipped or out-of-range frame");
   const totalMinutes = hours * 60n + minutes;
   const count = ((hours * 3600n + minutes * 60n + seconds) * nominal + frames) - drop * (totalMinutes - totalMinutes / 10n);

@@ -22,7 +22,7 @@ function item(xml = metadata(), rejectRequested = false) {
     getFootageInterpretation: () => ({ frameRate: 25 }),
     getInPoint: (_type?: number) => mark(left), getOutPoint: (_type?: number) => mark(right),
     // Live 26.5.2 floors written marks to the media frame grid (25 fps here).
-    setInPoint: vi.fn((seconds: number) => { if (!(rejectRequested && seconds === 40)) left = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
+    setInPoint: vi.fn((seconds: number) => { if (!(rejectRequested && Math.abs(seconds - 40) < 1 / 25)) left = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
     setOutPoint: vi.fn((seconds: number) => { right = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
   };
 }
@@ -53,6 +53,13 @@ describe("soft subclip restore marks", () => {
     const frame = T * 1001 / 30000;
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) }).inTicks).toBe(String(1800 * frame));
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;00", "00:02:00;02", frame)) })).toBeNull();
+  });
+  it("parses Premiere's all-semicolon drop-frame metadata like the SMPTE form", () => {
+    const frame = T * 1001 / 30000;
+    const smpte = run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) });
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00;02", "00;02;00;02", frame)) })).toEqual(smpte);
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00;00", "00;02;00;02", frame)) })).toBeNull();
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00:02", "00;02;00:02", frame)) })).toBeNull();
   });
   it("parses audio samples with an Hz MediaTimebase", () => {
     const marks = run("__itemMarksForRestore(item, 2)", { item: item(metadata("00:00:10:24000", "00:00:20:00000", T / 48000, "Audio", "48000 Hz")) });

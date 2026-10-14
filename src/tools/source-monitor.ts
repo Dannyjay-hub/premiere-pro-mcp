@@ -140,18 +140,14 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           // Live 26.5.2: Premiere floors video marks to the media's own frame
           // grid (0.5 s on 23.976 media reads back as 0.4588 s), so accept a
           // mark within one media frame.
-          var markToleranceSeconds = 0.000001;
-          try {
-            var mediaFps = parseFloat(item.getFootageInterpretation().frameRate);
-            if (mediaFps > 0) markToleranceSeconds = 1 / mediaFps;
-          } catch (rateErr) {}
+          var markToleranceSeconds = __requestedMarkToleranceSeconds(item, 4);
           function markMatches(observed, requestedSeconds) {
             return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
           }
 
           ${args.in_seconds !== undefined ? `
           var inTime = new Time();
-          inTime.seconds = ${args.in_seconds};
+          inTime.seconds = __requestedMarkWriteSeconds(item, 4, ${args.in_seconds});
           try {
             item.setInPoint(inTime.seconds, 4);
           } catch (setInErr) {
@@ -165,7 +161,7 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
 
           ${args.out_seconds !== undefined ? `
           var outTime = new Time();
-          outTime.seconds = ${args.out_seconds};
+          outTime.seconds = __requestedMarkWriteSeconds(item, 4, ${args.out_seconds});
           try {
             item.setOutPoint(outTime.seconds, 4);
           } catch (setOutErr) {
