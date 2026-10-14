@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `export_and_verify` now treats Premiere's `File.fsName` spelling of the requested output (Windows separators or drive-letter case) as the same delivery file. A successful direct export no longer fails with `OUTPUT_IDENTITY_CHANGED` and skip artifact verification. A different path still fails closed.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
