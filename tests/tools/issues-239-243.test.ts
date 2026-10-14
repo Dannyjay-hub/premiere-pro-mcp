@@ -156,7 +156,10 @@ describe("project-item source range units", () => {
       app: { project: { rootItem: { children: { 0: item, numItems: 1 } } } },
     }));
     expect(result).toMatchObject({ success: true, data: { verified: true, mediaType: 2, appliedInSeconds: 0.5, appliedOutSeconds: 3 } });
-    expect(item.setInPoint).toHaveBeenCalledWith(0.5, 2);
+    // 0.5 s is an exact sample boundary, so it is written a quarter sample late.
+    expect(item.setInPoint.mock.calls[0][1]).toBe(2);
+    expect(item.setInPoint.mock.calls[0][0]).toBeGreaterThan(0.5);
+    expect(item.setInPoint.mock.calls[0][0]).toBeLessThan(0.5 + 1 / 48000);
     expect(item.setInPoint).not.toHaveBeenCalledWith(expect.anything(), 4);
   });
 

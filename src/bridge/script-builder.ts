@@ -233,9 +233,10 @@ function __itemMarksForRestore(item, mediaType) {
     return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
-  // The private VideoOutPoint names the last frame (inclusive): a subclip made
-  // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2.
-  if (right && kind !== "Audio") right.ticks += right.frameTicks;
+  // The private Out names the last frame or sample (inclusive): a subclip made
+  // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2,
+  // and a 15 s 48 kHz WAV shows an AudioOutPoint of 00:00:14:47999.
+  if (right) right.ticks += right.frameTicks;
   if (!left || !right || !isFinite(left.ticks) || !isFinite(right.ticks) || left.ticks < 0 || right.ticks > 9007199254740991 || right.ticks <= left.ticks || Math.abs(left.frameTicks - right.frameTicks) > 1) return null;
   var tolerance = Math.max(left.frameTicks, right.frameTicks);
   // DOM already matches the private range. Still bias the write seconds: 26.5.2
@@ -307,11 +308,14 @@ function __requestedMarkToleranceSeconds(item, mediaType) {
 }
 
 // Seconds to write for a caller's requested mark. 26.5.2 floors an exact frame
-// boundary one frame early (0.5005 s, frame 12 on 23.976 media, reads back as
+// (or sample) boundary one frame early (0.5005 s, frame 12 on 23.976 media, reads back as
 // frame 11), so a request on a boundary is written a quarter frame late.
 // Requests between frames are written unchanged and floor as Premiere does.
 function __requestedMarkWriteSeconds(item, mediaType, seconds) {
   var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  // Audio marks floor an exact sample boundary one sample early the same way
+  // (1.001 s reads back as sample 48047 on a 48 kHz item).
+  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / 48000;
   if (!(frameTicks > 0)) return seconds;
   var frames = seconds * TICKS_PER_SECOND / frameTicks;
   var nearest = Math.round(frames);

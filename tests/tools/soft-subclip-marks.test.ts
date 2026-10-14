@@ -85,6 +85,20 @@ describe("soft subclip restore marks", () => {
     const marks = run("__itemMarksForRestore(item, 2)", { item: item(metadata("00:00:10:24000", "00:00:20:00000", T / 48000, "Audio", "48000 Hz")) });
     expect(marks.inSeconds).toBeCloseTo(10.5, 4); expect(marks.outSeconds).toBeCloseTo(20, 4);
   });
+  it("treats the private Audio Out as inclusive, like the Video Out", () => {
+    // Live 26.5.2: an audio subclip made with an exclusive Out of 4.004 s stores 00:00:04:00191;
+    // its frame_rate child is the 25 fps display rate, the samples come from MediaTimebase.
+    const marks = run("__itemMarksForRestore(item, 2)", { item: item(metadata("00:00:01:00048", "00:00:04:00191", T / 25, "Audio", "48000 Hz")) });
+    expect(marks.inTicks).toBe(String(48048 * (T / 48000)));
+    expect(marks.outTicks).toBe(String(192192 * (T / 48000)));
+  });
+  it("writes an exact audio sample boundary a quarter sample late", () => {
+    // Live 26.5.2: setInPoint(1.001, 2) reads back sample 48047.
+    const seconds = run("__requestedMarkWriteSeconds(item, 2, 1.001)", { item: item() });
+    expect(seconds).toBeGreaterThan(1.001);
+    expect(seconds).toBeLessThan(1.001 + 1 / 48000);
+    expect(run("__requestedMarkWriteSeconds(item, 2, 1.0010101)", { item: item() })).toBe(1.0010101);
+  });
   it("falls back to readable DOM marks when metadata is absent, keeping near-equal DOM marks", () => {
     const source = item("");
     const absent = run("__itemMarksForRestore(item, 4)", { item: source });
@@ -200,6 +214,35 @@ describe("soft subclip restore marks", () => {
     source.setInPoint.mockClear(); source.setOutPoint.mockClear();
     await expect(getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("reliably") });
     expect(source.setInPoint).not.toHaveBeenCalled(); expect(source.setOutPoint).not.toHaveBeenCalled();
+  });
+  it("duplicates an audio-only clip without losing a frame of its source In", async () => {
+    // Live 26.5.2: type-4 marks on a WAV floor to a 25 fps grid, an exact sample boundary floors
+    // one sample early, and overwriteClip floors the copy's In to the sequence frame (1.001 -> 0.9676 s).
+    const F = T * 1001 / 30000, S = T / 48000;
+    const xml = metadata("00:00:00:00000", "00:00:14:47999", T / 25, "Audio", "48000 Hz").replace("</rdf:RDF>", "<p:Column.Intrinsic.MediaType>Audio</p:Column.Intrinsic.MediaType></rdf:RDF>");
+    let left = 0, right = 15 * T;
+    const hostFloor = (seconds: number, type?: number) => { const grid = type === 2 ? S : T / 25; return Math.floor(seconds * T / grid * (1 - 1e-12)) * grid; };
+    const mark = (ticks: number) => ({ ticks: String(Math.round(ticks)), seconds: ticks / T });
+    const tone = { nodeId: "tone", name: "Tone", type: 1,
+      getProjectMetadata: () => xml,
+      getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }),
+      getInPoint: (type?: number) => mark(type === 1 ? 0 : left), getOutPoint: (type?: number) => mark(type === 1 ? 0 : right),
+      setInPoint: vi.fn((seconds: number, type?: number) => { left = hostFloor(seconds, type); }),
+      setOutPoint: vi.fn((seconds: number, type?: number) => { right = hostFloor(seconds, type); }),
+    };
+    const original = { nodeId: "clip", projectItem: tone, start: { ticks: String(60 * F) }, end: { ticks: String(164 * F) }, inPoint: { ticks: String(30 * F) } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown> };
+    const seq = { timebase: String(F), videoTracks: { numTracks: 1, 0: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target },
+      overwriteClip: (_item: unknown, start: string) => {
+        const inTicks = Math.floor(left / F + 1e-9) * F;
+        target.clips = { numItems: 1, 0: { nodeId: "copy", start: { ticks: start }, end: { ticks: String(Number(start) + 104 * F) }, inPoint: { ticks: String(inTicks) } } };
+      } };
+    sent.mockImplementation(async (script) => JSON.parse(String(run(script, { Time, app: { project: { activeSequence: seq } } }))));
+    const result = await getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" });
+    expect(result).toMatchObject({ success: true, data: { verified: true, copy: { trackType: "audio", trackIndex: 1 } } });
+    expect((result as { data: { copy: { inSeconds: number } } }).data.copy.inSeconds).toBeCloseTo(30 * F / T, 9);
+    expect(tone.setInPoint).not.toHaveBeenCalledWith(expect.anything(), 4);
+    expect(left).toBe(0); expect(right).toBe(15 * T);
   });
   it("refuses malformed private marks before any temporary or requested mark write", async () => {
     const source = item(metadata("bad", "00:00:30:00"));

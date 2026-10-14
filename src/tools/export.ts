@@ -1722,7 +1722,8 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           // A soft-boundary subclip's getInPoint/getOutPoint read the whole media
           // on Premiere 26.5, so read the stored range from project metadata.
           // Each point holds an rdf:value timecode and a frame_rate child in
-          // ticks per frame; the Out timecode names the last frame (inclusive).
+          // ticks per frame; the Out timecode names the last frame (or sample)
+          // and is inclusive.
           function __subclipTimecodeFrames(timecode, frameTicks) {
             var parts = String(timecode).match(/^\\s*(\\d+)[:;.](\\d+)[:;.](\\d+)([:;.])(\\d+)\\s*$/);
             if (!parts) return NaN;
@@ -1754,6 +1755,25 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             if (!isFinite(frames)) return null;
             return { frames: frames, frameTicks: frameTicks, timecode: value[1] };
           }
+          // Audio-only subclips keep empty Video points; their Audio points count
+          // samples in the last field (00:00:04:00191) and the frame_rate child is
+          // only the 25 fps display rate, so the sample rate comes from MediaTimebase.
+          function __subclipAudioPoint(xml, column) {
+            var base = xml.match(/Column\\.Intrinsic\\.MediaTimebase>\\s*([0-9.]+)\\s*Hz\\s*</);
+            var hz = base ? parseFloat(base[1]) : NaN;
+            if (!isFinite(hz) || hz <= 0 || Math.floor(hz) !== hz) return null;
+            var tagName = "Column.Intrinsic." + column;
+            var openStart = xml.indexOf(tagName);
+            if (openStart < 0) return null;
+            var openEnd = xml.indexOf(">", openStart);
+            if (openEnd < 0 || xml.charAt(openEnd - 1) === "/") return null;
+            var closeStart = xml.indexOf(tagName, openEnd);
+            if (closeStart < 0) return null;
+            var value = xml.substring(openEnd + 1, closeStart).match(/<rdf:value>\\s*(\\d+):(\\d{2}):(\\d{2}):(\\d+)\\s*<\\/rdf:value>/);
+            if (!value || parseInt(value[4], 10) >= hz) return null;
+            var samples = ((parseInt(value[1], 10) * 60 + parseInt(value[2], 10)) * 60 + parseInt(value[3], 10)) * hz + parseInt(value[4], 10);
+            return { frames: samples, frameTicks: TICKS_PER_SECOND / hz, timecode: value[1] + ":" + value[2] + ":" + value[3] + ":" + value[4] };
+          }
 
           var nodeId = null;
           try { nodeId = subclip.nodeId ? String(subclip.nodeId) : null; } catch (nodeIdError) {}
@@ -1774,6 +1794,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           try { metadata = subclip.getProjectMetadata ? String(subclip.getProjectMetadata()) : null; } catch (metadataError) {}
           var inPoint = metadata ? __subclipPoint(metadata, "VideoInPoint") : null;
           var outPoint = metadata ? __subclipPoint(metadata, "VideoOutPoint") : null;
+          if (metadata && !inPoint && !outPoint) {
+            inPoint = __subclipAudioPoint(metadata, "AudioInPoint");
+            outPoint = __subclipAudioPoint(metadata, "AudioOutPoint");
+          }
           if (!inPoint || !outPoint) {
             receipt.note = "Premiere created the subclip, but its stored in/out range could not be read from project metadata.";
             return __result(receipt);
