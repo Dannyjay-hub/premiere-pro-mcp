@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ripple_remove_timeline_ranges` no longer edits the wrong sequence. With a `sequence_id` that was not the active sequence, its sync-lock preflight read the active sequence's tracks through QE and the razors cut the active sequence, while the requested sequence was left unchanged and the result said only `mutationOutcome: "unknown"` (Premiere 26.5.2). The tool now refuses a non-active `sequence_id` before any QE read or edit and asks for it to be made active first.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
