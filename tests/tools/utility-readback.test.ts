@@ -116,13 +116,21 @@ describe("move_playhead_to_edit reads the playhead back", () => {
 describe("freeze_frame confirms the imported still", () => {
   const exportOk = 'function __exportStillFrame(path, ticks) { return { ok: true, path: path, method: "qe", notes: [] }; }';
 
-  function freezeHost(options: { skipImport?: boolean } = {}) {
+  function freezeHost(options: { skipImport?: boolean; marks?: "floor25" | "ignored" } = {}) {
     const root: Record<string, any>[] = [{ nodeId: "old", name: "old.png", type: 1, getMediaPath: () => "/frames/f.png" }];
+    // Live 26.5.2: an imported still reports 25 fps, defaults to 5 s and floors its Out mark to that grid.
+    let out = 5;
+    const stillMarks = options.marks ? {
+      getFootageInterpretation: () => ({ frameRate: 25 }),
+      getInPoint: () => ({ seconds: 0 }),
+      getOutPoint: () => ({ seconds: out }),
+      setOutPoint: vi.fn((seconds: number) => { if (options.marks === "floor25") out = Math.floor(seconds * 25 + 1e-9) / 25; }),
+    } : {};
     const app = {
       project: {
         rootItem: { children: children(root) },
         activeSequence: { getPlayerPosition: () => ({ ticks: "0" }) },
-        importFiles: (paths: string[]) => { if (!options.skipImport) root.push({ nodeId: "new", name: "f.png", type: 1, getMediaPath: () => paths[0] }); return true; },
+        importFiles: (paths: string[]) => { if (!options.skipImport) root.push({ nodeId: "new", name: "f.png", type: 1, getMediaPath: () => paths[0], ...stillMarks }); return true; },
       },
     };
     function File(this: { fsName: string }, path: string) { this.fsName = path; }
@@ -132,6 +140,25 @@ describe("freeze_frame confirms the imported still", () => {
   it("reports the new item, not an older one with the same path", async () => {
     freezeHost();
     await expect(run(tools.freeze_frame, { time_seconds: 2, output_path: "/frames/f.png" })).resolves.toMatchObject({ success: true, data: { imported: true, nodeId: "new" } });
+  });
+
+  it("sets the still's Out mark to duration_seconds and reads it back", async () => {
+    // duration_seconds used to be documented but ignored; the still kept Premiere's 5 s default.
+    freezeHost({ marks: "floor25" });
+    await expect(run(tools.freeze_frame, { time_seconds: 2, output_path: "/frames/f.png", duration_seconds: 1.5 })).resolves.toMatchObject({ success: true, data: { verified: true, outcome: "verified", requestedDurationSeconds: 1.5, appliedDurationSeconds: 1.52 } });
+    freezeHost({ marks: "floor25" });
+    await expect(run(tools.freeze_frame, { time_seconds: 2, output_path: "/frames/f.png" })).resolves.toMatchObject({ success: true, data: { verified: true, requestedDurationSeconds: 2, appliedDurationSeconds: 2 } });
+  });
+
+  it("reports committed_unverified when Premiere ignores the still's Out mark", async () => {
+    freezeHost({ marks: "ignored" });
+    await expect(run(tools.freeze_frame, { time_seconds: 2, output_path: "/frames/f.png", duration_seconds: 3 })).resolves.toMatchObject({ success: true, data: { imported: true, verified: false, outcome: "committed_unverified", appliedDurationSeconds: 5 } });
+  });
+
+  it("rejects a non-positive or unbounded duration before contacting Premiere", async () => {
+    for (const duration_seconds of [0, -1, Number.NaN, 3601]) {
+      await expect(tools.freeze_frame.handler({ output_path: "/frames/f.png", duration_seconds } as never)).resolves.toMatchObject({ success: false, error: expect.stringContaining("duration_seconds") });
+    }
   });
 
   it("fails when the export worked but nothing was imported", async () => {

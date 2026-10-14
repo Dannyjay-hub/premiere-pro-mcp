@@ -2760,6 +2760,8 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     tracksAffected: tracksAffected,
     scope: targetOnly ? "target_tracks" : "sync_locked",
     insertedTrackItems: newOnVideo + newOnAudio,
+    placedOnVideoTrack: newOnVideo > 0,
+    placedOnAudioTrack: newOnAudio > 0,
     splitRemainders: insertedClips.length - newOnVideo - newOnAudio
   };
   if (targetOnly) {

@@ -153,6 +153,11 @@ export function getTimelineTools(
             syncLockHonored: outcome.data.syncLockHonored,
             item: outcome.data.item,
             trackIndex: ${trackIndex},
+            audioTrackIndex: ${audioTrackIndex},
+            // trackIndex is only the requested video track; an audio-only item
+            // places nothing there, so report which kinds were actually placed.
+            placedOnVideoTrack: outcome.data.placedOnVideoTrack,
+            placedOnAudioTrack: outcome.data.placedOnAudioTrack,
             startSeconds: ${startSeconds},
             insertedTrackItems: outcome.data.insertedTrackItems,
             splitRemainders: outcome.data.splitRemainders

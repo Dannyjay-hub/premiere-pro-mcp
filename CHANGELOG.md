@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `freeze_frame` now uses `duration_seconds`. It was documented as the freeze frame's timeline duration but ignored, so the imported still kept Premiere's default 5 s. The tool now writes the still's Out mark (stills floor marks to a 25 fps grid on Premiere 26.5.2, so it writes the nearest still frame), reads it back, and reports `requestedDurationSeconds`, `appliedDurationSeconds` and `verified`/`committed_unverified`; `add_to_timeline` then places the still at that length. It still does not place the still itself, and the description now says so.
+- `add_to_timeline` reports `audioTrackIndex`, `placedOnVideoTrack` and `placedOnAudioTrack`. An audio-only item placed on an audio track used to report only `trackIndex: 0`, the unused video default.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
