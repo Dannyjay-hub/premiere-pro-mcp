@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `inspect_timeline_snapshot` now reports each track's `targeted` and `muted` state from the documented track DOM, and `sync_locked` from the experimental QE DOM when the snapshot's sequence is the active one, instead of always `null`. With sync lock unknown, `predict_timeline_edit` refused every `scope: "sync_locked"` ripple with `SYNC_SCOPE_UNKNOWN`; on Premiere 26.5.2 it now plans them and applies its normal occupancy checks. Sequences that are not active keep `sync_locked: null`, because QE can only read the active sequence.
+- The `save_workflow_checkpoint` schema now names the required `schema_version: 1` field. The old text said only "version1 checkpoint", so a client sending `version` was refused with "checkpoint has unknown field version".
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
