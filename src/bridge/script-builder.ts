@@ -131,7 +131,10 @@ function __restoreGridFromItem(item, mediaType) {
   if (mediaType === 2) return TICKS_PER_SECOND / 48000;
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
-    if (fps > 0) return TICKS_PER_SECOND / fps;
+    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+    // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
+    // that would make a "frame" of about a year. Use the audio sample grid.
+    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
   } catch (eGrid) {}
   return TICKS_PER_SECOND / 24;
 }
@@ -215,7 +218,13 @@ function __itemMarksForRestore(item, mediaType) {
   var kind = mediaType === 2 ? "Audio" : "Video";
   var inBlock = field("Column.Intrinsic." + kind + "InPoint", xml), outBlock = field("Column.Intrinsic." + kind + "OutPoint", xml);
   var videoFieldsPresent = xml.indexOf("Column.Intrinsic.VideoInPoint") >= 0 || xml.indexOf("Column.Intrinsic.VideoOutPoint") >= 0;
-  if (mediaType === 4 && inBlock === null && outBlock === null && !videoFieldsPresent) {
+  // Audio-only items still carry VideoInPoint/VideoOutPoint blocks on 26.5.2,
+  // with an empty <rdf:value/>; their range lives in the Audio fields.
+  function emptyPoint(block) {
+    return block === null || /<(?:[A-Za-z_][\\w.-]*:)?value\\s*\\/>/.test(block) || value(block) === "";
+  }
+  var noVideoRange = inBlock === null && outBlock === null ? !videoFieldsPresent : emptyPoint(inBlock) && emptyPoint(outBlock);
+  if (mediaType === 4 && noVideoRange) {
     kind = "Audio";
     inBlock = field("Column.Intrinsic.AudioInPoint", xml); outBlock = field("Column.Intrinsic.AudioOutPoint", xml);
   }
@@ -256,11 +265,26 @@ function __mediaGridTicks(item, mediaType) {
   if (mediaType !== 2) {
     try {
       var fps = parseFloat(item.getFootageInterpretation().frameRate);
-      if (fps > 0) return TICKS_PER_SECOND / fps;
+      if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+      // Audio-only items report about 2.75e-8 fps; use the sample grid.
+      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
     } catch (eInterp) {}
     return TICKS_PER_SECOND / 24;
   }
   return TICKS_PER_SECOND / 48000;
+}
+
+// Media type to use for a caller's "all" (4) marks. On 26.5.2 an audio-only
+// item floors type-4 marks to a 25 fps grid (setInPoint(0.5, 4) on a 48 kHz
+// WAV reads back 0.48 s) while type 2 keeps the sample, so audio-only items
+// use type 2 for every write, read and restore.
+function __markMediaTypeForItem(item, mediaType) {
+  if (mediaType !== 4) return mediaType;
+  try {
+    var xml = typeof item.getProjectMetadata === "function" ? String(item.getProjectMetadata() || "") : "";
+    if (/Column\\.Intrinsic\\.MediaType>\\s*Audio\\s*</.test(xml)) return 2;
+  } catch (eMarkType) {}
+  return mediaType;
 }
 
 // Video frame ticks of a project item for a caller's requested mark, or 0 when

@@ -54,6 +54,26 @@ describe("soft subclip restore marks", () => {
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) }).inTicks).toBe(String(1800 * frame));
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;00", "00:02:00;02", frame)) })).toBeNull();
   });
+  it("reads an audio-only item's range when its Video fields are empty (default media type)", () => {
+    // Live 26.5.2 metadata for a 15 s 48 kHz WAV: empty Video blocks, inclusive last-sample Audio Out.
+    const P = "premierePrivateProjectMetaData";
+    const emptyVideo = (name: string) => `<${P}:Column.Intrinsic.Video${name} rdf:parseType="Resource"><rdf:value/><${P}:min>0</${P}:min><${P}:max>-101606410160640000</${P}:max></${P}:Column.Intrinsic.Video${name}>`;
+    const audio = (name: string, tc: string) => `<${P}:Column.Intrinsic.Audio${name} rdf:parseType="Resource"><rdf:value>${tc}</rdf:value></${P}:Column.Intrinsic.Audio${name}>`;
+    const xml = `<rdf:RDF>${emptyVideo("InPoint")}${emptyVideo("OutPoint")}${audio("InPoint", "00:00:00:00000")}${audio("OutPoint", "00:00:14:47999")}<${P}:Column.Intrinsic.MediaTimebase>48000 Hz</${P}:Column.Intrinsic.MediaTimebase><${P}:Column.Intrinsic.MediaType>Audio</${P}:Column.Intrinsic.MediaType></rdf:RDF>`;
+    const tone = { ...item(xml), getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }) };
+    const right = 15 * T;
+    tone.getInPoint = () => ({ ticks: "0", seconds: 0 });
+    tone.getOutPoint = () => ({ ticks: String(right), seconds: right / T });
+    const marks = run("__itemMarksForRestore(item, 4)", { item: tone });
+    expect(marks).not.toBeNull();
+    expect(marks.inTicks).toBe("0");
+    expect(marks.outTicks).toBe(String(15 * T));
+    // The write bias is a quarter of a 48 kHz sample, not a quarter of a year.
+    expect(marks.outSeconds - 15).toBeGreaterThan(0);
+    expect(marks.outSeconds - 15).toBeLessThan(1 / 48000);
+    expect(run("__mediaGridTicks(item, 4)", { item: tone })).toBe(T / 48000);
+    expect(run("__restoreGridFromItem(item, 4)", { item: tone })).toBe(T / 48000);
+  });
   it("parses Premiere's all-semicolon drop-frame metadata like the SMPTE form", () => {
     const frame = T * 1001 / 30000;
     const smpte = run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) });

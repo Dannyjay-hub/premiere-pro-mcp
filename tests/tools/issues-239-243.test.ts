@@ -131,6 +131,35 @@ describe("project-item source range units", () => {
     expect(result).toMatchObject({ success: false, error: expect.stringContaining("did not apply the requested project-item in point") });
   });
 
+  it("writes an audio-only item's default marks as audio so they keep the sample", async () => {
+    // Live 26.5.2: setInPoint(0.5, 4) on a 48 kHz WAV reads back 0.48 s (a 25 fps grid); type 2 keeps 0.5 s.
+    const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
+    const script = await scriptFor(tool, { item_id: "tone", in_seconds: 0.5, out_seconds: 3 });
+    const marks: Record<number, { in: number; out: number }> = { 2: { in: 0, out: 15 }, 4: { in: 0, out: 15 } };
+    const write = (type: number, side: "in" | "out", seconds: number) => {
+      const value = type === 2 ? Math.floor(seconds * 48000 + 1e-6) / 48000 : Math.floor(seconds * 25 + 1e-9) / 25;
+      marks[2][side] = value; marks[4][side] = value;
+    };
+    const P = "premierePrivateProjectMetaData";
+    const item = {
+      nodeId: "tone", name: "Tone",
+      getProjectMetadata: () => `<rdf:RDF><${P}:Column.Intrinsic.MediaType>\n  Audio\n</${P}:Column.Intrinsic.MediaType></rdf:RDF>`,
+      getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }),
+      setInPoint: vi.fn((seconds: number, type: number) => write(type, "in", seconds)),
+      setOutPoint: vi.fn((seconds: number, type: number) => write(type, "out", seconds)),
+      getInPoint: (type: number) => ({ seconds: marks[type].in, ticks: String(Math.round(marks[type].in * 254016000000)) }),
+      getOutPoint: (type: number) => ({ seconds: marks[type].out, ticks: String(Math.round(marks[type].out * 254016000000)) }),
+    };
+    function Time(this: { seconds: number }) { this.seconds = 0; }
+    const result = JSON.parse(runInNewContext(getHelpersSource() + "\n" + script, {
+      Time,
+      app: { project: { rootItem: { children: { 0: item, numItems: 1 } } } },
+    }));
+    expect(result).toMatchObject({ success: true, data: { verified: true, mediaType: 2, appliedInSeconds: 0.5, appliedOutSeconds: 3 } });
+    expect(item.setInPoint).toHaveBeenCalledWith(0.5, 2);
+    expect(item.setInPoint).not.toHaveBeenCalledWith(expect.anything(), 4);
+  });
+
   it("still fails when Premiere keeps a mark more than a media frame away", async () => {
     const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
     const script = await scriptFor(tool, { item_id: "media", in_seconds: 0.5 });
