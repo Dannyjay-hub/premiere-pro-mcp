@@ -97,7 +97,9 @@ describe("reachable timeline/editorial contracts", () => {
     writeFileSync(path.join(root, `workflow-checkpoint-${id}.json`), JSON.stringify({ checkpoint: { ...checkpoint, schema_version: 2 } })); await expect(restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: id })).rejects.toThrow("version");
     await expect(restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: "../escape" })).rejects.toThrow("ID");
     await expect(getTimelineEditorialTools({ tempDir: root }, { capabilities: resolveCapabilities("inspect") }).save_workflow_checkpoint.handler({ checkpoint })).rejects.toThrow("filesystem");
-  });
+  // Saving runs the private bridge-directory check, which on Windows spawns a
+  // PowerShell ACL read bounded at 30 s; CI took 1-4 s and sometimes over 10 s.
+  }, 60_000);
 });
 
 describe("native transcript readiness orchestration", () => {
