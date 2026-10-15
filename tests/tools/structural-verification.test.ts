@@ -257,8 +257,10 @@ describe("duplicate_clip verification", () => {
       setInPoint: vi.fn(), setOutPoint: vi.fn(),
     };
     const clip = { nodeId: "c1", projectItem: item, start: { ticks: "0" }, end: { ticks: ticks(2) }, inPoint: { ticks: "0" } };
+    class Time { ticks = "0"; }
     mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
-      app: { project: { activeSequence: { videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 0 }, overwriteClip: () => {} } } },
+      Time,
+      app: { project: { activeSequence: { videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: { clips: { numItems: 0 }, overwriteClip: () => {} } }, audioTracks: { numTracks: 0 } } } },
     }))));
     await expect(timeline.duplicate_clip.handler({ node_id: "c1" })).resolves.toMatchObject({ success: false, data: { timelineChanged: null, outcome: "committed_unverified", verified: false } });
   });
@@ -271,6 +273,51 @@ describe("duplicate_clip verification", () => {
     expect(script).toContain('outcome: "committed_unverified"');
     expect(script).toContain('var linkedVerified = !partner || (!!linkedCopy');
     expect(script).toContain('timelineChanged: true');
+    expect(script).not.toContain("Math.max(videoTarget, 0)");
+    expect(script).not.toContain("Math.max(audioTarget, 0)");
+    expect(script).toContain("destTrack.overwriteClip(item, at)");
+  });
+
+  it.each([
+    { kind: "audio-only", smashType: "video" as const },
+    { kind: "video-only", smashType: "audio" as const },
+  ])("does not overwrite $smashType track 0 when duplicating a $kind clip", async ({ smashType }) => {
+    const ticks = (seconds: number) => String(seconds * 254016000000);
+    const item = {
+      getInPoint: () => ({ ticks: "0", seconds: 0 }),
+      getOutPoint: (type: number) => smashType === "video"
+        ? { ticks: ticks(type === 1 ? 0 : 2), seconds: type === 1 ? 0 : 2 }
+        : { ticks: ticks(type === 2 ? 0 : 2), seconds: type === 2 ? 0 : 2 },
+      setInPoint: vi.fn(), setOutPoint: vi.fn(),
+    };
+    const clip = { nodeId: "c1", projectItem: item, start: { ticks: "0" }, end: { ticks: ticks(2) }, inPoint: { ticks: "0" } };
+    const occupant = { nodeId: "keep", start: { ticks: "0" }, end: { ticks: ticks(2) } };
+    const seqOverwrite = vi.fn();
+    const occupantTrackOverwrite = vi.fn();
+    const dest = { clips: { numItems: 0 } as Record<string, unknown>, overwriteClip: (_placedItem: unknown, time: { ticks: string }) => {
+      dest.clips = { numItems: 1, 0: { nodeId: "copy", start: { ticks: time.ticks }, end: { ticks: ticks(2) }, inPoint: { ticks: "0" } } };
+    } };
+    const occupantTrack = { clips: { numItems: 1, 0: occupant }, overwriteClip: occupantTrackOverwrite };
+    const sourceTrack = { clips: { numItems: 1, 0: clip } };
+    class Time { ticks = "0"; }
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      Time,
+      app: { project: { activeSequence: {
+        overwriteClip: seqOverwrite,
+        videoTracks: smashType === "video"
+          ? { numTracks: 1, 0: occupantTrack }
+          : { numTracks: 2, 0: sourceTrack, 1: dest },
+        audioTracks: smashType === "video"
+          ? { numTracks: 2, 0: sourceTrack, 1: dest }
+          : { numTracks: 1, 0: occupantTrack },
+      } } },
+    }))));
+    await expect(timeline.duplicate_clip.handler({ node_id: "c1" })).resolves.toMatchObject({
+      success: true, data: { verified: true, outcome: "verified", duplicated: true },
+    });
+    expect(seqOverwrite).not.toHaveBeenCalled();
+    expect(occupantTrackOverwrite).not.toHaveBeenCalled();
+    expect(occupantTrack.clips[0]).toBe(occupant);
   });
 
   // 29.97 fps: Premiere places the copy one frame short of the original's end.
@@ -283,21 +330,20 @@ describe("duplicate_clip verification", () => {
       setInPoint: vi.fn(), setOutPoint: vi.fn(),
     };
     const clip = { nodeId: "c1", projectItem: item, start: { ticks: "0" }, end: { ticks: String(originalEnd) }, inPoint: { ticks: "0" } };
-    const target = { clips: { numItems: 0 } as Record<string, unknown> };
+    const target = { clips: { numItems: 0 } as Record<string, unknown>, overwriteClip: (_item: unknown, time: { ticks: string }) => {
+      const placed = { nodeId: "copy", start: { ticks: time.ticks }, inPoint: { ticks: "0" }, endTicks: String(originalEnd - frame) };
+      Object.defineProperty(placed, "end", {
+        get: () => ({ ticks: placed.endTicks }),
+        set: (endTime: { ticks: string }) => { if (!endSettable) throw new Error("end is read-only"); placed.endTicks = endTime.ticks; },
+      });
+      copy = placed as unknown as { end: { ticks: string } };
+      target.clips = { numItems: 1, 0: copy };
+    } };
     let copy: { end: { ticks: string } } | undefined;
     const sequence = {
       timebase: String(frame),
       videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: target },
       audioTracks: { numTracks: 0 },
-      overwriteClip: () => {
-        const placed = { nodeId: "copy", start: { ticks: "0" }, inPoint: { ticks: "0" }, endTicks: String(originalEnd - frame) };
-        Object.defineProperty(placed, "end", {
-          get: () => ({ ticks: placed.endTicks }),
-          set: (time: { ticks: string }) => { if (!endSettable) throw new Error("end is read-only"); placed.endTicks = time.ticks; },
-        });
-        copy = placed as unknown as { end: { ticks: string } };
-        target.clips = { numItems: 1, 0: copy };
-      },
     };
     class Time { ticks = "0"; }
     return { context: { app: { project: { activeSequence: sequence } }, Time }, originalEnd, copy: () => copy };
@@ -336,25 +382,24 @@ describe("duplicate_clip verification", () => {
       setOutPoint: vi.fn(),
     };
     const clip = { nodeId: "c1", projectItem: item, start: { ticks: String(originalStart) }, end: { ticks: String(originalEnd) }, inPoint: { ticks: String(originalIn) } };
-    const target = { clips: { numItems: 0 } as Record<string, unknown> };
+    const target = { clips: { numItems: 0 } as Record<string, unknown>, overwriteClip: (_item: unknown, time: { ticks: string }) => {
+      const mediaIn = Math.floor((markIn * ticksPerSecond) / mediaFrame + 1e-9) * mediaFrame;
+      const placedIn = (Math.floor(mediaIn / frame + 1e-9) + (options.extraInFrames ?? 0)) * frame;
+      const placed = { nodeId: "copy", start: { ticks: time.ticks }, end: { ticks: String(originalEnd) }, inTicks: String(placedIn), outTicks: String(placedIn + (originalEnd - originalStart)) };
+      for (const [key, field] of [["inPoint", "inTicks"], ["outPoint", "outTicks"]] as const) {
+        Object.defineProperty(placed, key, {
+          get: () => ({ ticks: placed[field] }),
+          set: (markTime: { ticks: string }) => { if (!options.inSettable) throw new Error(`${key} is read-only`); placed[field] = markTime.ticks; },
+        });
+      }
+      copy = placed as unknown as typeof copy;
+      target.clips = { numItems: 1, 0: copy };
+    } };
     let copy: { inPoint: { ticks: string }; outPoint: { ticks: string } } | undefined;
     const sequence = {
       timebase: String(frame),
       videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: clip } }, 1: target },
       audioTracks: { numTracks: 0 },
-      overwriteClip: (_item: unknown, startTicks: string) => {
-        const mediaIn = Math.floor((markIn * ticksPerSecond) / mediaFrame + 1e-9) * mediaFrame;
-        const placedIn = (Math.floor(mediaIn / frame + 1e-9) + (options.extraInFrames ?? 0)) * frame;
-        const placed = { nodeId: "copy", start: { ticks: startTicks }, end: { ticks: String(originalEnd) }, inTicks: String(placedIn), outTicks: String(placedIn + (originalEnd - originalStart)) };
-        for (const [key, field] of [["inPoint", "inTicks"], ["outPoint", "outTicks"]] as const) {
-          Object.defineProperty(placed, key, {
-            get: () => ({ ticks: placed[field] }),
-            set: (time: { ticks: string }) => { if (!options.inSettable) throw new Error(`${key} is read-only`); placed[field] = time.ticks; },
-          });
-        }
-        copy = placed as unknown as typeof copy;
-        target.clips = { numItems: 1, 0: copy };
-      },
     };
     class Time { ticks = "0"; }
     return { context: { app: { project: { activeSequence: sequence } }, Time }, item, originalIn, mediaFrame, copy: () => copy };

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `duplicate_clip` no longer maps a missing video or audio destination from `-1` to track `0`. `Sequence.overwriteClip` would overwrite V0 or A0 in the copy's time range (and still report `verified: true` after checking only the intended copy). Audio-only and video-only duplicates now use `Track.overwriteClip` on the free destination track; linked A/V copies still use `Sequence.overwriteClip` with both real indices.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
