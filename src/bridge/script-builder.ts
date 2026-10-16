@@ -131,7 +131,10 @@ function __restoreGridFromItem(item, mediaType) {
   if (mediaType === 2) return TICKS_PER_SECOND / 48000;
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
-    if (fps > 0) return TICKS_PER_SECOND / fps;
+    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+    // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
+    // that would make a "frame" of about a year. Use the audio sample grid.
+    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
   } catch (eGrid) {}
   return TICKS_PER_SECOND / 24;
 }
@@ -175,14 +178,15 @@ function __itemMarksForRestore(item, mediaType) {
   var timebase = value(field("Column.Intrinsic.MediaTimebase", xml));
   function point(block, audio) {
     if (block === null) return null;
-    var tc = value(block), match = /^(\\d+):(\\d{2}):(\\d{2})([:;])(\\d+)$/.exec(tc);
-    if (!match) return null;
-    var hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match[3]), last = Number(match[5]);
+    // Drop-frame metadata can use a semicolon for every separator (00;05;26;11).
+    var tc = value(block), match = /^(\\d+)([:;])(\\d{2})([:;])(\\d{2})([:;])(\\d+)$/.exec(tc);
+    if (!match || (match[6] === ":" && (match[2] === ";" || match[4] === ";"))) return null;
+    var hours = Number(match[1]), minutes = Number(match[3]), seconds = Number(match[5]), last = Number(match[7]);
     if (minutes > 59 || seconds > 59) return null;
     var rateText = value(field("frame_rate", block));
     var hz = audio && timebase && (/Hz/i.test(timebase) || parseFloat(timebase) > 240) ? parseFloat(timebase) : NaN;
     if (audio && isFinite(hz) && hz > 0) {
-      if (match[4] === ";" || last >= hz || Math.floor(hz) !== hz) return null;
+      if (match[6] === ";" || last >= hz || Math.floor(hz) !== hz) return null;
       return { ticks: Math.round(((hours * 3600 + minutes * 60 + seconds) * hz + last) * TICKS_PER_SECOND / hz), frameTicks: TICKS_PER_SECOND / hz };
     }
     var frameTicks = rateText !== null ? Number(rateText) : NaN;
@@ -201,7 +205,7 @@ function __itemMarksForRestore(item, mediaType) {
     var actualRate = TICKS_PER_SECOND / frameTicks, nominal = Math.round(actualRate);
     if (nominal < 1 || nominal > 240 || last >= nominal) return null;
     var frames = (hours * 3600 + minutes * 60 + seconds) * nominal + last;
-    if (match[4] === ";") {
+    if (match[6] === ";") {
       var dropped = 0;
       if (nominal === 30) dropped = 2;
       else if (nominal === 60) dropped = 4;
@@ -214,7 +218,13 @@ function __itemMarksForRestore(item, mediaType) {
   var kind = mediaType === 2 ? "Audio" : "Video";
   var inBlock = field("Column.Intrinsic." + kind + "InPoint", xml), outBlock = field("Column.Intrinsic." + kind + "OutPoint", xml);
   var videoFieldsPresent = xml.indexOf("Column.Intrinsic.VideoInPoint") >= 0 || xml.indexOf("Column.Intrinsic.VideoOutPoint") >= 0;
-  if (mediaType === 4 && inBlock === null && outBlock === null && !videoFieldsPresent) {
+  // Audio-only items still carry VideoInPoint/VideoOutPoint blocks on 26.5.2,
+  // with an empty <rdf:value/>; their range lives in the Audio fields.
+  function emptyPoint(block) {
+    return block === null || /<(?:[A-Za-z_][\\w.-]*:)?value\\s*\\/>/.test(block) || value(block) === "";
+  }
+  var noVideoRange = inBlock === null && outBlock === null ? !videoFieldsPresent : emptyPoint(inBlock) && emptyPoint(outBlock);
+  if (mediaType === 4 && noVideoRange) {
     kind = "Audio";
     inBlock = field("Column.Intrinsic.AudioInPoint", xml); outBlock = field("Column.Intrinsic.AudioOutPoint", xml);
   }
@@ -223,9 +233,10 @@ function __itemMarksForRestore(item, mediaType) {
     return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
-  // The private VideoOutPoint names the last frame (inclusive): a subclip made
-  // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2.
-  if (right && kind !== "Audio") right.ticks += right.frameTicks;
+  // The private Out names the last frame or sample (inclusive): a subclip made
+  // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2,
+  // and a 15 s 48 kHz WAV shows an AudioOutPoint of 00:00:14:47999.
+  if (right) right.ticks += right.frameTicks;
   if (!left || !right || !isFinite(left.ticks) || !isFinite(right.ticks) || left.ticks < 0 || right.ticks > 9007199254740991 || right.ticks <= left.ticks || Math.abs(left.frameTicks - right.frameTicks) > 1) return null;
   var tolerance = Math.max(left.frameTicks, right.frameTicks);
   // DOM already matches the private range. Still bias the write seconds: 26.5.2
@@ -255,11 +266,63 @@ function __mediaGridTicks(item, mediaType) {
   if (mediaType !== 2) {
     try {
       var fps = parseFloat(item.getFootageInterpretation().frameRate);
-      if (fps > 0) return TICKS_PER_SECOND / fps;
+      if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+      // Audio-only items report about 2.75e-8 fps; use the sample grid.
+      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
     } catch (eInterp) {}
     return TICKS_PER_SECOND / 24;
   }
   return TICKS_PER_SECOND / 48000;
+}
+
+// Media type to use for a caller's "all" (4) marks. On 26.5.2 an audio-only
+// item floors type-4 marks to a 25 fps grid (setInPoint(0.5, 4) on a 48 kHz
+// WAV reads back 0.48 s) while type 2 keeps the sample, so audio-only items
+// use type 2 for every write, read and restore.
+function __markMediaTypeForItem(item, mediaType) {
+  if (mediaType !== 4) return mediaType;
+  try {
+    var xml = typeof item.getProjectMetadata === "function" ? String(item.getProjectMetadata() || "") : "";
+    if (/Column\\.Intrinsic\\.MediaType>\\s*Audio\\s*</.test(xml)) return 2;
+  } catch (eMarkType) {}
+  return mediaType;
+}
+
+// Video frame ticks of a project item for a caller's requested mark, or 0 when
+// the item has no usable frame rate. Audio items and sequences report a
+// meaningless rate (2.75e-8 on 26.5.2), so only 1-240 fps counts.
+function __requestedMarkFrameTicks(item, mediaType) {
+  if (mediaType === 2) return 0;
+  try {
+    var fps = parseFloat(item.getFootageInterpretation().frameRate);
+    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+  } catch (eRate) {}
+  return 0;
+}
+
+// Accept a requested mark within one media frame (Premiere floors video marks
+// to the media's own grid) or within half a millisecond for sample-floored audio.
+function __requestedMarkToleranceSeconds(item, mediaType) {
+  var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  return frameTicks > 0 ? frameTicks / TICKS_PER_SECOND : 0.0005;
+}
+
+// Seconds to write for a caller's requested mark. 26.5.2 floors an exact frame
+// (or sample) boundary one frame early (0.5005 s, frame 12 on 23.976 media, reads back as
+// frame 11), so a request on a boundary is written a quarter frame late.
+// Requests between frames are written unchanged and floor as Premiere does.
+function __requestedMarkWriteSeconds(item, mediaType, seconds) {
+  var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  // Audio marks floor an exact sample boundary one sample early the same way
+  // (1.001 s reads back as sample 48047 on a 48 kHz item).
+  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / 48000;
+  if (!(frameTicks > 0)) return seconds;
+  var frames = seconds * TICKS_PER_SECOND / frameTicks;
+  var nearest = Math.round(frames);
+  // Only absorb floating-point representation error, never a caller's subframe offset.
+  var boundaryTolerance = 16 * 2.220446049250313e-16 * Math.max(1, Math.abs(frames));
+  if (Math.abs(frames - nearest) > boundaryTolerance) return seconds;
+  return __biasedMarkSeconds(nearest * frameTicks, frameTicks);
 }
 
 function __biasedMarkSeconds(ticks, gridTicks) {
@@ -2760,6 +2823,8 @@ function __insertClipHonoringSyncLock(seq, item, timeTicks, videoTrackIndex, aud
     tracksAffected: tracksAffected,
     scope: targetOnly ? "target_tracks" : "sync_locked",
     insertedTrackItems: newOnVideo + newOnAudio,
+    placedOnVideoTrack: newOnVideo > 0,
+    placedOnAudioTrack: newOnAudio > 0,
     splitRemainders: insertedClips.length - newOnVideo - newOnAudio
   };
   if (targetOnly) {

@@ -805,6 +805,16 @@ describe("issue #562 — other Sequence.insertClip callers use the same helper",
     expect(rangesOf(seq.videoTracks[1])).toEqual([[6, 8], [10, 12]]);
   });
 
+  it("add_to_timeline reports which track kinds an audio-only item was placed on", async () => {
+    // Live 26.5.2: an audio-only item placed on A4 reported only trackIndex 0, the unused video default.
+    const script = await scriptFor(getTimelineTools(bridgeOptions).add_to_timeline, { item_id: "src", start_seconds: 8, audio_track_index: 1, scope: "target_tracks" });
+    const { sandbox } = issue562Host({ mediaKind: "audio_only" });
+    (sandbox.app as { project: { rootItem?: unknown } }).project.rootItem = {
+      children: { numItems: 1, 0: (sandbox.app as { sourceMonitor: { getProjectItem: () => unknown } }).sourceMonitor.getProjectItem() },
+    };
+    expect(runScript(script, sandbox)).toMatchObject({ success: true, data: { trackIndex: 0, audioTrackIndex: 1, placedOnVideoTrack: false, placedOnAudioTrack: true, insertedTrackItems: 1 } });
+  });
+
   it("apply_edit_plan insert_clip and add_to_timeline_batch call the helper", async () => {
     const plan = { operations: [{ type: "insert_clip" as const, item_id: "src", start_seconds: 8 }] };
     const tools = getEditPlanTools(bridgeOptions, {

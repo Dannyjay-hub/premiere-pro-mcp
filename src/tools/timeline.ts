@@ -153,6 +153,11 @@ export function getTimelineTools(
             syncLockHonored: outcome.data.syncLockHonored,
             item: outcome.data.item,
             trackIndex: ${trackIndex},
+            audioTrackIndex: ${audioTrackIndex},
+            // trackIndex is only the requested video track; an audio-only item
+            // places nothing there, so report which kinds were actually placed.
+            placedOnVideoTrack: outcome.data.placedOnVideoTrack,
+            placedOnAudioTrack: outcome.data.placedOnAudioTrack,
             startSeconds: ${startSeconds},
             insertedTrackItems: outcome.data.insertedTrackItems,
             splitRemainders: outcome.data.splitRemainders
@@ -1296,21 +1301,41 @@ export function getTimelineTools(
           var beforeVideo = videoTarget >= 0 ? idsOn(seq.videoTracks[videoTarget]) : {};
           var beforeAudio = audioTarget >= 0 ? idsOn(seq.audioTracks[audioTarget]) : {};
 
-          var originalMarks = __itemMarksForRestore(item, 4);
+          // Audio-only items floor type-4 marks to a 25 fps grid; write them as audio.
+          var markMediaType = __markMediaTypeForItem(item, 4);
+          // 26.5.2 also floors an exact sample boundary one sample early (1.001 s
+          // reads back as sample 48047), and overwriteClip then floors the In to
+          // the sequence frame, losing a whole frame. Write audio marks a quarter
+          // sample late.
+          if (markMediaType === 2) markBias = __ticksToSeconds(TICKS_PER_SECOND / 48000 / 4);
+          var originalMarks = __itemMarksForRestore(item, markMediaType);
           if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
           var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
           var placeError = null;
           try {
-            item.setInPoint(copyIn + markBias, 4);
-            item.setOutPoint(copyOut + markBias, 4);
-            seq.overwriteClip(item, String(startTicks), Math.max(videoTarget, 0), Math.max(audioTarget, 0));
+            item.setInPoint(copyIn + markBias, markMediaType);
+            item.setOutPoint(copyOut + markBias, markMediaType);
+            // Sequence.overwriteClip treats each index as a real track. Mapping a
+            // missing media kind from -1 to 0 overwrites V0 or A0 (occupied or not).
+            // Single-kind copies use Track.overwriteClip so the other type is untouched.
+            if (videoTarget >= 0 && audioTarget >= 0) {
+              seq.overwriteClip(item, String(startTicks), videoTarget, audioTarget);
+            } else {
+              var destTrack = videoTarget >= 0 ? seq.videoTracks[videoTarget] : seq.audioTracks[audioTarget];
+              if (!destTrack || typeof destTrack.overwriteClip !== "function") {
+                throw new Error("Track.overwriteClip is unavailable on this Premiere build");
+              }
+              var at = new Time();
+              at.ticks = String(startTicks);
+              destTrack.overwriteClip(item, at);
+            }
           } catch (overwriteError) {
             placeError = overwriteError.toString();
           }
-          try { item.setInPoint(originalInSeconds, 4); item.setOutPoint(originalOutSeconds, 4); } catch (restoreError) {}
+          try { item.setInPoint(originalInSeconds, markMediaType); item.setOutPoint(originalOutSeconds, markMediaType); } catch (restoreError) {}
           var marksRestored = false;
-          try { marksRestored = Math.abs(parseFloat(item.getInPoint(4).ticks) - Number(originalMarks.inTicks)) <= __TICK_MATCH_TOL &&
-            Math.abs(parseFloat(item.getOutPoint(4).ticks) - Number(originalMarks.outTicks)) <= __TICK_MATCH_TOL; } catch (restoreReadError) {}
+          try { marksRestored = Math.abs(parseFloat(item.getInPoint(markMediaType).ticks) - Number(originalMarks.inTicks)) <= __TICK_MATCH_TOL &&
+            Math.abs(parseFloat(item.getOutPoint(markMediaType).ticks) - Number(originalMarks.outTicks)) <= __TICK_MATCH_TOL; } catch (restoreReadError) {}
           if (!marksRestored) return __error("Duplicate was attempted but the project-item marks could not be restored. Inspect the source range before retrying.", { outcome: "committed_unverified", verified: false, marksRestored: false, timelineChanged: null });
           if (placeError) return __error("Premiere rejected the duplicate: " + placeError);
 

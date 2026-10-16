@@ -741,8 +741,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
+          var markMediaType = __markMediaTypeForItem(item, ${mediaType});
 
-          var originalMarks = __itemMarksForRestore(item, ${mediaType});
+          var originalMarks = __itemMarksForRestore(item, markMediaType);
           if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
           var hadOriginalIn = true, hadOriginalOut = true;
           var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
@@ -750,14 +751,14 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
           function restoreOriginalMarks() {
             try {
-              if (hadOriginalIn) item.setInPoint(originalInSeconds, ${mediaType});
-              if (hadOriginalOut) item.setOutPoint(originalOutSeconds, ${mediaType});
+              if (hadOriginalIn) item.setInPoint(originalInSeconds, markMediaType);
+              if (hadOriginalOut) item.setOutPoint(originalOutSeconds, markMediaType);
             } catch (restoreErr) {}
           }
 
           function marksRestored() {
-            var restoredIn = item.getInPoint(${mediaType});
-            var restoredOut = item.getOutPoint(${mediaType});
+            var restoredIn = item.getInPoint(markMediaType);
+            var restoredOut = item.getOutPoint(markMediaType);
             return (!hadOriginalIn || (restoredIn && String(restoredIn.ticks) === originalInTicks))
               && (!hadOriginalOut || (restoredOut && String(restoredOut.ticks) === originalOutTicks));
           }
@@ -765,15 +766,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           // Live 26.5.2: Premiere floors video marks to the media's own frame grid
           // (0.5 s on 23.976 media reads back as 11 frames, 0.4588 s) and audio
           // marks to its samples, so accept a mark within one media frame.
-          var markToleranceSeconds = 0.000001;
-          if (${mediaType} !== 2) {
-            try {
-              var mediaFps = parseFloat(item.getFootageInterpretation().frameRate);
-              if (mediaFps > 0) markToleranceSeconds = 1 / mediaFps;
-            } catch (rateErr) {}
-          } else {
-            markToleranceSeconds = 0.0005;
-          }
+          var markToleranceSeconds = __requestedMarkToleranceSeconds(item, markMediaType);
           function markMatches(observed, requestedSeconds) {
             return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
           }
@@ -789,13 +782,13 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             args.in_seconds !== undefined
               ? `
           var inTime = new Time();
-          inTime.seconds = ${args.in_seconds};
+          inTime.seconds = __requestedMarkWriteSeconds(item, markMediaType, ${args.in_seconds});
           try {
-            item.setInPoint(inTime.seconds, ${mediaType});
+            item.setInPoint(inTime.seconds, markMediaType);
           } catch (setInErr) {
             return failAfterMarkUpdate("Premiere rejected the requested project-item in point (" + setInErr.toString() + ").");
           }
-          var observedIn = item.getInPoint(${mediaType});
+          var observedIn = item.getInPoint(markMediaType);
           if (!markMatches(observedIn, ${args.in_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested project-item in point.");
           }
@@ -807,13 +800,13 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             args.out_seconds !== undefined
               ? `
           var outTime = new Time();
-          outTime.seconds = ${args.out_seconds};
+          outTime.seconds = __requestedMarkWriteSeconds(item, markMediaType, ${args.out_seconds});
           try {
-            item.setOutPoint(outTime.seconds, ${mediaType});
+            item.setOutPoint(outTime.seconds, markMediaType);
           } catch (setOutErr) {
             return failAfterMarkUpdate("Premiere rejected the requested project-item out point (" + setOutErr.toString() + ").");
           }
-          var observedOut = item.getOutPoint(${mediaType});
+          var observedOut = item.getOutPoint(markMediaType);
           if (!markMatches(observedOut, ${args.out_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested project-item out point.");
           }
@@ -825,10 +818,11 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             item: item.name,
             inSet: ${args.in_seconds !== undefined},
             outSet: ${args.out_seconds !== undefined},
-            verified: true
+            verified: true,
+            mediaType: markMediaType
           };
-          ${args.in_seconds !== undefined ? `marksResult.requestedInSeconds = ${args.in_seconds}; marksResult.appliedInSeconds = Number(item.getInPoint(${mediaType}).seconds);` : ""}
-          ${args.out_seconds !== undefined ? `marksResult.requestedOutSeconds = ${args.out_seconds}; marksResult.appliedOutSeconds = Number(item.getOutPoint(${mediaType}).seconds);` : ""}
+          ${args.in_seconds !== undefined ? `marksResult.requestedInSeconds = ${args.in_seconds}; marksResult.appliedInSeconds = Number(item.getInPoint(markMediaType).seconds);` : ""}
+          ${args.out_seconds !== undefined ? `marksResult.requestedOutSeconds = ${args.out_seconds}; marksResult.appliedOutSeconds = Number(item.getOutPoint(markMediaType).seconds);` : ""}
           return __result(marksResult);
         `);
         return sendCommand(script, bridgeOptions);

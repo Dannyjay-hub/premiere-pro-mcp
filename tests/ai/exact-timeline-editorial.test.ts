@@ -39,6 +39,17 @@ describe("exact Premiere time", () => {
     expect(() => timecodeToFrame("00:01:00;00", { numerator: 30000, denominator: 1001 }, true)).toThrow(); expect(() => timecodeToFrame("00:00:00;00", { numerator: 24, denominator: 1 })).toThrow();
     expect(() => timecodeToFrame("00:00:00:24", { numerator: 24, denominator: 1 })).toThrow();
   });
+  it("accepts Premiere's all-semicolon drop-frame timecode and keeps non-drop strict", () => {
+    const r = { numerator: 30000, denominator: 1001 }, r60 = { numerator: 60000, denominator: 1001 };
+    expect(timecodeToFrame("00;01;00;02", r, true)).toBe("1800"); expect(timecodeToFrame("00:01:00;02", r, true)).toBe("1800");
+    expect(timecodeToFrame("00;10;00;00", r, true)).toBe(timecodeToFrame("00:10:00;00", r, true));
+    expect(timecodeToFrame("-00;01;00;02", r, true)).toBe("-1800"); expect(timecodeToFrame("00;01;00;04", r60, true)).toBe("3600");
+    for (let frame = 0; frame < 20000; frame += 37) expect(timecodeToFrame(frameToTimecode(String(frame), r, true).replace(/:/g, ";"), r, true)).toBe(String(frame));
+    expect(() => timecodeToFrame("00;01;00;00", r, true)).toThrow("skipped");
+    expect(() => timecodeToFrame("00;01;00:02", r, true)).toThrow("separator"); expect(() => timecodeToFrame("00:01:00:02", r, true)).toThrow("separator");
+    expect(() => timecodeToFrame("00;00;01;00", { numerator: 24, denominator: 1 })).toThrow("separator"); expect(() => timecodeToFrame("00;00;01:00", { numerator: 24, denominator: 1 })).toThrow("separator");
+    expect(() => timecodeToFrame("00:00:01;00", r, false)).toThrow("separator");
+  });
 });
 
 describe("bounded snapshot and expected edits", () => {
@@ -64,9 +75,26 @@ describe("bounded snapshot and expected edits", () => {
     const ripple = predictEdits(s, [{ type: "remove", clip_id: "clip1", ripple: true, scope: "sync_locked" }]); expect(ripple.snapshot.clips[0].start_ticks).toBe(second(1)); expect(ripple.participants).toEqual(["clip1", "clip2"]);
     expect(predictEdits(s, [{ type: "remove", clip_id: "clip1", ripple: false, scope: "track" }]).snapshot.clips[0].start_ticks).toBe(second(3));
   });
+  it("predicts moves and shortening trims without a source duration, refusing extensions and inserts", () => {
+    const s = fixtureSnapshot(); s.clips[0].source_duration_ticks = null; revise(s);
+    const move = predictEdits(s, [{ type: "move", clip_id: "clip1", start_ticks: second(5) }]);
+    expect(move.snapshot.clips[0]).toMatchObject({ start_ticks: second(5), end_ticks: second(7), in_ticks: second(1), out_ticks: second(3) });
+    const shortenOut = predictEdits(s, [{ type: "trim", clip_id: "clip1", out_ticks: second(2) }]); expect(shortenOut.snapshot.clips[0]).toMatchObject({ end_ticks: second(1), out_ticks: second(2) });
+    const shortenIn = predictEdits(s, [{ type: "trim", clip_id: "clip1", in_ticks: second(2) }]); expect(shortenIn.snapshot.clips[0]).toMatchObject({ start_ticks: second(1), in_ticks: second(2) });
+    expect(() => predictEdits(s, [{ type: "trim", clip_id: "clip1", out_ticks: second(4) }])).toThrow("SOURCE_DURATION_UNKNOWN: a source duration is needed only to extend beyond");
+    const moved = structuredClone(s); moved.clips[0].start_ticks = second(2); moved.clips[0].end_ticks = second(4); revise(moved);
+    expect(() => predictEdits(moved, [{ type: "trim", clip_id: "clip1", in_ticks: second(0) }])).toThrow("SOURCE_DURATION_UNKNOWN");
+    expect(() => predictEdits(s, [{ type: "trim", clip_id: "clip1", out_ticks: second(1) }])).toThrow("SOURCE_HANDLE_BOUNDARY");
+    const candidate = { ...s.clips[0], id: "inserted", source_id: "source3", start_ticks: second(2), end_ticks: second(3), in_ticks: "0", out_ticks: second(1), source_duration_ticks: null };
+    expect(() => predictEdits(s, [{ type: "insert", clip: candidate, scope: "track" }])).toThrow("SOURCE_DURATION_UNKNOWN: inserted or overwritten");
+    expect(() => predictEdits(s, [{ type: "overwrite", clip: candidate, scope: "track" }])).toThrow("SOURCE_DURATION_UNKNOWN: inserted or overwritten");
+    const neighbor = structuredClone(s); neighbor.clips.push({ ...s.clips[0], id: "neighbor", start_ticks: second(3), end_ticks: second(5) }); revise(neighbor);
+    expect(() => predictEdits(neighbor, [{ type: "move", clip_id: "clip1", start_ticks: second(2) }])).toThrow("NEIGHBOR");
+  });
   it("refuses locks, unknown handles, collisions, unsupported semantics and slivers", () => {
     const s = fixtureSnapshot(), c = s.clips[0];
-    expect(() => sourceHandlePreflight(s, { ...c, source_duration_ticks: null }, c.in_ticks, c.out_ticks, c.start_ticks, c.end_ticks)).toThrow("SOURCE_DURATION");
+    expect(() => sourceHandlePreflight(s, { ...c, source_duration_ticks: null }, c.in_ticks, c.out_ticks, c.start_ticks, c.end_ticks, true)).toThrow("SOURCE_DURATION");
+    expect(() => sourceHandlePreflight(s, { ...c, source_duration_ticks: null }, second(0), c.out_ticks, second(-1), c.end_ticks)).toThrow("SOURCE_DURATION");
     expect(() => sourceHandlePreflight(s, { ...c, reversed: true }, c.in_ticks, c.out_ticks, c.start_ticks, c.end_ticks)).toThrow("UNSUPPORTED");
     expect(() => sourceHandlePreflight(s, c, "0", "1", "0", "1")).toThrow("sliver");
     const locked = structuredClone(s); locked.tracks[0].locked = true; revise(locked); expect(() => predictEdits(locked, [{ type: "enable", clip_id: c.id, enabled: false }])).toThrow("LOCKED");

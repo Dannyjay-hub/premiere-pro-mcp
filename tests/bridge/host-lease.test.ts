@@ -5,10 +5,27 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withHostLease, ownsHostLease, inspectHostRecovery, markHostRecovery, acknowledgeHostRecovery } from "../../src/bridge/host-lease.js";
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 const directories: string[] = [];
 function directory() { const value = mkdtempSync(join(tmpdir(), "premiere-host-lease-")); directories.push(value); return value; }
-afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => { vi.mocked(readFileSync).mockClear(); for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
 describe("cooperating-process Premiere execution lease", () => {
+  it("retries acquisition when a cooperating owner releases during owner read", async () => {
+    const path = directory(), lock = join(path, ".host-owner-lease"), owner = join(lock, "owner.json");
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(owner, JSON.stringify({ version: 1, pid: process.pid, token: "finishing" }), { mode: 0o600 });
+    vi.mocked(readFileSync).mockImplementationOnce(() => {
+      rmSync(lock, { recursive: true });
+      throw Object.assign(new Error("owner released"), { code: "ENOENT" });
+    });
+    const work = vi.fn(async () => "acquired");
+    await expect(withHostLease(path, 1000, work)).resolves.toBe("acquired");
+    expect(work).toHaveBeenCalledOnce();
+    expect(inspectHostRecovery(path).recoveryRequired).toBe(false);
+  });
   it("holds inspect/apply/readback ownership across nested work", async () => {
     const path = directory(), events: string[] = [];
     await withHostLease(path, 200, async () => {

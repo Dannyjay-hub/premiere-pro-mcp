@@ -56,6 +56,18 @@ describe("CMX 3600 parsing and validation", () => {
     expect(() => timecodeToFrames("not timecode", 24)).toThrow("Invalid timecode");
   });
 
+  it("accepts Premiere's all-semicolon drop-frame timecode in events", () => {
+    expect(timecodeToFrames("00;01;00;02", 29.97)).toBe(timecodeToFrames("00:01:00;02", 29.97));
+    expect(timecodeToFrames("01;00;00;00", 59.94)).toBe(timecodeToFrames("01:00:00;00", 59.94));
+    expect(() => timecodeToFrames("00;01;00;00", 29.97)).toThrow("Invalid dropped frame");
+    expect(() => timecodeToFrames("00;00;01;00", 24)).toThrow("Drop-frame separator");
+    expect(() => timecodeToFrames("00;01;00:02", 29.97)).toThrow("Invalid timecode");
+    const parsed = parseCmx3600Edl("FCM: DROP FRAME\n001  CAM_A    V     C        00;01;00;02 00;01;01;00 01;00;00;00 01;00;00;28");
+    expect(parsed.unrecognizedEventLines).toEqual([]);
+    expect(parsed.events[0]).toMatchObject({ sourceIn: "00;01;00;02", recordOut: "01;00;00;28" });
+    expect(validateCmx3600Edl(parsed, 29.97)).toMatchObject({ valid: true, totalRecordFrames: 28 });
+  });
+
   it("detects duplicate IDs, invalid durations, overlaps, gaps, and invalid event timecodes", () => {
     const parsed = parseCmx3600Edl([
       "001  CAM_A V C 00:00:01:00 00:00:00:00 01:00:00:00 01:00:01:00",

@@ -108,8 +108,9 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var item = app.sourceMonitor.getProjectItem();
           if (!item) return __error("No clip open in Source Monitor");
+          var markMediaType = __markMediaTypeForItem(item, 4);
 
-          var originalMarks = __itemMarksForRestore(item, 4);
+          var originalMarks = __itemMarksForRestore(item, markMediaType);
           if (!originalMarks) return __error("Project-item marks could not be read reliably for restoration; nothing was changed.");
           var hadOriginalIn = true, hadOriginalOut = true;
           var originalInSeconds = originalMarks.inSeconds, originalOutSeconds = originalMarks.outSeconds;
@@ -117,14 +118,14 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
 
           function restoreOriginalMarks() {
             try {
-              if (hadOriginalIn) item.setInPoint(originalInSeconds, 4);
-              if (hadOriginalOut) item.setOutPoint(originalOutSeconds, 4);
+              if (hadOriginalIn) item.setInPoint(originalInSeconds, markMediaType);
+              if (hadOriginalOut) item.setOutPoint(originalOutSeconds, markMediaType);
             } catch (restoreErr) {}
           }
 
           function marksRestored() {
-            var restoredIn = item.getInPoint(4);
-            var restoredOut = item.getOutPoint(4);
+            var restoredIn = item.getInPoint(markMediaType);
+            var restoredOut = item.getOutPoint(markMediaType);
             return (!hadOriginalIn || (restoredIn && String(restoredIn.ticks) === originalInTicks))
               && (!hadOriginalOut || (restoredOut && String(restoredOut.ticks) === originalOutTicks));
           }
@@ -140,24 +141,20 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           // Live 26.5.2: Premiere floors video marks to the media's own frame
           // grid (0.5 s on 23.976 media reads back as 0.4588 s), so accept a
           // mark within one media frame.
-          var markToleranceSeconds = 0.000001;
-          try {
-            var mediaFps = parseFloat(item.getFootageInterpretation().frameRate);
-            if (mediaFps > 0) markToleranceSeconds = 1 / mediaFps;
-          } catch (rateErr) {}
+          var markToleranceSeconds = __requestedMarkToleranceSeconds(item, markMediaType);
           function markMatches(observed, requestedSeconds) {
             return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
           }
 
           ${args.in_seconds !== undefined ? `
           var inTime = new Time();
-          inTime.seconds = ${args.in_seconds};
+          inTime.seconds = __requestedMarkWriteSeconds(item, markMediaType, ${args.in_seconds});
           try {
-            item.setInPoint(inTime.seconds, 4);
+            item.setInPoint(inTime.seconds, markMediaType);
           } catch (setInErr) {
             return failAfterMarkUpdate("Premiere rejected the requested Source Monitor in point (" + setInErr.toString() + ").");
           }
-          var observedIn = item.getInPoint(4);
+          var observedIn = item.getInPoint(markMediaType);
           if (!markMatches(observedIn, ${args.in_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested Source Monitor in point.");
           }
@@ -165,13 +162,13 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
 
           ${args.out_seconds !== undefined ? `
           var outTime = new Time();
-          outTime.seconds = ${args.out_seconds};
+          outTime.seconds = __requestedMarkWriteSeconds(item, markMediaType, ${args.out_seconds});
           try {
-            item.setOutPoint(outTime.seconds, 4);
+            item.setOutPoint(outTime.seconds, markMediaType);
           } catch (setOutErr) {
             return failAfterMarkUpdate("Premiere rejected the requested Source Monitor out point (" + setOutErr.toString() + ").");
           }
-          var observedOut = item.getOutPoint(4);
+          var observedOut = item.getOutPoint(markMediaType);
           if (!markMatches(observedOut, ${args.out_seconds})) {
             return failAfterMarkUpdate("Premiere did not apply the requested Source Monitor out point.");
           }
@@ -183,8 +180,8 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
             outSet: ${args.out_seconds !== undefined},
             verified: true
           };
-          ${args.in_seconds !== undefined ? `sourceMarks.requestedInSeconds = ${args.in_seconds}; sourceMarks.appliedInSeconds = Number(item.getInPoint(4).seconds);` : ""}
-          ${args.out_seconds !== undefined ? `sourceMarks.requestedOutSeconds = ${args.out_seconds}; sourceMarks.appliedOutSeconds = Number(item.getOutPoint(4).seconds);` : ""}
+          ${args.in_seconds !== undefined ? `sourceMarks.requestedInSeconds = ${args.in_seconds}; sourceMarks.appliedInSeconds = Number(item.getInPoint(markMediaType).seconds);` : ""}
+          ${args.out_seconds !== undefined ? `sourceMarks.requestedOutSeconds = ${args.out_seconds}; sourceMarks.appliedOutSeconds = Number(item.getOutPoint(markMediaType).seconds);` : ""}
           return __result(sourceMarks);
         `);
         return sendCommand(script, bridgeOptions);
@@ -244,7 +241,7 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
     },
 
     overwrite_from_source: {
-      description: "Overwrite the clip from the Source Monitor at the playhead position (overwrite edit — replaces existing clips) and verify a new placement on the requested tracks.",
+      description: "Overwrite the clip from the Source Monitor at the playhead position (overwrite edit — replaces existing clips) and verify a new placement on the requested tracks. Every video/audio stream the Source Monitor item actually has must land on those tracks; a picture-only or sound-only placement is committed_unverified, not verified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -278,6 +275,13 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           if (!item) return __error("No clip open in Source Monitor");
 
           var pos = seq.getPlayerPosition().ticks;
+          function mediaSpan(mediaType) {
+            try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (spanError) { return null; }
+          }
+          var videoSpan = mediaSpan(1);
+          var audioSpan = mediaSpan(2);
+          var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+          var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
           var wantedItemId = String(item.nodeId);
           var wantedStartTicks = parseFloat(pos);
           var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
@@ -322,6 +326,15 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           var audioPlaced = audioAfter !== "";
           if ((!videoPlaced || videoAfter === videoBefore) && (!audioPlaced || audioAfter === audioBefore)) {
             return __error("overwrite_from_source produced no verifiable new placement of " + item.name + " at " + __ticksToSeconds(pos) + "s on the requested tracks.");
+          }
+          var missingVideo = videoReceives && !videoPlaced;
+          var missingAudio = audioReceives && !audioPlaced;
+          if (missingVideo || missingAudio) {
+            var missing = (missingVideo ? "video" : "") + (missingVideo && missingAudio ? " and " : "") + (missingAudio ? "audio" : "");
+            var missingStreams = [];
+            if (missingVideo) missingStreams.push("video");
+            if (missingAudio) missingStreams.push("audio");
+            return __error("overwrite_from_source did not place the clip's " + missing + " on the requested tracks at " + __ticksToSeconds(pos) + "s. Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: videoPlaced, placedOnAudioTrack: audioPlaced, missingStreams: missingStreams });
           }
 
           return __result({

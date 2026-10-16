@@ -22,7 +22,7 @@ function item(xml = metadata(), rejectRequested = false) {
     getFootageInterpretation: () => ({ frameRate: 25 }),
     getInPoint: (_type?: number) => mark(left), getOutPoint: (_type?: number) => mark(right),
     // Live 26.5.2 floors written marks to the media frame grid (25 fps here).
-    setInPoint: vi.fn((seconds: number) => { if (!(rejectRequested && seconds === 40)) left = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
+    setInPoint: vi.fn((seconds: number) => { if (!(rejectRequested && Math.abs(seconds - 40) < 1 / 25)) left = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
     setOutPoint: vi.fn((seconds: number) => { right = Math.floor(seconds * 25 + 1e-9) * (T / 25); }),
   };
 }
@@ -54,9 +54,50 @@ describe("soft subclip restore marks", () => {
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) }).inTicks).toBe(String(1800 * frame));
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;00", "00:02:00;02", frame)) })).toBeNull();
   });
+  it("reads an audio-only item's range when its Video fields are empty (default media type)", () => {
+    // Live 26.5.2 metadata for a 15 s 48 kHz WAV: empty Video blocks, inclusive last-sample Audio Out.
+    const P = "premierePrivateProjectMetaData";
+    const emptyVideo = (name: string) => `<${P}:Column.Intrinsic.Video${name} rdf:parseType="Resource"><rdf:value/><${P}:min>0</${P}:min><${P}:max>-101606410160640000</${P}:max></${P}:Column.Intrinsic.Video${name}>`;
+    const audio = (name: string, tc: string) => `<${P}:Column.Intrinsic.Audio${name} rdf:parseType="Resource"><rdf:value>${tc}</rdf:value></${P}:Column.Intrinsic.Audio${name}>`;
+    const xml = `<rdf:RDF>${emptyVideo("InPoint")}${emptyVideo("OutPoint")}${audio("InPoint", "00:00:00:00000")}${audio("OutPoint", "00:00:14:47999")}<${P}:Column.Intrinsic.MediaTimebase>48000 Hz</${P}:Column.Intrinsic.MediaTimebase><${P}:Column.Intrinsic.MediaType>Audio</${P}:Column.Intrinsic.MediaType></rdf:RDF>`;
+    const tone = { ...item(xml), getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }) };
+    const right = 15 * T;
+    tone.getInPoint = () => ({ ticks: "0", seconds: 0 });
+    tone.getOutPoint = () => ({ ticks: String(right), seconds: right / T });
+    const marks = run("__itemMarksForRestore(item, 4)", { item: tone });
+    expect(marks).not.toBeNull();
+    expect(marks.inTicks).toBe("0");
+    expect(marks.outTicks).toBe(String(15 * T));
+    // The write bias is a quarter of a 48 kHz sample, not a quarter of a year.
+    expect(marks.outSeconds - 15).toBeGreaterThan(0);
+    expect(marks.outSeconds - 15).toBeLessThan(1 / 48000);
+    expect(run("__mediaGridTicks(item, 4)", { item: tone })).toBe(T / 48000);
+    expect(run("__restoreGridFromItem(item, 4)", { item: tone })).toBe(T / 48000);
+  });
+  it("parses Premiere's all-semicolon drop-frame metadata like the SMPTE form", () => {
+    const frame = T * 1001 / 30000;
+    const smpte = run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) });
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00;02", "00;02;00;02", frame)) })).toEqual(smpte);
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00;00", "00;02;00;02", frame)) })).toBeNull();
+    expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00;01;00:02", "00;02;00:02", frame)) })).toBeNull();
+  });
   it("parses audio samples with an Hz MediaTimebase", () => {
     const marks = run("__itemMarksForRestore(item, 2)", { item: item(metadata("00:00:10:24000", "00:00:20:00000", T / 48000, "Audio", "48000 Hz")) });
     expect(marks.inSeconds).toBeCloseTo(10.5, 4); expect(marks.outSeconds).toBeCloseTo(20, 4);
+  });
+  it("treats the private Audio Out as inclusive, like the Video Out", () => {
+    // Live 26.5.2: an audio subclip made with an exclusive Out of 4.004 s stores 00:00:04:00191;
+    // its frame_rate child is the 25 fps display rate, the samples come from MediaTimebase.
+    const marks = run("__itemMarksForRestore(item, 2)", { item: item(metadata("00:00:01:00048", "00:00:04:00191", T / 25, "Audio", "48000 Hz")) });
+    expect(marks.inTicks).toBe(String(48048 * (T / 48000)));
+    expect(marks.outTicks).toBe(String(192192 * (T / 48000)));
+  });
+  it("writes an exact audio sample boundary a quarter sample late", () => {
+    // Live 26.5.2: setInPoint(1.001, 2) reads back sample 48047.
+    const seconds = run("__requestedMarkWriteSeconds(item, 2, 1.001)", { item: item() });
+    expect(seconds).toBeGreaterThan(1.001);
+    expect(seconds).toBeLessThan(1.001 + 1 / 48000);
+    expect(run("__requestedMarkWriteSeconds(item, 2, 1.0010101)", { item: item() })).toBe(1.0010101);
   });
   it("falls back to readable DOM marks when metadata is absent, keeping near-equal DOM marks", () => {
     const source = item("");
@@ -162,9 +203,10 @@ describe("soft subclip restore marks", () => {
     const getOut = source.getOutPoint;
     source.getOutPoint = (type?: number) => type === 2 ? { ticks: "0", seconds: 0 } : getOut(type);
     const original = { nodeId: "clip", projectItem: source, start: { ticks: "0" }, end: { ticks: String(10*T) }, inPoint: { ticks: String(20*T) } };
-    const target = { clips: { numItems: 0 } as Record<string, unknown> };
-    const seq = { timebase: String(T / 25), videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target }, audioTracks: { numTracks: 0 },
-      overwriteClip: () => { target.clips = { numItems: 1, 0: { nodeId: "copy", start: original.start, end: original.end, inPoint: original.inPoint } }; } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown>, overwriteClip: () => {
+      target.clips = { numItems: 1, 0: { nodeId: "copy", start: original.start, end: original.end, inPoint: original.inPoint } };
+    } };
+    const seq = { timebase: String(T / 25), videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target }, audioTracks: { numTracks: 0 } };
     sent.mockImplementation(async (script) => JSON.parse(String(run(script, { Time, app: { project: { activeSequence: seq } } }))));
     await expect(getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" })).resolves.toMatchObject({ success: true });
     expect(source.getInPoint().seconds).toBe(20); expect(source.getOutPoint().seconds).toBeCloseTo(30.04, 6);
@@ -173,6 +215,36 @@ describe("soft subclip restore marks", () => {
     source.setInPoint.mockClear(); source.setOutPoint.mockClear();
     await expect(getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" })).resolves.toMatchObject({ success: false, error: expect.stringContaining("reliably") });
     expect(source.setInPoint).not.toHaveBeenCalled(); expect(source.setOutPoint).not.toHaveBeenCalled();
+  });
+  it("duplicates an audio-only clip without losing a frame of its source In", async () => {
+    // Live 26.5.2: type-4 marks on a WAV floor to a 25 fps grid, an exact sample boundary floors
+    // one sample early, and overwriteClip floors the copy's In to the sequence frame (1.001 -> 0.9676 s).
+    const F = T * 1001 / 30000, S = T / 48000;
+    const xml = metadata("00:00:00:00000", "00:00:14:47999", T / 25, "Audio", "48000 Hz").replace("</rdf:RDF>", "<p:Column.Intrinsic.MediaType>Audio</p:Column.Intrinsic.MediaType></rdf:RDF>");
+    let left = 0, right = 15 * T;
+    const hostFloor = (seconds: number, type?: number) => { const grid = type === 2 ? S : T / 25; return Math.floor(seconds * T / grid * (1 - 1e-12)) * grid; };
+    const mark = (ticks: number) => ({ ticks: String(Math.round(ticks)), seconds: ticks / T });
+    const tone = { nodeId: "tone", name: "Tone", type: 1,
+      getProjectMetadata: () => xml,
+      getFootageInterpretation: () => ({ frameRate: 2.75404699046078e-8 }),
+      getInPoint: (type?: number) => mark(type === 1 ? 0 : left), getOutPoint: (type?: number) => mark(type === 1 ? 0 : right),
+      setInPoint: vi.fn((seconds: number, type?: number) => { left = hostFloor(seconds, type); }),
+      setOutPoint: vi.fn((seconds: number, type?: number) => { right = hostFloor(seconds, type); }),
+    };
+    const original = { nodeId: "clip", projectItem: tone, start: { ticks: String(60 * F) }, end: { ticks: String(164 * F) }, inPoint: { ticks: String(30 * F) } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown>,
+      overwriteClip: (_item: unknown, time: { ticks: string }) => {
+        const start = time.ticks;
+        const inTicks = Math.floor(left / F + 1e-9) * F;
+        target.clips = { numItems: 1, 0: { nodeId: "copy", start: { ticks: start }, end: { ticks: String(Number(start) + 104 * F) }, inPoint: { ticks: String(inTicks) } } };
+      } };
+    const seq = { timebase: String(F), videoTracks: { numTracks: 1, 0: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target } };
+    sent.mockImplementation(async (script) => JSON.parse(String(run(script, { Time, app: { project: { activeSequence: seq } } }))));
+    const result = await getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" });
+    expect(result).toMatchObject({ success: true, data: { verified: true, copy: { trackType: "audio", trackIndex: 1 } } });
+    expect((result as { data: { copy: { inSeconds: number } } }).data.copy.inSeconds).toBeCloseTo(30 * F / T, 9);
+    expect(tone.setInPoint).not.toHaveBeenCalledWith(expect.anything(), 4);
+    expect(left).toBe(0); expect(right).toBe(15 * T);
   });
   it("refuses malformed private marks before any temporary or requested mark write", async () => {
     const source = item(metadata("bad", "00:00:30:00"));

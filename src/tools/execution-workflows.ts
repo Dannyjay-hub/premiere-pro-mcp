@@ -14,7 +14,7 @@ import { createReviewClip, snapshotArtifact, assertArtifactUnchanged, hashStable
 import { startLocalJob, getWorkflowJob, cancelWorkflowJob, normalizeNativeJob } from "../workflows/job-contract.js";
 import { inspectExportPresetFile, validateDeliveryConformanceContract } from "./export.js";
 import { statSync, existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, win32 as win32Path } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 
 type Result = { success: boolean; data?: unknown; error?: string };
@@ -25,6 +25,13 @@ const token = { type: "string", minLength: 1, maxLength: 128, description: "Exac
 const failure = (error: unknown): Result => ({ success: false, error: error instanceof Error ? error.message : String(error) });
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const LOCAL_ANALYSIS = ["inspect_media_streams", "detect_audio_transients", "detect_motion_peaks", "read_video_scopes", "analyze_video_interlacing", "detect_active_picture_bounds"];
+/** Premiere reports File.fsName (Windows backslashes / drive case). Same file must still verify. */
+export function sameResolvedDeliveryPath(requested: string, reported: string, platform = process.platform): boolean {
+  const resolvePath = platform === "win32" ? win32Path.resolve : resolve;
+  const left = resolvePath(requested), right = resolvePath(reported);
+  if (left === right) return true;
+  return platform === "win32" && left.toLowerCase() === right.toLowerCase();
+}
 
 export function getExecutionWorkflowTools(bridgeOptions: BridgeOptions, options: { getToolCatalog: () => Record<string, Tool>; capabilities?: CapabilityConfig; uxpBridge?: UxpWebSocketBridge }) {
   const capabilities = options.capabilities ?? resolveCapabilities();
@@ -180,9 +187,11 @@ export function getExecutionWorkflowTools(bridgeOptions: BridgeOptions, options:
           await reportProgress(1, 4, "Export preflight passed; rendering next.");
           const rendered = await runWithExpectedProject(identity.projectPath, () => runWithExpectedHostTarget({ backend: "cep", sequence_id: identity.sequenceId, project_document_id: identity.projectDocumentId }, () => invoke("export_sequence", { output_path: args.output_path, preset_path: args.preset_path, ...(args.range ? { range: args.range } : {}), ...(args.timeout_minutes ? { timeout_minutes: args.timeout_minutes } : {}) }))); steps.push({ stage: "render", ...rendered });
           if (!rendered.success) return { success: false, error: rendered.error, data: { outcome: "unknown", operationId, steps, recoveryRequired: true } };
-          const output = record(rendered.data); const outputPath = typeof output.outputPath === "string" ? output.outputPath : args.output_path;
-          // No other file, queue job, or older output may complete this workflow.
-          if (outputPath !== args.output_path) throw new Error("OUTPUT_IDENTITY_CHANGED: inspect native receipt before validation");
+          const output = record(rendered.data);
+          const reportedPath = typeof output.outputPath === "string" ? output.outputPath : args.output_path;
+          // File.fsName rewrites separators/drive case; a different inode must still fail.
+          if (!sameResolvedDeliveryPath(args.output_path, reportedPath)) throw new Error("OUTPUT_IDENTITY_CHANGED: inspect native receipt before validation");
+          const outputPath = resolve(args.output_path);
           const outputSnapshot = snapshotArtifact(outputPath);
           await reportProgress(2, 4, "Native render returned; validating exact artifact.");
           assertArtifactUnchanged(outputPath, outputSnapshot);

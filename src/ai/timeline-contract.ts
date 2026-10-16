@@ -91,11 +91,19 @@ export function affectedTracks(snapshot: TimelineSnapshot, trackId: string, scop
   if (!selected.length || selected.some(t => t.locked !== false)) throw new Error("TRACK_LOCKED_OR_UNKNOWN: participating tracks must be explicitly unlocked");
   return selected;
 }
-export function sourceHandlePreflight(snapshot: TimelineSnapshot, clip: TimelineClip, proposedIn: string, proposedOut: string, proposedStart: string, proposedEnd: string): void {
+/**
+ * Without a known source duration, only source frames the clip already uses are
+ * proven to exist: a move or a shortening trim stays inside the current in/out.
+ * Inserted or overwritten candidates name a caller-supplied range, so they pass
+ * `requireSourceDuration` and still need the duration.
+ */
+export function sourceHandlePreflight(snapshot: TimelineSnapshot, clip: TimelineClip, proposedIn: string, proposedOut: string, proposedStart: string, proposedEnd: string, requireSourceDuration = false): void {
   if (clip.speed.numerator !== clip.speed.denominator || clip.reversed || clip.nested) throw new Error("UNSUPPORTED_TIME_MAPPING: edits require nonnested forward 1x media");
-  if (clip.source_duration_ticks === null) throw new Error("SOURCE_DURATION_UNKNOWN: inspect physical source handles before planning");
   const i = ticks(proposedIn), o = ticks(proposedOut), s = ticks(proposedStart), e = ticks(proposedEnd);
-  if (i < 0n || o > ticks(clip.source_duration_ticks) || o <= i || s < 0n || e <= s || e - s !== o - i) throw new Error("SOURCE_HANDLE_BOUNDARY: proposed range exceeds source or has inconsistent duration");
+  if (clip.source_duration_ticks === null && requireSourceDuration) throw new Error("SOURCE_DURATION_UNKNOWN: inserted or overwritten source ranges need a known source duration; inspect physical source handles before planning");
+  if (clip.source_duration_ticks === null && (i < ticks(clip.in_ticks) || o > ticks(clip.out_ticks))) throw new Error("SOURCE_DURATION_UNKNOWN: a source duration is needed only to extend beyond the clip's current source range; inspect physical source handles before planning");
+  const sourceLimit = clip.source_duration_ticks === null ? ticks(clip.out_ticks) : ticks(clip.source_duration_ticks);
+  if (i < 0n || o > sourceLimit || o <= i || s < 0n || e <= s || e - s !== o - i) throw new Error("SOURCE_HANDLE_BOUNDARY: proposed range exceeds source or has inconsistent duration");
   if (snapshot.tracks.find(track => track.id === clip.track_id)?.type === "video" && e - s < ticks(frameToTicks("1", snapshot.frame_rate))) throw new Error("MINIMUM_VISIBLE_DURATION: edit would create a subframe video sliver");
   if (snapshot.clips.some(other => other.id !== clip.id && other.track_id === clip.track_id && ticks(other.start_ticks) < e && ticks(other.end_ticks) > s)) throw new Error("NEIGHBOR_OCCUPIED: edit would overlap another clip");
 }
@@ -130,7 +138,7 @@ export function predictEdits(input: unknown, operations: ExpectedEdit[]): { snap
         if (next.clips.some(c => selected.has(c.track_id) && ticks(c.start_ticks) < start && ticks(c.end_ticks) > start)) throw new Error("STRADDLING_CLIP: insertion requires separately modeled split");
         for (const c of next.clips) if (selected.has(c.track_id) && ticks(c.start_ticks) >= start) { c.start_ticks = (ticks(c.start_ticks) + duration).toString(); c.end_ticks = (ticks(c.end_ticks) + duration).toString(); participants.add(c.id); }
       }
-      sourceHandlePreflight(next, candidate, candidate.in_ticks, candidate.out_ticks, candidate.start_ticks, candidate.end_ticks);
+      sourceHandlePreflight(next, candidate, candidate.in_ticks, candidate.out_ticks, candidate.start_ticks, candidate.end_ticks, true);
       next.clips.push(candidate); participants.add(candidate.id); continue;
     }
     if (!("clip_id" in operation)) throw new Error("unsupported expected edit operation");

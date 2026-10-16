@@ -72,6 +72,24 @@ describe("create_subclip reads the stored range back", () => {
     expect(result.data?.observedOutSeconds).toBeCloseTo(96 * FRAME_23976 / TICKS, 9);
   });
 
+  it("reads an audio-only subclip's range from its Audio points and sample timebase", async () => {
+    // Live 26.5.2: Video points are empty, Audio points count samples, and their frame_rate is 25 fps display.
+    const audio = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta><rdf:RDF><rdf:Description>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase>48000 Hz</premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.VideoInPoint rdf:parseType="Resource"><rdf:value/></premierePrivateProjectMetaData:Column.Intrinsic.VideoInPoint>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.VideoOutPoint rdf:parseType="Resource"><rdf:value/></premierePrivateProjectMetaData:Column.Intrinsic.VideoOutPoint>`
+      + point("AudioInPoint", "00:00:01:00048", FRAME_25)
+      + point("AudioOutPoint", "00:00:04:00191", FRAME_25)
+      + `</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
+    host(() => audio);
+    const result = await run({ item_id: "src-1", name: "Tone", in_seconds: 1.001, out_seconds: 4.004 });
+    expect(result.data).toMatchObject({ outcome: "verified", verified: true, observedInTimecode: "00:00:01:00048", observedOutTimecode: "00:00:04:00191" });
+    expect(result.data?.observedInSeconds).toBeCloseTo(1.001, 9);
+    expect(result.data?.observedOutSeconds).toBeCloseTo(4.004, 9);
+    host(() => audio.replace("48000 Hz", "25"));
+    expect((await run({ item_id: "src-1", name: "Tone", in_seconds: 1.001, out_seconds: 4.004 })).data).toMatchObject({ outcome: "committed_unverified", verified: false });
+  });
+
   it("counts drop-frame timecode at 29.97", async () => {
     host(() => packet("00;01;00;02", "00;01;01;01", FRAME_2997));
     const result = await run({ item_id: "src-1", name: "DF", in_seconds: 60.06, out_seconds: 61.06 });
