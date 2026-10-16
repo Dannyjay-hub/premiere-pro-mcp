@@ -1315,7 +1315,20 @@ export function getTimelineTools(
           try {
             item.setInPoint(copyIn + markBias, markMediaType);
             item.setOutPoint(copyOut + markBias, markMediaType);
-            seq.overwriteClip(item, String(startTicks), Math.max(videoTarget, 0), Math.max(audioTarget, 0));
+            // Sequence.overwriteClip treats each index as a real track. Mapping a
+            // missing media kind from -1 to 0 overwrites V0 or A0 (occupied or not).
+            // Single-kind copies use Track.overwriteClip so the other type is untouched.
+            if (videoTarget >= 0 && audioTarget >= 0) {
+              seq.overwriteClip(item, String(startTicks), videoTarget, audioTarget);
+            } else {
+              var destTrack = videoTarget >= 0 ? seq.videoTracks[videoTarget] : seq.audioTracks[audioTarget];
+              if (!destTrack || typeof destTrack.overwriteClip !== "function") {
+                throw new Error("Track.overwriteClip is unavailable on this Premiere build");
+              }
+              var at = new Time();
+              at.ticks = String(startTicks);
+              destTrack.overwriteClip(item, at);
+            }
           } catch (overwriteError) {
             placeError = overwriteError.toString();
           }

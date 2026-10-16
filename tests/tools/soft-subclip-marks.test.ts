@@ -203,9 +203,10 @@ describe("soft subclip restore marks", () => {
     const getOut = source.getOutPoint;
     source.getOutPoint = (type?: number) => type === 2 ? { ticks: "0", seconds: 0 } : getOut(type);
     const original = { nodeId: "clip", projectItem: source, start: { ticks: "0" }, end: { ticks: String(10*T) }, inPoint: { ticks: String(20*T) } };
-    const target = { clips: { numItems: 0 } as Record<string, unknown> };
-    const seq = { timebase: String(T / 25), videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target }, audioTracks: { numTracks: 0 },
-      overwriteClip: () => { target.clips = { numItems: 1, 0: { nodeId: "copy", start: original.start, end: original.end, inPoint: original.inPoint } }; } };
+    const target = { clips: { numItems: 0 } as Record<string, unknown>, overwriteClip: () => {
+      target.clips = { numItems: 1, 0: { nodeId: "copy", start: original.start, end: original.end, inPoint: original.inPoint } };
+    } };
+    const seq = { timebase: String(T / 25), videoTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target }, audioTracks: { numTracks: 0 } };
     sent.mockImplementation(async (script) => JSON.parse(String(run(script, { Time, app: { project: { activeSequence: seq } } }))));
     await expect(getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" })).resolves.toMatchObject({ success: true });
     expect(source.getInPoint().seconds).toBe(20); expect(source.getOutPoint().seconds).toBeCloseTo(30.04, 6);
