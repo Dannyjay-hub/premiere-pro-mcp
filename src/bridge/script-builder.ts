@@ -319,7 +319,9 @@ function __requestedMarkWriteSeconds(item, mediaType, seconds) {
   if (!(frameTicks > 0)) return seconds;
   var frames = seconds * TICKS_PER_SECOND / frameTicks;
   var nearest = Math.round(frames);
-  if (Math.abs(frames - nearest) > 0.001) return seconds;
+  // Only absorb floating-point representation error, never a caller's subframe offset.
+  var boundaryTolerance = 16 * 2.220446049250313e-16 * Math.max(1, Math.abs(frames));
+  if (Math.abs(frames - nearest) > boundaryTolerance) return seconds;
   return __biasedMarkSeconds(nearest * frameTicks, frameTicks);
 }
 

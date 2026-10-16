@@ -232,12 +232,13 @@ describe("soft subclip restore marks", () => {
       setOutPoint: vi.fn((seconds: number, type?: number) => { right = hostFloor(seconds, type); }),
     };
     const original = { nodeId: "clip", projectItem: tone, start: { ticks: String(60 * F) }, end: { ticks: String(164 * F) }, inPoint: { ticks: String(30 * F) } };
-    const target = { clips: { numItems: 0 } as Record<string, unknown> };
-    const seq = { timebase: String(F), videoTracks: { numTracks: 1, 0: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target },
-      overwriteClip: (_item: unknown, start: string) => {
+    const target = { clips: { numItems: 0 } as Record<string, unknown>,
+      overwriteClip: (_item: unknown, time: { ticks: string }) => {
+        const start = time.ticks;
         const inTicks = Math.floor(left / F + 1e-9) * F;
         target.clips = { numItems: 1, 0: { nodeId: "copy", start: { ticks: start }, end: { ticks: String(Number(start) + 104 * F) }, inPoint: { ticks: String(inTicks) } } };
       } };
+    const seq = { timebase: String(F), videoTracks: { numTracks: 1, 0: { clips: { numItems: 0 } } }, audioTracks: { numTracks: 2, 0: { clips: { numItems: 1, 0: original } }, 1: target } };
     sent.mockImplementation(async (script) => JSON.parse(String(run(script, { Time, app: { project: { activeSequence: seq } } }))));
     const result = await getTimelineTools(options).duplicate_clip.handler({ node_id: "clip" });
     expect(result).toMatchObject({ success: true, data: { verified: true, copy: { trackType: "audio", trackIndex: 1 } } });

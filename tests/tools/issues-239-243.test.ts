@@ -111,6 +111,15 @@ describe("project-item source range units", () => {
     expect(result.data.appliedOutSeconds).toBeCloseTo(47 / fps, 9);
   });
 
+  it.each([24, 24000 / 1001, 30000 / 1001, 48000])("keeps caller marks just below a %s grid boundary below that boundary", (fps) => {
+    const seconds = (1 - 0.0004) / fps;
+    const written = runInNewContext(getHelpersSource() + `\n__requestedMarkWriteSeconds(item, ${fps === 48000 ? 2 : 4}, ${seconds})`, {
+      item: { getFootageInterpretation: () => ({ frameRate: fps }) },
+    });
+    expect(written).toBe(seconds);
+    expect(Math.floor(written * fps)).toBe(0);
+  });
+
   it("does not turn the meaningless frame rate of an audio item into a years-wide tolerance", async () => {
     const tool = getTrackTargetingTools(bridgeOptions).set_item_in_out;
     const script = await scriptFor(tool, { item_id: "tone", in_seconds: 0.5 });
