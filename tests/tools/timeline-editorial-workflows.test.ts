@@ -48,6 +48,29 @@ describe("reachable timeline/editorial contracts", () => {
     await expect(tools.inspect_timeline_snapshot.handler({ sequence_id: "s", max_clips: 1001 })).rejects.toThrow();
     await expect(getTimelineEditorialTools({}, { capabilities: resolveCapabilities("edit"), send }).inspect_timeline_snapshot.handler({ sequence_id: "s" })).rejects.toThrow("inspect");
   });
+  it("reads track targeting and mute from the DOM, and sync lock from QE only for the active sequence", async () => {
+    // Live 26.5.2: these were always null, so predict_timeline_edit refused every sync_locked ripple.
+    const clip = { nodeId: "clip", projectItem: { nodeId: "source", isSequence: () => false }, start: { ticks: "0" }, end: { ticks: time(2) }, inPoint: { ticks: "0" }, outPoint: { ticks: time(2) }, disabled: false, getLinkedItems: () => null, getSpeed: () => 1, isSpeedReversed: () => false };
+    const videoTracks = Object.assign([{ clips: Object.assign([clip], { numItems: 1 }), isLocked: () => false, isTargeted: () => true, isMuted: () => false }], { numTracks: 1 });
+    const audioTracks = Object.assign([{ clips: Object.assign([], { numItems: 0 }), isLocked: () => false, isTargeted: () => 0, isMuted: () => { throw new Error("unreadable"); } }], { numTracks: 1 });
+    const seq = { sequenceID: "s", timebase: time(1 / 24), zeroPoint: "0", videoTracks, audioTracks };
+    const qeSeq = { getVideoTrackAt: () => ({ isSyncLocked: () => true }), getAudioTrackAt: () => ({ isSyncLocked: () => "yes" }) };
+    const enableQE = vi.fn();
+    const contextFor = (active: unknown) => ({ app: { project: { documentID: "p", activeSequence: active }, enableQE }, qe: { project: { getActiveSequence: () => qeSeq } }, __findSequence: () => seq, __isCurrentProjectSequence: () => true, __result: success, __error: failure });
+    let context = contextFor(seq);
+    const send = vi.fn(async (script: string) => vm.runInNewContext(script, context));
+    const tools = getTimelineEditorialTools({}, { send });
+    const active = await tools.inspect_timeline_snapshot.handler({ sequence_id: "s" });
+    expect(active.data.tracks).toEqual([
+      expect.objectContaining({ id: "video:0", targeted: true, muted: false, sync_locked: true }),
+      expect.objectContaining({ id: "audio:0", targeted: false, muted: null, sync_locked: null }),
+    ]);
+    expect(enableQE).toHaveBeenCalled();
+    context = contextFor({ sequenceID: "other" }); enableQE.mockClear();
+    const inactive = await tools.inspect_timeline_snapshot.handler({ sequence_id: "s" });
+    expect(inactive.data.tracks[0]).toMatchObject({ targeted: true, muted: false, sync_locked: null });
+    expect(enableQE).not.toHaveBeenCalled();
+  });
   it("exposes local editorial routes with bounded invalid-input errors", async () => {
     const tools = getTimelineEditorialTools({});
     expect(await tools.plan_media_synchronization.handler({ method: "anchors", reference_ticks: ["20"], candidate_ticks: ["10"] })).toMatchObject({ data: { offset_ticks: "10" } });
@@ -74,7 +97,9 @@ describe("reachable timeline/editorial contracts", () => {
     writeFileSync(path.join(root, `workflow-checkpoint-${id}.json`), JSON.stringify({ checkpoint: { ...checkpoint, schema_version: 2 } })); await expect(restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: id })).rejects.toThrow("version");
     await expect(restarted.inspect_workflow_checkpoint.handler({ checkpoint_id: "../escape" })).rejects.toThrow("ID");
     await expect(getTimelineEditorialTools({ tempDir: root }, { capabilities: resolveCapabilities("inspect") }).save_workflow_checkpoint.handler({ checkpoint })).rejects.toThrow("filesystem");
-  });
+  // Saving runs the private bridge-directory check, which on Windows spawns a
+  // PowerShell ACL read bounded at 30 s; CI took 1-4 s and sometimes over 10 s.
+  }, 60_000);
 });
 
 describe("native transcript readiness orchestration", () => {
