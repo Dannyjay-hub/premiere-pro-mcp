@@ -44,7 +44,10 @@ function processAlive(pid: number): boolean {
 export async function withHostLease<T>(directory: string, timeoutMs: number, work: () => Promise<T>): Promise<T> {
   if (ownsHostLease(directory)) return work();
   const lock = join(directory, LOCK_DIRECTORY), token = randomUUID(), started = Date.now();
+  let attempted = false;
   for (;;) {
+    if (attempted && Date.now() - started >= timeoutMs) throw new HostLeaseError("HOST_LEASE_BUSY", "Another cooperating MCP process owns Premiere execution; no command was dispatched");
+    attempted = true;
     try {
       mkdirSync(lock, { mode: 0o700 });
       try { writeFileSync(join(lock, "owner.json"), JSON.stringify({ version: 1, pid: process.pid, token }), { flag: "wx", mode: 0o600 }); }
@@ -52,12 +55,20 @@ export async function withHostLease<T>(directory: string, timeoutMs: number, wor
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const stat = lstatSync(lock);
+      let stat;
+      try { stat = lstatSync(lock); }
+      catch (statError) { if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue; throw statError; }
       if (!stat.isDirectory() || stat.isSymbolicLink() || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())))) throw new HostLeaseError("HOST_LEASE_UNSAFE", "Host lease directory is unsafe");
       const ownerPath = join(lock, "owner.json");
       if (existsSync(ownerPath)) {
         let owner: { version: number; pid: number; token: string };
-        try { owner = JSON.parse(privateRead(ownerPath)); } catch { throw new HostLeaseError("HOST_LEASE_UNSAFE", "Host owner record is unreadable; no command was dispatched"); }
+        try { owner = JSON.parse(privateRead(ownerPath)); }
+        catch (readError) {
+          // A live owner can finish between existsSync/lstatSync/readFileSync.
+          // Retry acquisition only for disappearance; unsafe records still fail closed.
+          if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw new HostLeaseError("HOST_LEASE_UNSAFE", "Host owner record is unreadable; no command was dispatched");
+        }
         if (owner?.version !== 1 || !Number.isInteger(owner.pid) || owner.pid <= 0 || owner.pid > 0x7fffffff || typeof owner.token !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(owner.token) || Object.keys(owner).some((key) => !["version", "pid", "token"].includes(key))) throw new HostLeaseError("HOST_LEASE_UNSAFE", "Invalid host owner record");
         if (!processAlive(owner.pid)) {
           // Never treat process death as proof that its accepted host edit stopped.
