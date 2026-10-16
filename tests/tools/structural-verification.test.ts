@@ -789,8 +789,56 @@ describe("overwrite_clip verification", () => {
     expect(script).toContain("clip.projectItem ? String(clip.projectItem.nodeId)");
     expect(script).toContain("Math.abs(actualStartTicks - wantedStartTicks) <= frameTicks");
     expect(script).toContain("if (!videoPlaced && !audioPlaced)");
+    expect(script).toContain("missingVideo = videoReceives && !videoPlaced");
     expect(script).toContain("produced no verifiable new placement");
     expect(script).toContain("verified: true");
+  });
+
+  const ticks = (seconds: number) => String(seconds * 254016000000);
+  function overwriteHost(options: { videoSpan: number; audioSpan: number; dropAudio?: boolean; dropVideo?: boolean }) {
+    const item = {
+      nodeId: "source-1",
+      name: "CCI DAY 1.mp4",
+      getInPoint: () => ({ ticks: "0" }),
+      getOutPoint: (type: number) => ({ ticks: ticks(type === 2 ? options.audioSpan : options.videoSpan) }),
+    };
+    const videoClips: Array<{ nodeId: string; projectItem: typeof item; start: { ticks: string } }> = [];
+    const audioClips: Array<{ nodeId: string; projectItem: typeof item; start: { ticks: string } }> = [];
+    const track = (clips: typeof videoClips) => ({
+      clips: new Proxy({}, {
+        get: (_t, key) => key === "numItems" ? clips.length : clips[Number(key)],
+      }),
+    });
+    const seq = {
+      timebase: String(254016000000 / 24),
+      videoTracks: Object.assign({ numTracks: 1 }, [track(videoClips)]),
+      audioTracks: Object.assign({ numTracks: 1 }, [track(audioClips)]),
+      overwriteClip: (_placed: unknown, startTicks: string) => {
+        if (!options.dropVideo) videoClips.push({ nodeId: "v-copy", projectItem: item, start: { ticks: startTicks } });
+        if (!options.dropAudio) audioClips.push({ nodeId: "a-copy", projectItem: item, start: { ticks: startTicks } });
+      },
+    };
+    mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      app: { project: { rootItem: { children: Object.assign({ numItems: 1 }, [item]) }, activeSequence: seq } },
+    }))));
+    return { videoClips, audioClips };
+  }
+
+  it("does not verify an A/V overwrite that lands picture without sound", async () => {
+    overwriteHost({ videoSpan: 2, audioSpan: 2, dropAudio: true });
+    await expect(advanced.overwrite_clip.handler({ item_id: "source-1", start_seconds: 5 })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("audio"),
+      data: { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: true, placedOnAudioTrack: false, missingStreams: ["audio"] },
+    });
+  });
+
+  it("still verifies a video-only item that has no audio stream", async () => {
+    overwriteHost({ videoSpan: 2, audioSpan: 0, dropAudio: true });
+    await expect(advanced.overwrite_clip.handler({ item_id: "source-1", start_seconds: 5 })).resolves.toMatchObject({
+      success: true,
+      data: { overwritten: true, verified: true, placedOnVideoTrack: true, placedOnAudioTrack: false },
+    });
   });
 });
 
