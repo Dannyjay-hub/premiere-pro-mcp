@@ -70,6 +70,10 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
   return buildToolScript(`
     ${sequence}
     if (!seq) return __error("No active sequence");
+    // QE only reaches the active sequence. With another sequence active, the
+    // sync-lock preflight read and the razors would hit that sequence instead.
+    var activeForQE = app.project.activeSequence;
+    if (!activeForQE || String(activeForQE.sequenceID) !== String(seq.sequenceID)) return __error("Ripple range removal edits through QE, which only reaches the active sequence. Make " + seq.name + " the active sequence (set_active_sequence) and preview again; nothing changed.", { mutationOutcome:"not_applied", timelineChanged:false, mutationAttempted:false, verified:false });
     app.enableQE();
     var qeSeq = qe.project.getActiveSequence();
     if (!qeSeq) return __error("Cannot read QE sequence or sync-lock state; nothing changed");
@@ -228,7 +232,7 @@ export function getRippleRemoveRangesTools(bridgeOptions: BridgeOptions, depende
     ripple_remove_timeline_ranges: {
       description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
       parameters: { type: "object" as const, properties: {
-        sequence_id: { type: "string", description: "Sequence name or ID; defaults to active sequence." },
+        sequence_id: { type: "string", description: "Sequence name or ID; defaults to the active sequence. It must be the active sequence, because the edit runs through QE; another sequence is refused without changes." },
         ranges: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", properties: { start: { type: "number", minimum: 0, description: "Range start in timeline seconds." }, end: { type: "number", exclusiveMinimum: 0, description: "Range end in timeline seconds." } }, required: ["start", "end"], additionalProperties: false }, description: "Sorted, non-overlapping timeline intervals to remove." },
         scope: { type: "string", enum: ["sync_locked"], description: "All participating tracks must be sync-locked and unlocked." },
         range_content: { type: "string", enum: ["delete"], description: "Delete clips fully inside each removed range." },

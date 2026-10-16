@@ -32,7 +32,7 @@ function fakeTimecode(frame: number, timebase: number, displayFormat: number) {
   return [hh, mm, ss, ff].map(pad).join(separator);
 }
 
-function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean; frameRate?: number; displayFormat?: number; razorOffsetFrames?: number }) {
+function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: number }>; locked?: boolean; frameRate?: number; displayFormat?: number; razorOffsetFrames?: number; otherActive?: boolean }) {
   let nextId = 0;
   let undoIndex = 0;
   const moveCalls = new Map<string, number>();
@@ -99,7 +99,8 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
     audioTracks: { numTracks: 0 },
   };
   const qeSequence = { getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack, getUndoStackIndex: () => undoIndex };
-  const context = { app: { project: { activeSequence: sequence }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; getFormatted(frameRate: { ticks: string }, displayFormat: number) { return fakeTimecode(Math.floor(Number(this.ticks) / Number(frameRate.ticks) + 0.000001), Number(frameRate.ticks), displayFormat); } } };
+  const otherSequence = { sequenceID: "other-sequence", name: "Other" };
+  const context = { app: { project: { activeSequence: options.otherActive ? otherSequence : sequence, sequences: { numSequences: 1, 0: Object.assign(sequence, { name: "Target" }) } }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; getFormatted(frameRate: { ticks: string }, displayFormat: number) { return fakeTimecode(Math.floor(Number(this.ticks) / Number(frameRate.ticks) + 0.000001), Number(frameRate.ticks), displayFormat); } } };
   const run = (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))) as { success: boolean; data?: Record<string, any>; error?: string };
   return { run, moveCalls, list, original, fromTicks, razorCalls, get clipReads() { return clipReads; } };
 }
@@ -238,6 +239,23 @@ describe("ripple_remove_timeline_ranges", () => {
     expect(result.error).toMatch(/must be readable, unlocked, and sync-locked/);
     expect(host.list).toHaveLength(3);
     expect(host.moveCalls.size).toBe(0);
+  });
+
+  it("refuses a sequence_id that is not the active sequence before any QE read or edit", () => {
+    // Live 26.5.2: with another sequence active, QE read that sequence's sync lock and razored it,
+    // while the requested sequence stayed unchanged (mutationOutcome unknown).
+    const host = fakeTimeline({ clips: [{ id: "before", start: 0, end: 1 }, { id: "inside", start: 1, end: 2 }, { id: "after", start: 2, end: 3 }], otherActive: true });
+    const args = { sequence_id: "fake-sequence", ranges: [{ start: 1, end: 2 }], scope: "sync_locked" as const, range_content: "delete" as const };
+    for (const mutate of [false, true]) {
+      const result = host.run(rippleRemoveRangesScript(args, mutate, "any"));
+      expect(result).toMatchObject({ success: false, data: { mutationOutcome: "not_applied", timelineChanged: false } });
+      expect(result.error).toMatch(/only reaches the active sequence.*Target/);
+    }
+    expect(host.razorCalls).toHaveLength(0);
+    expect(host.list).toHaveLength(3);
+    expect(host.moveCalls.size).toBe(0);
+    const active = fakeTimeline({ clips: [{ id: "before", start: 0, end: 1 }, { id: "inside", start: 1, end: 2 }, { id: "after", start: 2, end: 3 }] });
+    expect(active.run(rippleRemoveRangesScript(args, false)).success).toBe(true);
   });
 
   it("refuses partial clip overlap in the shared planner", () => {
