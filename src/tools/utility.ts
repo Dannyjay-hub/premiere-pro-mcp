@@ -520,7 +520,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
     freeze_frame: {
       description:
-        "Create a freeze frame from a clip at a specific time. Exports the frame and imports it back as a still image.",
+        "Create a freeze frame from a clip at a specific time. Exports the frame, imports it back as a still image, and sets the still's Out mark to duration_seconds so add_to_timeline places it at that length (snapped to the still's frame grid, then to the sequence frame). It does not place the still on the timeline.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -537,7 +537,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           duration_seconds: {
             type: "number",
             description:
-              "Duration of the freeze frame on the timeline (default: 2)",
+              "Length of the imported still in seconds, written as its Out mark and read back (default: 2, at most 3600).",
           },
         },
         required: ["output_path"],
@@ -547,6 +547,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         output_path: string;
         duration_seconds?: number;
       }) => {
+        const durationSeconds = args.duration_seconds ?? 2;
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 3600) {
+          return { success: false, error: "duration_seconds must be a finite number above 0 and at most 3600." };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -577,16 +581,36 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             return __jsonStringify({ success: false, error: "The frame was exported to " + res.path + " but Premiere did not import it as a project item.", data: { exported: true, path: res.path, imported: false } });
           }
 
+          // The still's Out mark sets how long add_to_timeline places it. Live
+          // 26.5.2: stills report 25 fps and floor marks to that grid (1.5 s reads
+          // back 1.48 s), so write the nearest still frame a quarter frame late.
+          var requestedDuration = ${durationSeconds};
+          var stillFps = 0;
+          try { stillFps = parseFloat(imported.getFootageInterpretation().frameRate); } catch (eStillRate) {}
+          if (!(stillFps >= 1 && stillFps <= 240)) stillFps = 25;
+          var stillFrames = Math.max(1, Math.round(requestedDuration * stillFps));
+          var appliedDuration = null;
+          try {
+            imported.setOutPoint((stillFrames + 0.25) / stillFps, 4);
+            appliedDuration = Number(imported.getOutPoint(4).seconds) - Number(imported.getInPoint(4).seconds);
+          } catch (eStillOut) { appliedDuration = null; }
+          var durationVerified = appliedDuration !== null && isFinite(appliedDuration) && Math.abs(appliedDuration - stillFrames / stillFps) < 0.5 / stillFps;
+
           return __result({
             exported: true,
             imported: true,
-            verified: true,
+            verified: durationVerified,
+            outcome: durationVerified ? "verified" : "committed_unverified",
             path: res.path,
             nodeId: String(imported.nodeId),
             itemName: imported.name,
             method: res.method,
             atSeconds: __ticksToSeconds(timeTicks),
-            note: "Frame exported and imported. Add to timeline with add_to_timeline."
+            requestedDurationSeconds: requestedDuration,
+            appliedDurationSeconds: appliedDuration,
+            note: durationVerified
+              ? "Frame exported and imported with its Out mark set. Add it with add_to_timeline; it runs for appliedDurationSeconds, snapped to the sequence frame."
+              : "Frame exported and imported, but the still's length could not be set or read back; it may keep Premiere's default still duration."
           });
         `);
         return sendCommand(script, bridgeOptions);
