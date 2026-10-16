@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { getExecutionWorkflowTools } from "../../src/tools/execution-workflows.js";
+import { getExecutionWorkflowTools, sameResolvedDeliveryPath } from "../../src/tools/execution-workflows.js";
 import { guardToolHandler, resolveCapabilities } from "../../src/security/capabilities.js";
 import { getExportTools } from "../../src/tools/export.js";
 import { withInvocationContext } from "../../src/workflows/invocation-context.js";
@@ -99,6 +99,19 @@ describe("export evidence composition",()=>{
     values.validate_project_for_export.handler.mockResolvedValue({success:true,data:{readyForExport:false}});expect(await tools.export_and_verify.handler(args)).toMatchObject({success:false,data:{dispatched:false,outcome:"not_applied"}});expect(values.export_sequence.handler).not.toHaveBeenCalled();
     values.validate_project_for_export.handler.mockResolvedValue({success:true,data:{readyForExport:true,summary:{sequenceId:"seq",projectDocumentId:"project",projectPath:"/project.prproj"}}});values.export_sequence.handler.mockResolvedValue({success:false,error:"lost reply"});expect(await tools.export_and_verify.handler(args)).toMatchObject({success:false,data:{outcome:"unknown",recoveryRequired:true}});
     values.export_sequence.handler.mockResolvedValue({success:true,data:{outputPath:"/another.mp4"}});expect(await tools.export_and_verify.handler(args)).toMatchObject({success:false,error:expect.stringContaining("OUTPUT_IDENTITY_CHANGED")});
+  });
+  it("verifies the requested file when Premiere reports the same path via File.fsName",async()=>{
+    const {tools,values}=setup();const args=exportArgs();
+    values.export_sequence.handler.mockImplementation(async(call:{output_path:string})=>{
+      writeFileSync(call.output_path,"native rendered fixture");
+      return {success:true,data:{outputPath:join(call.output_path,"..",call.output_path.split(/[\\/]/).pop()!),range:"entire",expectedDurationSeconds:1}};
+    });
+    expect(await tools.export_and_verify.handler(args)).toMatchObject({success:true,data:{outcome:"verified"}});
+    expect(sameResolvedDeliveryPath(args.output_path, join(args.output_path,"..",args.output_path.split(/[\\/]/).pop()!))).toBe(true);
+    expect(sameResolvedDeliveryPath("C:/Delivery/out.mp4","C:\\Delivery\\out.mp4","win32")).toBe(true);
+    expect(sameResolvedDeliveryPath("C:/Delivery/out.mp4","c:\\delivery\\out.mp4","win32")).toBe(true);
+    expect(sameResolvedDeliveryPath("C:/Delivery/out.mp4","c:\\delivery\\out.mp4","linux")).toBe(false);
+    expect(sameResolvedDeliveryPath(args.output_path, join(folder,"other.mp4"))).toBe(false);
   });
   it("makes before/after sheets without overwriting or exaggerating still proof",async()=>{
     const {tools,values}=setup();const args=reviewArgs();expect(await tools.build_edit_review_evidence.handler(args)).toMatchObject({success:true,data:{renderVerified:false,operationRevision:"r1"}});expect(values.generate_media_contact_sheet.handler).toHaveBeenCalledTimes(2);expect(existsSync(args.before_sheet)).toBe(true);expect(existsSync(args.after_sheet)).toBe(true);
