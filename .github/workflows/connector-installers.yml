@@ -23,7 +23,7 @@ jobs:
       - name: Build and verify CEP connector
         shell: pwsh
         run: ./scripts/build-signed-cep.ps1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: connector-package
           path: artifacts/MCPBridgeCEP.zxp
@@ -66,7 +66,7 @@ jobs:
           if (-not $installer) { throw "Windows connector installer artifact was not produced." }
           $result = Start-Process -FilePath $installer.FullName -ArgumentList "--verify-only" -Wait -PassThru -NoNewWindow
           if ($result.ExitCode -ne 0) { throw "Windows connector installer verification failed." }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: connector-installer-windows
           path: artifacts/connector-installers/*.exe
@@ -86,7 +86,7 @@ jobs:
         env:
           REQUIRE_SIGNING: ${{ inputs.require_production_signing || 'false' }}
         run: ./scripts/build-connector-installer.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: connector-installer-macos
           path: |
