@@ -244,7 +244,7 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
     },
 
     overwrite_from_source: {
-      description: "Overwrite the clip from the Source Monitor at the playhead position (overwrite edit — replaces existing clips) and verify a new placement on the requested tracks.",
+      description: "Overwrite the clip from the Source Monitor at the playhead position (overwrite edit — replaces existing clips) and verify a new placement on the requested tracks. Every video/audio stream the Source Monitor item actually has must land on those tracks; a picture-only or sound-only placement is committed_unverified, not verified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -278,6 +278,13 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           if (!item) return __error("No clip open in Source Monitor");
 
           var pos = seq.getPlayerPosition().ticks;
+          function mediaSpan(mediaType) {
+            try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (spanError) { return null; }
+          }
+          var videoSpan = mediaSpan(1);
+          var audioSpan = mediaSpan(2);
+          var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+          var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
           var wantedItemId = String(item.nodeId);
           var wantedStartTicks = parseFloat(pos);
           var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
@@ -322,6 +329,15 @@ export function getSourceMonitorTools(bridgeOptions: BridgeOptions) {
           var audioPlaced = audioAfter !== "";
           if ((!videoPlaced || videoAfter === videoBefore) && (!audioPlaced || audioAfter === audioBefore)) {
             return __error("overwrite_from_source produced no verifiable new placement of " + item.name + " at " + __ticksToSeconds(pos) + "s on the requested tracks.");
+          }
+          var missingVideo = videoReceives && !videoPlaced;
+          var missingAudio = audioReceives && !audioPlaced;
+          if (missingVideo || missingAudio) {
+            var missing = (missingVideo ? "video" : "") + (missingVideo && missingAudio ? " and " : "") + (missingAudio ? "audio" : "");
+            var missingStreams = [];
+            if (missingVideo) missingStreams.push("video");
+            if (missingAudio) missingStreams.push("audio");
+            return __error("overwrite_from_source did not place the clip's " + missing + " on the requested tracks at " + __ticksToSeconds(pos) + "s. Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: videoPlaced, placedOnAudioTrack: audioPlaced, missingStreams: missingStreams });
           }
 
           return __result({

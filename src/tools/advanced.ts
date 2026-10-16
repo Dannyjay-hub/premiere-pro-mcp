@@ -1039,7 +1039,7 @@ export function getAdvancedTools(
 
     overwrite_clip: {
       description:
-        "Overwrite a project item onto validated timeline tracks and verify a new source placement at the requested time",
+        "Overwrite a project item onto validated timeline tracks and verify a new source placement at the requested time. Every video/audio stream the item actually has must land on the requested tracks; a picture-only or sound-only placement (for example 5.1 audio that does not fit a stereo track) is committed_unverified, not verified.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1103,6 +1103,16 @@ export function getAdvancedTools(
           var wantedStartTicks = parseFloat(startTicks);
           var frameTicks = seq.timebase ? parseFloat(seq.timebase) : NaN;
           if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
+          // Sequence.overwriteClip can land picture without sound (live 25.2.3
+          // insertClip: 5.1 audio on a stereo track). Unreadable spans keep the
+          // target assumption, matching __insertClipHonoringSyncLock.
+          function mediaSpan(mediaType) {
+            try { return parseFloat(item.getOutPoint(mediaType).ticks) - parseFloat(item.getInPoint(mediaType).ticks); } catch (spanError) { return null; }
+          }
+          var videoSpan = mediaSpan(1);
+          var audioSpan = mediaSpan(2);
+          var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
+          var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
 
           function __isPlacedOn(track) {
             for (var clipIndex = 0; clipIndex < track.clips.numItems; clipIndex++) {
@@ -1132,6 +1142,15 @@ export function getAdvancedTools(
           var audioPlaced = __isPlacedOn(seq.audioTracks[${audioTrackIndex}]);
           if (!videoPlaced && !audioPlaced) {
             return __error("overwrite_clip did not place project item " + item.name + " on either requested track at ${startSeconds}s. Premiere reported no verifiable timeline change.");
+          }
+          var missingVideo = videoReceives && !videoPlaced;
+          var missingAudio = audioReceives && !audioPlaced;
+          if (missingVideo || missingAudio) {
+            var missing = (missingVideo ? "video" : "") + (missingVideo && missingAudio ? " and " : "") + (missingAudio ? "audio" : "");
+            var missingStreams = [];
+            if (missingVideo) missingStreams.push("video");
+            if (missingAudio) missingStreams.push("audio");
+            return __error("overwrite_clip did not place the clip's " + missing + " on the requested video track " + ${trackIndex} + " / audio track " + ${audioTrackIndex} + " at ${startSeconds}s. Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: videoPlaced, placedOnAudioTrack: audioPlaced, missingStreams: missingStreams });
           }
           if ((videoPlaced && videoWasPlaced) && (audioPlaced && audioWasPlaced)) {
             return __error("overwrite_clip produced no verifiable new placement: project item " + item.name + " was already present at ${startSeconds}s on the requested track(s).");

@@ -26,11 +26,21 @@ type Placement = { item: Item; startTicks: number; inTicks?: number };
  * Source Monitor as measured on Premiere 25.2.3: opening pushes a clip,
  * closeClip shows the previously opened one, closeAllClips empties it.
  */
-function host(options: { ignoreOpen?: boolean; ignoreClose?: boolean; ignoreOverwrite?: boolean; videoTracks?: number; audioTracks?: number; playheadSeconds?: number; replaceExisting?: boolean; unreadablePlacement?: boolean } = {}) {
+function host(options: { ignoreOpen?: boolean; ignoreClose?: boolean; ignoreOverwrite?: boolean; dropAudio?: boolean; videoTracks?: number; audioTracks?: number; playheadSeconds?: number; replaceExisting?: boolean; unreadablePlacement?: boolean } = {}) {
   const items: Item[] = [
     { nodeId: "a1", name: "mono-440.wav", type: 1 },
     { nodeId: "v1", name: "CCI DAY 1.mp4", type: 1 },
   ];
+  const mediaOut = (item: Item, mediaType?: number) => {
+    if (item.nodeId === "a1") return { ticks: mediaType === 1 ? "0" : String(2 * TICKS) };
+    return { ticks: String(2 * TICKS) };
+  };
+  for (const item of items) {
+    Object.assign(item, {
+      getInPoint: () => ({ ticks: "0" }),
+      getOutPoint: (mediaType?: number) => mediaOut(item, mediaType),
+    });
+  }
   const opened: Item[] = [];
   const track = () => {
     const placements: Placement[] = [];
@@ -53,9 +63,12 @@ function host(options: { ignoreOpen?: boolean; ignoreClose?: boolean; ignoreOver
     getPlayerPosition: () => ({ ticks: String(playerTicks) }),
     overwriteClip: (item: Item, ticks: string, v: number, a: number) => {
       if (options.ignoreOverwrite) return;
-      if (options.replaceExisting && video[v].placements.length) video[v].placements[0] = { item, startTicks: Number(ticks), inTicks: 2 * TICKS };
-      else video[v].placements.push({ item, startTicks: Number(ticks) });
-      if (!options.replaceExisting) audio[a].placements.push({ item, startTicks: Number(ticks) });
+      const place = (track: ReturnType<typeof track>, inTicks?: number) => {
+        if (options.replaceExisting && track.placements.length) track.placements[0] = { item, startTicks: Number(ticks), inTicks: inTicks ?? 2 * TICKS };
+        else track.placements.push({ item, startTicks: Number(ticks), inTicks });
+      };
+      place(video[v]);
+      if (!options.dropAudio) place(audio[a]);
     },
   };
   const sourceMonitor = {
@@ -173,6 +186,16 @@ describe("overwrite_from_source verifies the placement", () => {
     host({ ignoreOverwrite: true });
     await tools.open_in_source.handler({ item_id: "v1" });
     await expect(tools.overwrite_from_source.handler({})).resolves.toMatchObject({ success: false, error: expect.stringContaining("no verifiable new placement") });
+  });
+
+  it("does not verify an A/V overwrite that lands picture without sound", async () => {
+    host({ dropAudio: true });
+    await tools.open_in_source.handler({ item_id: "v1" });
+    await expect(tools.overwrite_from_source.handler({})).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("audio"),
+      data: { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: true, placedOnAudioTrack: false, missingStreams: ["audio"] },
+    });
   });
 
   it("refuses an out-of-range or invalid track before writing", async () => {

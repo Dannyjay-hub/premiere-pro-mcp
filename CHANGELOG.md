@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `overwrite_clip` and `overwrite_from_source` no longer report `verified: true` when only one of an A/V item's streams lands on the requested tracks. Premiere can place picture without sound (the same 5.1-on-stereo miss as `Sequence.insertClip` on 25.2.3); that overwrite is now `committed_unverified` with `missingStreams`. Video-only and audio-only items still verify on the stream they actually have.
+
 ## [1.24.0] - 2026-10-11
 
 ### Added
