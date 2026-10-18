@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Batch clip volume changes list skipped controls and never verify an empty or partially checked batch. Project-panel item selection now checks the selected node ID.
 - MOGRT imports report observed track and timeline geometry alongside requested values, with explicit failure or unverified receipts when placement cannot be confirmed.
 - Workspace changes and audio-channel mapping requests now state their documented readback limits. Experimental preview-file deletion checks rejection and never treats an API return as proof that cache files disappeared.
+- Timeline roll, slide, slip, trim and duration edits retain Premiere’s existing terminal padding below one sequence frame without treating it as a new source handle. Existing padding of a full frame or more, unreadable grids and proposals beyond the existing padded end are refused before mutation, with exact overrun diagnostics.
 
 ## [1.24.1] - 2026-10-16
 
