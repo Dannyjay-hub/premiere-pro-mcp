@@ -77,6 +77,67 @@ describe("export_frame file names", () => {
   });
 });
 
+describe("__exportStillFrame keeps an existing destination until a replacement exists", () => {
+  const dest = "/tmp/hero.png";
+
+  function fileHost(options: { qeWrites?: boolean; qeThrows?: boolean; destExists?: boolean }) {
+    const files = new Map<string, number>();
+    if (options.destExists !== false) files.set(dest, 32);
+    class File {
+      fsName: string;
+      constructor(path: string) { this.fsName = path; }
+      get name() { return encodeURI(this.fsName.substring(this.fsName.lastIndexOf("/") + 1)); }
+      get exists() { return files.has(this.fsName); }
+      get length() { return files.get(this.fsName) ?? 0; }
+      get parent() { return null; }
+      remove() { files.delete(this.fsName); return true; }
+      rename(name: string) {
+        const target = this.fsName.substring(0, this.fsName.lastIndexOf("/") + 1) + name;
+        files.set(target, files.get(this.fsName) ?? 0);
+        files.delete(this.fsName);
+        this.fsName = target;
+        return true;
+      }
+    }
+    const qeSeq = {
+      name: "Sweep",
+      exportFramePNG(_timecode: string, base: string) {
+        if (options.qeWrites) files.set(`${base}.png`, 1024);
+        return true;
+      },
+    };
+    const Time = function (this: { ticks: string; getFormatted: () => string }) {
+      this.ticks = "0";
+      this.getFormatted = () => "00:00:00:00";
+    };
+    const context = {
+      File,
+      Time,
+      app: {
+        enableQE() { if (options.qeThrows) throw new Error("QE unavailable"); },
+        encoder: { ENCODE_IN_TO_OUT: 1 },
+        project: { activeSequence: { timebase: String(TICKS / 24), getPlayerPosition: () => ({ ticks: "0" }) } },
+      },
+      qe: { project: { getActiveSequence: () => qeSeq } },
+    };
+    const result = runInNewContext(`${getHelpersSource()}\n__exportStillFrame(${JSON.stringify(dest)}, "0");`, context);
+    return { result, files };
+  }
+
+  it("does not delete the original still when QE and AME both fail", () => {
+    const { result, files } = fileHost({ qeThrows: true, destExists: true });
+    expect(result).toMatchObject({ ok: false });
+    expect(files.get(dest)).toBe(32);
+  });
+
+  it("replaces the original still only after QE writes a non-empty temp file", () => {
+    const { result, files } = fileHost({ qeWrites: true, destExists: true });
+    expect(result).toMatchObject({ ok: true, method: "qe", path: dest });
+    expect(files.get(dest)).toBe(1024);
+    expect([...files.keys()].some((path) => path.includes("mcp-frame-"))).toBe(false);
+  });
+});
+
 describe("export_sequence extension and default preset", () => {
   it("prefers AME's H.264 (MP4) folder over the QuickTime folder for the default preset", () => {
     const presets = [
