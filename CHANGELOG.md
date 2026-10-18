@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Workspace changes and audio-channel mapping requests now state their documented readback limits. Experimental preview-file deletion checks rejection and never treats an API return as proof that cache files disappeared.
 - Timeline roll, slide, slip, trim and duration edits retain Premiere’s existing terminal padding below one sequence frame without treating it as a new source handle. Existing padding of a full frame or more, unreadable grids and proposals beyond the existing padded end are refused before mutation, with exact overrun diagnostics.
 - Project close replies no longer inspect project objects after closing them. Closure is verified in a separate bounded read-only call; unavailable verification reports an unknown closed state rather than treating a native return value as proof. The connector publishes replies before updating panel elements that may disappear during close.
+- Direct sequence exports now measure output duration before reporting verification; OMF exports reject empty output files, and still capture refuses stale destinations that cannot be removed.
 
 ## [1.24.1] - 2026-10-16
 
