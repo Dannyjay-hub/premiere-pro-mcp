@@ -1306,7 +1306,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             mismatched: mismatched,
             verified: applied > 0 && skipped === 0 && mismatched.length === 0
           };
-          if (checked === 0) { data.outcome = "failed"; data.mutationOutcome = "not_applied"; data.timelineChanged = false; return __error("No requested clip had a writable Volume Level control; nothing was changed.", data); }
+          if (checked === 0) { data.outcome = "not_applied"; data.mutationOutcome = "not_applied"; data.timelineChanged = false; return __error("No requested clip had a writable Volume Level control; nothing was changed.", data); }
           data.outcome = data.verified ? "verified" : "committed_unverified";
           if (mismatched.length) {
             data.timelineChanged = applied > 0 ? true : null;

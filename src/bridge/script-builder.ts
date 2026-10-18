@@ -147,7 +147,14 @@ function __restoreGridFromItem(item, mediaType) {
   if (mediaType === 2) return TICKS_PER_SECOND / 48000;
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
-    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+    if (fps >= 1 && fps <= 240) {
+      if (Math.abs(fps - 23.976) < 0.001) fps = 24000 / 1001;
+      else if (Math.abs(fps - 29.97) < 0.001) fps = 30000 / 1001;
+      else if (Math.abs(fps - 47.952) < 0.001) fps = 48000 / 1001;
+      else if (Math.abs(fps - 59.94) < 0.001) fps = 60000 / 1001;
+      else if (Math.abs(fps - 119.88) < 0.001) fps = 120000 / 1001;
+      return TICKS_PER_SECOND / fps;
+    }
     // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
     // that would make a "frame" of about a year. Use the audio sample grid.
     if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
@@ -249,6 +256,18 @@ function __itemMarksForRestore(item, mediaType) {
     return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
+  // Private In/Out values include the source file's absolute start timecode,
+  // while ProjectItem DOM marks are zero-based. Subtract MediaStart before
+  // comparing or restoring time-of-day camera media.
+  var mediaStartBlock = field("Column.Intrinsic.MediaStart", xml);
+  if (mediaStartBlock !== null) {
+    var mediaStart = point(mediaStartBlock, kind === "Audio");
+    if (!mediaStart || !left || !right || Math.abs(mediaStart.frameTicks - left.frameTicks) > 1 || Math.abs(mediaStart.frameTicks - right.frameTicks) > 1) {
+      return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
+    }
+    left.ticks -= mediaStart.ticks;
+    right.ticks -= mediaStart.ticks;
+  }
   // The private Out names the last frame or sample (inclusive): a subclip made
   // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2,
   // and a 15 s 48 kHz WAV shows an AudioOutPoint of 00:00:14:47999.
@@ -1822,9 +1841,16 @@ function __setMarkerTick(marker, field, ticks) {
   if (__markerStoredTicks(marker, field) === wanted) return true;
   try { marker[field].ticks = wanted; } catch (markerTickWriteError) {}
   if (__markerStoredTicks(marker, field) === wanted) return true;
-  // One quarter of a tick avoids seconds-to-ticks flooring a boundary early.
+  // Pick a representable seconds value above the tick boundary. At long
+  // timeline positions, a fixed quarter tick can round back to the boundary.
   // Readback, not setter acceptance, decides whether this fallback worked.
-  try { marker[field] = (Number(wanted) + 0.25) / TICKS_PER_SECOND; } catch (markerSecondsWriteError) {}
+  var seconds = Number(wanted) / TICKS_PER_SECOND;
+  var ulp = Math.pow(2, -52) * Math.max(1, Math.abs(seconds));
+  var biased = seconds + 0.25 / TICKS_PER_SECOND;
+  for (var biasTry = 0; biasTry < 5 && Math.floor(biased * TICKS_PER_SECOND) !== Number(wanted); biasTry++) {
+    biased = seconds + ulp * Math.pow(2, biasTry - 2);
+  }
+  try { marker[field] = biased; } catch (markerSecondsWriteError) {}
   return __markerStoredTicks(marker, field) === wanted;
 }
 function __setMarkerRangeTicks(marker, startTicks, endTicks) {

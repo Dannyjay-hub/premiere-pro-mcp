@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Project-item restore marks subtract private `MediaStart` timecode before comparing against zero-based DOM marks, so time-of-day camera media no longer restores absolute source clocks or fails safe-integer checks solely because its start timecode is late in the day (#876).
 - `set_item_in_out` and `set_source_in_out` only report `verified` when Premiere stores the mark on the frame the request floors to (an exact boundary keeps its own frame). They used to accept any stored mark within one whole media frame of the request, so a mark that landed on the next frame still read as verified. Audio items and items without a usable frame grid keep the existing half-millisecond tolerance.
 - Raw XMP patches now compare each supplied leaf field with the stored metadata, refuse empty or oversized patches before writing, and distinguish mismatches from unreadable post-write state.
 - Batch clip volume changes list skipped controls and never verify an empty or partially checked batch. Project-panel item selection now checks the selected node ID.

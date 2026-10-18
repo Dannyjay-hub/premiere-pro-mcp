@@ -555,30 +555,30 @@ export function getMetadataTools(bridgeOptions: BridgeOptions) {
               ExternalObject.AdobeXMPScript = new ExternalObject("lib:AdobeXMPScript");
             }
           } catch (e) {
-            return __error("Premiere could not load the Adobe XMP library; no metadata was changed: " + e.toString());
+            return __error("Premiere could not load the Adobe XMP library; no metadata was changed: " + e.toString(), { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
           }
           if (typeof XMPMeta !== "function" || typeof XMPUtils === "undefined" || typeof XMPUtils.appendProperties !== "function" ||
               typeof XMPConst === "undefined" || typeof XMPConst.APPEND_ALL_PROPERTIES !== "number" || typeof XMPConst.APPEND_REPLACE_OLD_VALUES !== "number") {
-            return __error("Premiere's XMP merge APIs are unavailable; no metadata was changed.");
+            return __error("Premiere's XMP merge APIs are unavailable; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
           }
 
           var writeAttempted = false;
           try {
             var existingPacket = String(item.getXMPMetadata() || "");
-            if (!existingPacket) return __error("The project item has no readable XMP packet; no metadata was changed.");
+            if (!existingPacket) return __error("The project item has no readable XMP packet; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
             var existingXmp = new XMPMeta(existingPacket);
             var patchXmp = new XMPMeta("${escapeForExtendScript(args.xmp_xml)}");
-            if (typeof patchXmp.iterator !== "function" || typeof existingXmp.getProperty !== "function" || typeof XMPConst.ITERATOR_JUST_LEAFNODES !== "number") return __error("XMP field inspection is unavailable; no metadata was changed.");
+            if (typeof patchXmp.iterator !== "function" || typeof existingXmp.getProperty !== "function" || typeof XMPConst.ITERATOR_JUST_LEAFNODES !== "number") return __error("XMP field inspection is unavailable; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
             var patchFields = [], patchIterator = patchXmp.iterator(XMPConst.ITERATOR_JUST_LEAFNODES, "", "");
             var patchField = patchIterator.next();
             while (patchField) {
               var fieldNamespace = String(patchField.namespace || ""), fieldPath = String(patchField.path || "");
-              if (!fieldNamespace || !fieldPath) return __error("The patch has an unreadable field identity; no metadata was changed.");
-              if (patchFields.length >= 256) return __error("The XMP patch exceeds 256 leaf fields; no metadata was changed.");
+              if (!fieldNamespace || !fieldPath) return __error("The patch has an unreadable field identity; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
+              if (patchFields.length >= 256) return __error("The XMP patch exceeds 256 leaf fields; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
               patchFields.push({ namespace: fieldNamespace, name: fieldPath, value: String(patchField.value == null ? "" : patchField.value) });
               patchField = patchIterator.next();
             }
-            if (!patchFields.length) return __error("The XMP patch has no readable leaf fields; no metadata was changed.");
+            if (!patchFields.length) return __error("The XMP patch has no readable leaf fields; no metadata was changed.", { outcome: "not_applied", mutationOutcome: "not_applied", timelineChanged: false });
             // Copy every supplied top-level field into the existing packet, replacing
             // only fields named by the patch and retaining unrelated metadata.
             // AdobeXMPScript signature: appendProperties(source, dest, options: Number).

@@ -86,6 +86,16 @@ describe("marker integer tick storage", () => {
     host({ whitespace: true });
     expect(await getMarkerTools(options).add_marker.handler({ time_seconds: .5005 })).toMatchObject({ success: true, data: { storedTicks: exact } });
   });
+  it("uses a representable upward seconds fallback on long timelines", async () => {
+    const wanted = String(Math.round((16384 + 2 / 24) * TPS));
+    let stored = String(Number(wanted) - 1);
+    const marker = {
+      get start() { return { get ticks() { return stored; }, set ticks(_value: string) {} }; },
+      set start(value: number) { stored = String(Math.floor(value * TPS)); },
+    };
+    expect(runInNewContext(`${getHelpersSource()}\n__setMarkerTick(marker, "start", wanted)`, { marker, wanted })).toBe(true);
+    expect(stored).toBe(wanted);
+  });
   it.each([NaN, Infinity, -1])("refuses invalid marker time %s before dispatch", async time_seconds => {
     host(); expect(await getMarkerTools(options).add_marker.handler({ time_seconds })).toMatchObject({ success: false }); expect(send).not.toHaveBeenCalled();
   });

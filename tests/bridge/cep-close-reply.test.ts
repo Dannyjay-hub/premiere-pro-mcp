@@ -27,4 +27,13 @@ describe("CEP reply publication after a project close", () => {
     runInNewContext(`${processor}\nprocessOneCommand("cmd_1.jsx");`, state);
     expect(writes).toBe(0);expect(state.commandInFlight).toBe(true);
   });
+  it.each(["", "EvalScript error."])("logs failed evalScript replies as errors: %s", result => {
+    const logs: string[][] = [];
+    const state: Record<string, unknown> = { tempDir: "/tmp/cep-reply", ENGINE_ID: "unit", commandInFlight: false, commandCount: 0, bridgeRunning: false,
+      path: { join: (...parts: string[]) => parts.join("/") }, fs: { renameSync() {} }, readFile: () => "script", deleteFile() {},
+      log: (...args: string[]) => logs.push(args), setInterval: () => 1, clearInterval() {}, writeFile() {}, writeResponseFile() {},
+      document: { getElementById: () => null }, executeScript: (_script: string, callback: (reply: string) => void) => callback(result) };
+    runInNewContext(`${processor}\nprocessOneCommand("cmd_1.jsx");`, state);
+    expect(logs).toContainEqual(["Command failed", "err"]);
+  });
 });

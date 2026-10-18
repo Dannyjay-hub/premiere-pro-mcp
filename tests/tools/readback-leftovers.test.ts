@@ -147,7 +147,7 @@ describe("batch volume coverage", () => {
     volumeHost(["apply", "missing"]); await expect(tracks.set_clips_volume.handler({ track_index: 0, volume_db: -3 })).resolves.toMatchObject({ success: true, data: { verified: false, outcome: "committed_unverified", applied: 1, skipped: 1, skippedClips: [{ clipIndex: 1, nodeId: "clip-1", reason: expect.any(String) }] } });
   });
   it.each([{ kinds: ["missing"] }, { kinds: [] }])("does not verify an empty checked set $kinds", async ({ kinds }) => {
-    volumeHost(kinds); await expect(tracks.set_clips_volume.handler({ track_index: 0, volume_db: -3 })).resolves.toMatchObject({ success: false, data: { verified: false, checked: 0, outcome: "failed" } });
+    volumeHost(kinds); await expect(tracks.set_clips_volume.handler({ track_index: 0, volume_db: -3 })).resolves.toMatchObject({ success: false, data: { verified: false, checked: 0, outcome: "not_applied" } });
   });
   it("reports ignored writes and validates arguments without dispatch", async () => {
     volumeHost(["ignore"]); await expect(tracks.set_clips_volume.handler({ track_index: 0, volume_db: -3 })).resolves.toMatchObject({ success: false, data: { verified: false, mismatched: [{ clipIndex: 0 }] } });

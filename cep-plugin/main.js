@@ -339,16 +339,19 @@ function processOneCommand(cmdFileName) {
     commandCount++;
 
     var response;
+    var responseIsError = false;
     try {
       // ExtendScript returns a string; try to parse it as JSON
       if (result && result !== "undefined" && result !== "null") {
         // Check if it's already valid JSON
         var parsed = JSON.parse(result);
         response = JSON.stringify(parsed);
+        responseIsError = parsed && parsed.success === false;
       } else {
         // An empty result means evalScript gave us nothing back. That is a bridge
         // failure, not a successful command with no data — reporting it as "OK" is
         // what made this so hard to diagnose. Say so.
+        responseIsError = true;
         response = JSON.stringify({
           success: false,
           error:
@@ -363,6 +366,7 @@ function processOneCommand(cmdFileName) {
       // "EvalScript error." is CEP's generic message when the host script throws
       // outside its own try/catch or does not parse. It is a failure, not data.
       if (result && (result.indexOf("Error") === 0 || /^EvalScript error/i.test(result))) {
+        responseIsError = true;
         response = JSON.stringify({
           success: false,
           error: /^EvalScript error/i.test(result)
@@ -383,7 +387,7 @@ function processOneCommand(cmdFileName) {
     try {
       var countElement = document.getElementById("cmdCount");
       if (countElement) countElement.textContent = commandCount;
-      log("Result received", "ok");
+      log(responseIsError ? "Command failed" : "Result received", responseIsError ? "err" : "ok");
     } catch (panelUiError) {}
     // Continue without waiting for the next poll interval, preserving FIFO
     // ordering while minimizing queue handoff latency.

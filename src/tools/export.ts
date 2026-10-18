@@ -1109,10 +1109,13 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         const frame = data?.frameDurationSeconds;
         const tolerance = typeof frame === "number" && Number.isFinite(frame) && frame > 0 && frame <= 1 ? frame : null;
         const actual = typeof data?.outputPath === "string" ? await probeMediaDurationSeconds(data.outputPath) : null;
-        const verified = typeof expected === "number" && Number.isFinite(expected) && expected > 0 && actual !== null && tolerance !== null && Math.abs(actual - expected) <= tolerance + 0.001;
+        const expectedValid = typeof expected === "number" && Number.isFinite(expected) && expected > 0;
+        const probeAvailable = actual !== null;
+        const verified = expectedValid && probeAvailable && tolerance !== null && Math.abs(actual - expected) <= tolerance + 0.001;
+        const durationMismatch = probeAvailable && !verified;
         return {
-          ...result, success: verified,
-          ...(verified ? {} : { error: "Export file duration could not be verified against the requested sequence range; inspect the written artifact before using it." }),
+          ...result, success: expectedValid && !durationMismatch,
+          ...(!expectedValid ? { error: "Premiere returned an invalid expected export duration; inspect the written artifact before using it." } : durationMismatch ? { error: "Export file duration does not match the requested sequence range; inspect the written artifact before using it." } : {}),
           data: { ...data, verified, durationVerified: verified, actualDurationSeconds: actual, durationToleranceSeconds: tolerance === null ? null : tolerance + 0.001, outcome: verified ? "verified" : "committed_unverified" },
         };
       },
