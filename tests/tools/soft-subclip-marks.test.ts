@@ -49,6 +49,15 @@ describe("soft subclip restore marks", () => {
     const marks = run("__itemMarksForRestore(item, 1)", { item: item(xml) });
     expect(marks.inTicks).toBe(String(480 * (T * 1001 / 24000)));
   });
+  it("subtracts absolute MediaStart timecode before restoring zero-based marks", () => {
+    const frame = T / 25;
+    const base = metadata("13:14:03:24", "13:15:21:05", frame);
+    const mediaStart = `<p:Column.Intrinsic.MediaStart rdf:parseType="Resource"><rdf:value>13:14:03:24</rdf:value><p:frame_rate>${frame}</p:frame_rate></p:Column.Intrinsic.MediaStart>`;
+    const xml = base.replace("</rdf:RDF>", `${mediaStart}</rdf:RDF>`);
+    const marks = run("__itemMarksForRestore(item, 1)", { item: item(xml) });
+    expect(marks.inTicks).toBe("0");
+    expect(Number(marks.outTicks)).toBe(1932 * frame);
+  });
   it("parses drop-frame timecode and rejects skipped labels", () => {
     const frame = T * 1001 / 30000;
     expect(run("__itemMarksForRestore(item, 1)", { item: item(metadata("00:01:00;02", "00:02:00;02", frame)) }).inTicks).toBe(String(1800 * frame));

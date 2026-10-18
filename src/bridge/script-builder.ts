@@ -75,6 +75,22 @@ function __sequenceFrameTicks(sequence) {
   return isFinite(ticks) && ticks > 0 ? ticks : NaN;
 }
 
+// Host padding at an existing media end is not an additional source handle.
+function __sourceWindowError(clip, physicalEnd, proposedIn, proposedOut, label) {
+  var frame = __sequenceFrameTicks(app.project.activeSequence);
+  if (!isFinite(frame)) return "The active sequence frame grid is unreadable; no source-window edit was attempted.";
+  var inside = parseFloat(clip.inPoint.ticks), outside = parseFloat(clip.outPoint.ticks);
+  var over = outside - physicalEnd;
+  if (!isFinite(physicalEnd) || physicalEnd <= 0 || !isFinite(inside) || !isFinite(outside) || inside < 0 || outside <= inside || inside >= physicalEnd) return "An existing source window for " + String(clip.nodeId) + " is invalid or unreadable; nothing was changed.";
+  if (over >= frame) return "An existing source window for " + String(clip.nodeId) + " is over its physical media end by " + over + " ticks (" + __ticksToSeconds(over) + "s), at least one sequence frame (" + frame + " ticks). Nothing was changed.";
+  var limit = Math.max(physicalEnd, outside);
+  if (proposedIn === null) proposedIn = inside;
+  if (proposedOut === null) proposedOut = outside;
+  if (!isFinite(proposedIn) || !isFinite(proposedOut) || proposedIn < 0 || proposedIn >= physicalEnd || proposedOut <= proposedIn) return "Proposed " + label + " source window is invalid (invalid adjacent source range); nothing was changed.";
+  if (proposedOut > limit) return "Proposed " + label + " source window would exceed physical media duration (real media duration limit), over its physical end by " + (proposedOut - physicalEnd) + " ticks (" + __ticksToSeconds(proposedOut - physicalEnd) + "s), exceeding existing padding by " + (proposedOut - limit) + " ticks. Nothing was changed.";
+  return null;
+}
+
 function __snapSequenceTicks(sequence, ticks) {
   var frameTicks = __sequenceFrameTicks(sequence);
   if (!isFinite(frameTicks)) throw new Error("the active sequence frame grid could not be read");
@@ -131,7 +147,14 @@ function __restoreGridFromItem(item, mediaType) {
   if (mediaType === 2) return TICKS_PER_SECOND / 48000;
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
-    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
+    if (fps >= 1 && fps <= 240) {
+      if (Math.abs(fps - 23.976) < 0.001) fps = 24000 / 1001;
+      else if (Math.abs(fps - 29.97) < 0.001) fps = 30000 / 1001;
+      else if (Math.abs(fps - 47.952) < 0.001) fps = 48000 / 1001;
+      else if (Math.abs(fps - 59.94) < 0.001) fps = 60000 / 1001;
+      else if (Math.abs(fps - 119.88) < 0.001) fps = 120000 / 1001;
+      return TICKS_PER_SECOND / fps;
+    }
     // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
     // that would make a "frame" of about a year. Use the audio sample grid.
     if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
@@ -233,6 +256,18 @@ function __itemMarksForRestore(item, mediaType) {
     return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
   }
   var left = point(inBlock, kind === "Audio"), right = point(outBlock, kind === "Audio");
+  // Private In/Out values include the source file's absolute start timecode,
+  // while ProjectItem DOM marks are zero-based. Subtract MediaStart before
+  // comparing or restoring time-of-day camera media.
+  var mediaStartBlock = field("Column.Intrinsic.MediaStart", xml);
+  if (mediaStartBlock !== null) {
+    var mediaStart = point(mediaStartBlock, kind === "Audio");
+    if (!mediaStart || !left || !right || Math.abs(mediaStart.frameTicks - left.frameTicks) > 1 || Math.abs(mediaStart.frameTicks - right.frameTicks) > 1) {
+      return __biasedDomMarks(dom, __restoreGridFromItem(item, mediaType));
+    }
+    left.ticks -= mediaStart.ticks;
+    right.ticks -= mediaStart.ticks;
+  }
   // The private Out names the last frame or sample (inclusive): a subclip made
   // with an exclusive Out at frame 719 shows 00:00:29:22 (frame 718) on 26.5.2,
   // and a 15 s 48 kHz WAV shows an AudioOutPoint of 00:00:14:47999.
@@ -305,6 +340,29 @@ function __requestedMarkFrameTicks(item, mediaType) {
 function __requestedMarkToleranceSeconds(item, mediaType) {
   var frameTicks = __requestedMarkFrameTicks(item, mediaType);
   return frameTicks > 0 ? frameTicks / TICKS_PER_SECOND : 0.0005;
+}
+
+// Seconds Premiere should store for a caller's requested video mark: the
+// request floored to the item's frame grid, with exact boundaries (within
+// floating-point error) kept on their own frame. Null when the item has no
+// usable frame grid, so callers fall back to __requestedMarkToleranceSeconds.
+function __requestedMarkExpectedSeconds(item, mediaType, seconds) {
+  var frameTicks = __requestedMarkFrameTicks(item, mediaType);
+  if (!(frameTicks > 0)) return null;
+  var frames = seconds * TICKS_PER_SECOND / frameTicks;
+  var nearest = Math.round(frames);
+  var boundaryTolerance = 16 * 2.220446049250313e-16 * Math.max(1, Math.abs(frames));
+  var whole = Math.abs(frames - nearest) <= boundaryTolerance ? nearest : Math.floor(frames);
+  return whole * frameTicks / TICKS_PER_SECOND;
+}
+
+// A stored mark matches a request when it sits on the frame the request
+// floors to (within a quarter frame), not merely within one frame of it.
+function __requestedMarkMatches(item, mediaType, observed, requestedSeconds) {
+  if (!observed || !isFinite(Number(observed.seconds))) return false;
+  var expected = __requestedMarkExpectedSeconds(item, mediaType, requestedSeconds);
+  if (expected === null) return Math.abs(Number(observed.seconds) - requestedSeconds) < __requestedMarkToleranceSeconds(item, mediaType);
+  return Math.abs(Number(observed.seconds) - expected) < __requestedMarkFrameTicks(item, mediaType) / 4 / TICKS_PER_SECOND;
 }
 
 // Seconds to write for a caller's requested mark. 26.5.2 floors an exact frame
@@ -440,6 +498,40 @@ function __overwriteRangeOnTrack(track, item, startTicks, inTicks, outTicks, med
     return { ok: false, attempted: true, marksRestored: restore(), error: "Track.overwriteClip rejected project item " + item.name + ": " + eOverwrite.toString() };
   }
   return { ok: true, attempted: true, marksRestored: restore(), error: "" };
+}
+
+// Sequence.overwriteClip treats every index as a real track. A still or
+// audio-only item still receives V0/A0 (default 0), so that unused kind
+// overwrites whatever is already there. Single-kind items use
+// Track.overwriteClip on the receiving track only. A/V items keep
+// Sequence.overwriteClip with both requested indices.
+function __overwriteItemOnRequestedTracks(seq, item, startTicks, videoTrackIndex, audioTrackIndex, videoReceives, audioReceives) {
+  if (!videoReceives && !audioReceives) {
+    return { ok: false, attempted: false, error: "The project item has no video or audio stream to overwrite" };
+  }
+  if (videoReceives && audioReceives) {
+    if (!seq || typeof seq.overwriteClip !== "function") {
+      return { ok: false, attempted: false, error: "Sequence.overwriteClip is unavailable on this Premiere build." };
+    }
+    try {
+      seq.overwriteClip(item, String(startTicks), videoTrackIndex, audioTrackIndex);
+    } catch (eOverwrite) {
+      return { ok: false, attempted: true, error: "Sequence.overwriteClip failed: " + eOverwrite.toString() };
+    }
+    return { ok: true, attempted: true, error: "" };
+  }
+  var track = videoReceives ? seq.videoTracks[videoTrackIndex] : seq.audioTracks[audioTrackIndex];
+  if (!track || typeof track.overwriteClip !== "function") {
+    return { ok: false, attempted: false, error: "Track.overwriteClip is unavailable on this Premiere build" };
+  }
+  var at = new Time();
+  at.ticks = String(startTicks);
+  try {
+    track.overwriteClip(item, at);
+  } catch (eTrackOverwrite) {
+    return { ok: false, attempted: true, error: "Track.overwriteClip failed: " + eTrackOverwrite.toString() };
+  }
+  return { ok: true, attempted: true, error: "" };
 }
 
 function __ticksToTimecode(ticks, fps) {
@@ -1519,16 +1611,45 @@ function __exportStillFrame(outputPath, ticks) {
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
+  var destinationExisted = new File(outputPath).exists;
   // QE cuts its output name at the first dot ("shot-12.5s" became "shot-12.png"),
   // so hand it a dot-free temporary name in the same folder and rename after.
   var qeBase = outputPath.substring(0, slash + 1) + "mcp-frame-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000);
   var qePath = qeBase + (wantJpeg ? ".jpg" : ".png");
+  var amePath = outputPath;
 
-  // Clear any stale file (under either name) so that a file existing afterwards proves we wrote it.
-  var stale = new File(outputPath);
-  if (stale.exists) { try { stale.remove(); } catch (e) {} }
+  // Never delete the caller's destination before a replacement file exists.
+  // QE already writes a unique temp name; a failed export must leave the
+  // original still in place. Only a leftover temp from a prior crash is safe
+  // to clear.
   var staleQe = new File(qePath);
   if (staleQe.exists) { try { staleQe.remove(); } catch (e) {} }
+
+  function __promoteWrittenStill(fromPath) {
+    var produced = new File(fromPath);
+    if (!produced.exists || !(produced.length > 0)) return "";
+    var dest = new File(outputPath);
+    if (produced.fsName === dest.fsName) return produced.fsName;
+    if (dest.exists) {
+      try { dest.remove(); } catch (eRm) {}
+      if (new File(outputPath).exists) {
+        notes.push("could not replace the existing still at " + outputPath);
+        return "";
+      }
+    }
+    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (eRen) {
+      notes.push("could not rename " + fromPath + ": " + eRen.toString());
+    }
+    dest = new File(outputPath);
+    return (dest.exists && dest.length > 0) ? dest.fsName : "";
+  }
+
+  function __discardUnusedStillTemp(fromPath) {
+    var leftover = new File(fromPath);
+    if (!leftover.exists) return;
+    if (new File(outputPath).exists) { try { leftover.remove(); } catch (eDrop) {} }
+    else notes.push("replacement still remains at " + leftover.fsName);
+  }
 
   // --- Path 1: QE DOM. Signature is (timecodeString, pathWithoutExtension). ---
   var at = null;
@@ -1554,19 +1675,13 @@ function __exportStillFrame(outputPath, ticks) {
     }
   }
 
-  // Give the caller the name they asked for, and never leave the temporary file behind.
-  var produced = new File(qePath);
-  if (produced.exists && produced.length > 0) {
-    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) { notes.push("QE: could not rename " + qePath + ": " + e.toString()); }
-  }
-  var leftover = new File(qePath);
-  if (leftover.exists) { try { leftover.remove(); } catch (e) {} }
-
-  var exactFile = new File(outputPath);
-  var written = exactFile.exists && exactFile.length > 0 ? exactFile.fsName : "";
+  // Promote the unique QE temp onto the requested name only after it exists.
+  // A pre-existing destination is not proof that this capture wrote a file.
+  var written = __promoteWrittenStill(qePath);
   if (written) {
     return { ok: true, method: "qe", path: written, notes: notes, timecode: at ? at.timecode : null, frame: at ? at.frame : null };
   }
+  __discardUnusedStillTemp(qePath);
   notes.push("QE wrote no file; falling back to Media Encoder");
 
   // --- Path 2: one-frame export through Media Encoder. ---
@@ -1595,13 +1710,14 @@ function __exportStillFrame(outputPath, ticks) {
         var ameMutatedMarks = false;
         var temporaryIn = String(savedIn), temporaryOut = String(savedOut);
         var guardedSequenceId = String(seq.sequenceID);
+        if (destinationExisted || new File(outputPath).exists) amePath = qeBase + "-ame" + ext;
         try {
           seq.setInPoint(__ticksToSeconds(startTicks));
           ameMutatedMarks = true;
           temporaryIn = String(seq.getInPointAsTime().ticks);
           seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
           temporaryOut = String(seq.getOutPointAsTime().ticks);
-          seq.exportAsMediaDirect(outputPath, preset, app.encoder.ENCODE_IN_TO_OUT);
+          seq.exportAsMediaDirect(amePath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
           // Restore only marks that still equal this capture's temporary state.
@@ -1649,8 +1765,16 @@ function __exportStillFrame(outputPath, ticks) {
   }
 
   if (restorationFailure) { __stillFrameRecoveryRequired = true; return { ok: false, error: restorationFailure, recoveryRequired: true, mutationOutcome: "unknown", notes: notes }; }
-  written = __firstWrittenFile(outputPath);
-  if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+  if (amePath !== outputPath) {
+    written = __promoteWrittenStill(amePath);
+    if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+    __discardUnusedStillTemp(amePath);
+  } else if (!destinationExisted) {
+    // A pre-existing destination is not a new still. Only trust a file that
+    // appeared at outputPath during this capture.
+    written = __firstWrittenFile(outputPath);
+    if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+  }
 
   return {
     ok: false,
@@ -1700,6 +1824,43 @@ function __clipKeyframeBase(clip) {
     return { ok: false, error: "Premiere did not report the clip's in-point and duration. Nothing was changed." };
   }
   return { ok: true, inTicks: inTicks, durationSeconds: durationSeconds };
+}
+
+// Marker setters accept seconds on some hosts; Time getters may be detached.
+function __markerStoredTicks(marker, field) {
+  try {
+    var text = String(marker[field].ticks).replace(/^\\s+|\\s+$/g, "");
+    if (!/^\\d+$/.test(text)) return null;
+    return text.replace(/^0+/, "") || "0";
+  } catch (readMarkerTimeError) { return null; }
+}
+function __setMarkerTick(marker, field, ticks) {
+  var numeric = Number(ticks);
+  if (!isFinite(numeric) || numeric < 0) return false;
+  var wanted = Math.round(numeric).toFixed(0);
+  if (__markerStoredTicks(marker, field) === wanted) return true;
+  try { marker[field].ticks = wanted; } catch (markerTickWriteError) {}
+  if (__markerStoredTicks(marker, field) === wanted) return true;
+  // Pick a representable seconds value above the tick boundary. At long
+  // timeline positions, a fixed quarter tick can round back to the boundary.
+  // Readback, not setter acceptance, decides whether this fallback worked.
+  var seconds = Number(wanted) / TICKS_PER_SECOND;
+  var ulp = Math.pow(2, -52) * Math.max(1, Math.abs(seconds));
+  var biased = seconds + 0.25 / TICKS_PER_SECOND;
+  for (var biasTry = 0; biasTry < 5 && Math.floor(biased * TICKS_PER_SECOND) !== Number(wanted); biasTry++) {
+    biased = seconds + ulp * Math.pow(2, biasTry - 2);
+  }
+  try { marker[field] = biased; } catch (markerSecondsWriteError) {}
+  return __markerStoredTicks(marker, field) === wanted;
+}
+function __setMarkerRangeTicks(marker, startTicks, endTicks) {
+  var ok;
+  if (Number(__markerStoredTicks(marker, "end")) < Number(startTicks)) {
+    ok = __setMarkerTick(marker, "end", endTicks) && __setMarkerTick(marker, "start", startTicks);
+  } else {
+    ok = __setMarkerTick(marker, "start", startTicks) && __setMarkerTick(marker, "end", endTicks);
+  }
+  return { ok: ok, startTicks: __markerStoredTicks(marker, "start"), endTicks: __markerStoredTicks(marker, "end") };
 }
 
 function __clipKeyTime(base, clipSeconds) {

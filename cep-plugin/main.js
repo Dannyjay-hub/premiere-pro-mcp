@@ -337,20 +337,21 @@ function processOneCommand(cmdFileName) {
     clearInterval(busyTimer);
     deleteFile(busyFilePath);
     commandCount++;
-    document.getElementById("cmdCount").textContent = commandCount;
 
     var response;
+    var responseIsError = false;
     try {
       // ExtendScript returns a string; try to parse it as JSON
       if (result && result !== "undefined" && result !== "null") {
         // Check if it's already valid JSON
         var parsed = JSON.parse(result);
         response = JSON.stringify(parsed);
-        log("Result: OK", "ok");
+        responseIsError = parsed && parsed.success === false;
       } else {
         // An empty result means evalScript gave us nothing back. That is a bridge
         // failure, not a successful command with no data — reporting it as "OK" is
         // what made this so hard to diagnose. Say so.
+        responseIsError = true;
         response = JSON.stringify({
           success: false,
           error:
@@ -359,28 +360,35 @@ function processOneCommand(cmdFileName) {
             "). The script may not have run. If every command does this, the CEP panel is stale — " +
             "close and reopen it (a reload is not enough), or reinstall the extension.",
         });
-        log("Result: EMPTY — evalScript returned nothing (see response file)", "err");
       }
     } catch (e) {
       // If result isn't JSON, wrap it
       // "EvalScript error." is CEP's generic message when the host script throws
       // outside its own try/catch or does not parse. It is a failure, not data.
       if (result && (result.indexOf("Error") === 0 || /^EvalScript error/i.test(result))) {
+        responseIsError = true;
         response = JSON.stringify({
           success: false,
           error: /^EvalScript error/i.test(result)
             ? "Premiere could not run the generated script (" + result + "). No result was produced; treat the command as failed."
             : result,
         });
-        log("Result: " + result, "err");
       } else {
         response = JSON.stringify({ success: true, data: result });
-        log("Result: OK (raw)", "ok");
       }
     }
 
-    writeResponseFile(resFilePath, response);
-    commandInFlight = false;
+    // Publish the reply before touching panel UI that may disappear on close.
+    try {
+      writeResponseFile(resFilePath, response);
+    } finally {
+      commandInFlight = false;
+    }
+    try {
+      var countElement = document.getElementById("cmdCount");
+      if (countElement) countElement.textContent = commandCount;
+      log(responseIsError ? "Command failed" : "Result received", responseIsError ? "err" : "ok");
+    } catch (panelUiError) {}
     // Continue without waiting for the next poll interval, preserving FIFO
     // ordering while minimizing queue handoff latency.
     if (bridgeRunning) processCommands();

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Project-item restore marks subtract private `MediaStart` timecode before comparing against zero-based DOM marks, so time-of-day camera media no longer restores absolute source clocks or fails safe-integer checks solely because its start timecode is late in the day (#876).
+- `set_item_in_out` and `set_source_in_out` only report `verified` when Premiere stores the mark on the frame the request floors to (an exact boundary keeps its own frame). They used to accept any stored mark within one whole media frame of the request, so a mark that landed on the next frame still read as verified. Audio items and items without a usable frame grid keep the existing half-millisecond tolerance.
+- Raw XMP patches now compare each supplied leaf field with the stored metadata, refuse empty or oversized patches before writing, and distinguish mismatches from unreadable post-write state.
+- Batch clip volume changes list skipped controls and never verify an empty or partially checked batch. Project-panel item selection now checks the selected node ID.
+- MOGRT imports report observed track and timeline geometry alongside requested values, with explicit failure or unverified receipts when placement cannot be confirmed.
+- Workspace changes and audio-channel mapping requests now state their documented readback limits. Experimental preview-file deletion checks rejection and never treats an API return as proof that cache files disappeared.
+- Timeline roll, slide, slip, trim and duration edits retain Premiere’s existing terminal padding below one sequence frame without treating it as a new source handle. Existing padding of a full frame or more, unreadable grids and proposals beyond the existing padded end are refused before mutation, with exact overrun diagnostics.
+- Project close replies no longer inspect project objects after closing them. Closure is verified in a separate bounded read-only call; unavailable verification reports an unknown closed state rather than treating a native return value as proof. The connector publishes replies before updating panel elements that may disappear during close.
+- Direct sequence exports now measure output duration before reporting verification; OMF exports reject empty output files, and still capture refuses stale destinations that cannot be removed.
+- Marker creation and batch/source marker ranges now retain exact integer ticks when floating seconds would store a boundary one tick early. Time writes are read back exactly, and receipts expose requested and stored clocks; keyframe inspection also returns native tick strings.
+- `overwrite_clip` and `overwrite_from_source` no longer smash V0 or A0 when the item has only one media kind. `Sequence.overwriteClip` treats every index as a real track, so a still or WAV with the default unused-kind index `0` overwrote that track and still reported `verified: true`. Single-kind overwrites now use `Track.overwriteClip` on the receiving track only; linked A/V items still use `Sequence.overwriteClip` with both requested indices.
+- Still capture (`export_frame`, `freeze_frame`, and review-frame exporters) no longer deletes the requested output file before Premiere writes a replacement. A failed QE/AME capture left the original still gone; the destination is replaced only after a non-empty temp file exists.
+
 ## [1.24.1] - 2026-10-16
 
 ### Fixed

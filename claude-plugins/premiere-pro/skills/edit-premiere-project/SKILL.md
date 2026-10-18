@@ -162,7 +162,10 @@ Premiere metadata is several surfaces. Do not dump packets or mix them up.
    XMP.
 4. Writes: CEP `set_metadata` accepts `field_name` plus `value` (optional
    `expected_value`) or the **complete** Project Metadata XML plus
-   `updated_fields`. `set_xmp_metadata` merges a patch. UXP `manage_metadata_uxp`
+   `updated_fields`. `set_xmp_metadata` merges a nonempty patch of at most 256
+   leaf fields and compares each requested value with host readback. Mismatches
+   fail; unreadable post-write state is `committed_unverified`, so inspect before
+   retrying. UXP `manage_metadata_uxp`
    `update_field` writes one property; `update` can still commit project metadata
    and XMP together with readback. Schema tools (`add_custom_metadata_field`,
    `create_project_metadata_field_uxp`) create columns only. Do not invent a

@@ -701,7 +701,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     set_item_in_out: {
       description:
-        "Set in and/or out points on a project item in the project panel (marks source range for editing). Premiere snaps video marks to the media's own frame grid, so a mark is verified within one media frame and the result reports requested and applied seconds.",
+        "Set in and/or out points on a project item in the project panel (marks source range for editing). Premiere floors video marks to the media's own frame grid, so a mark is verified when it lands on the frame the request floors to (an exact frame boundary keeps its own frame); the result reports requested and applied seconds.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -765,10 +765,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
           // Live 26.5.2: Premiere floors video marks to the media's own frame grid
           // (0.5 s on 23.976 media reads back as 11 frames, 0.4588 s) and audio
-          // marks to its samples, so accept a mark within one media frame.
-          var markToleranceSeconds = __requestedMarkToleranceSeconds(item, markMediaType);
+          // marks to its samples, so a mark verifies on the frame the request floors to.
           function markMatches(observed, requestedSeconds) {
-            return !!observed && isFinite(Number(observed.seconds)) && Math.abs(Number(observed.seconds) - requestedSeconds) < markToleranceSeconds;
+            return __requestedMarkMatches(item, markMediaType, observed, requestedSeconds);
           }
           function failAfterMarkUpdate(message) {
             restoreOriginalMarks();
@@ -1286,12 +1285,13 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             }
           }
 
-          var applied = 0, skipped = 0, mismatched = [];
+          var applied = 0, skipped = 0, checked = 0, skippedClips = [], mismatched = [];
           for (var c = 0; c < track.clips.numItems; c++) {
             if (only && !wanted[c]) continue;
             var clip = track.clips[c];
             var prop = __clipParam(clip);
-            if (!prop) { skipped++; if (__clipParam.error) mismatched.push({ clipIndex: c, clip: clip.name, error: __clipParam.error }); continue; }
+            if (!prop) { skipped++; skippedClips.push({ clipIndex: c, clip: clip.name, nodeId: String(clip.nodeId || ""), reason: __clipParam.error || "No readable Volume Level control" }); if (__clipParam.error) mismatched.push({ clipIndex: c, clip: clip.name, error: __clipParam.error }); continue; }
+            checked++;
             var write = __setParamVerified(prop, ${level}, ${level} * 0.0001 + 1e-9);
             if (write.ok) applied++; else mismatched.push({ clipIndex: c, clip: clip.name, level: write.read });
           }
@@ -1301,9 +1301,13 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             level: ${level},
             applied: applied,
             skipped: skipped,
+            skippedClips: skippedClips,
+            checked: checked,
             mismatched: mismatched,
-            verified: mismatched.length === 0
+            verified: applied > 0 && skipped === 0 && mismatched.length === 0
           };
+          if (checked === 0) { data.outcome = "not_applied"; data.mutationOutcome = "not_applied"; data.timelineChanged = false; return __error("No requested clip had a writable Volume Level control; nothing was changed.", data); }
+          data.outcome = data.verified ? "verified" : "committed_unverified";
           if (mismatched.length) {
             data.timelineChanged = applied > 0 ? true : null;
             data.outcome = "committed_unverified";
