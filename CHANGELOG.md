@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Localized onboarding READMEs for 14 major languages, with a shared language switcher and the English README identified as the canonical source for mutable release facts.
+
 ### Fixed
 
 - Project-item restore marks subtract private `MediaStart` timecode before comparing against zero-based DOM marks, so time-of-day camera media no longer restores absolute source clocks or fails safe-integer checks solely because its start timecode is late in the day (#876).
