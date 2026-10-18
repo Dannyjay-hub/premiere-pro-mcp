@@ -1519,16 +1519,45 @@ function __exportStillFrame(outputPath, ticks) {
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
+  var destinationExisted = new File(outputPath).exists;
   // QE cuts its output name at the first dot ("shot-12.5s" became "shot-12.png"),
   // so hand it a dot-free temporary name in the same folder and rename after.
   var qeBase = outputPath.substring(0, slash + 1) + "mcp-frame-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000);
   var qePath = qeBase + (wantJpeg ? ".jpg" : ".png");
+  var amePath = outputPath;
 
-  // Clear any stale file (under either name) so that a file existing afterwards proves we wrote it.
-  var stale = new File(outputPath);
-  if (stale.exists) { try { stale.remove(); } catch (e) {} }
+  // Never delete the caller's destination before a replacement file exists.
+  // QE already writes a unique temp name; a failed export must leave the
+  // original still in place. Only a leftover temp from a prior crash is safe
+  // to clear.
   var staleQe = new File(qePath);
   if (staleQe.exists) { try { staleQe.remove(); } catch (e) {} }
+
+  function __promoteWrittenStill(fromPath) {
+    var produced = new File(fromPath);
+    if (!produced.exists || !(produced.length > 0)) return "";
+    var dest = new File(outputPath);
+    if (produced.fsName === dest.fsName) return produced.fsName;
+    if (dest.exists) {
+      try { dest.remove(); } catch (eRm) {}
+      if (new File(outputPath).exists) {
+        notes.push("could not replace the existing still at " + outputPath);
+        return "";
+      }
+    }
+    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (eRen) {
+      notes.push("could not rename " + fromPath + ": " + eRen.toString());
+    }
+    dest = new File(outputPath);
+    return (dest.exists && dest.length > 0) ? dest.fsName : "";
+  }
+
+  function __discardUnusedStillTemp(fromPath) {
+    var leftover = new File(fromPath);
+    if (!leftover.exists) return;
+    if (new File(outputPath).exists) { try { leftover.remove(); } catch (eDrop) {} }
+    else notes.push("replacement still remains at " + leftover.fsName);
+  }
 
   // --- Path 1: QE DOM. Signature is (timecodeString, pathWithoutExtension). ---
   var at = null;
@@ -1554,19 +1583,13 @@ function __exportStillFrame(outputPath, ticks) {
     }
   }
 
-  // Give the caller the name they asked for, and never leave the temporary file behind.
-  var produced = new File(qePath);
-  if (produced.exists && produced.length > 0) {
-    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (e) { notes.push("QE: could not rename " + qePath + ": " + e.toString()); }
-  }
-  var leftover = new File(qePath);
-  if (leftover.exists) { try { leftover.remove(); } catch (e) {} }
-
-  var exactFile = new File(outputPath);
-  var written = exactFile.exists && exactFile.length > 0 ? exactFile.fsName : "";
+  // Promote the unique QE temp onto the requested name only after it exists.
+  // A pre-existing destination is not proof that this capture wrote a file.
+  var written = __promoteWrittenStill(qePath);
   if (written) {
     return { ok: true, method: "qe", path: written, notes: notes, timecode: at ? at.timecode : null, frame: at ? at.frame : null };
   }
+  __discardUnusedStillTemp(qePath);
   notes.push("QE wrote no file; falling back to Media Encoder");
 
   // --- Path 2: one-frame export through Media Encoder. ---
@@ -1595,13 +1618,14 @@ function __exportStillFrame(outputPath, ticks) {
         var ameMutatedMarks = false;
         var temporaryIn = String(savedIn), temporaryOut = String(savedOut);
         var guardedSequenceId = String(seq.sequenceID);
+        if (destinationExisted || new File(outputPath).exists) amePath = qeBase + "-ame" + ext;
         try {
           seq.setInPoint(__ticksToSeconds(startTicks));
           ameMutatedMarks = true;
           temporaryIn = String(seq.getInPointAsTime().ticks);
           seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
           temporaryOut = String(seq.getOutPointAsTime().ticks);
-          seq.exportAsMediaDirect(outputPath, preset, app.encoder.ENCODE_IN_TO_OUT);
+          seq.exportAsMediaDirect(amePath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
           // Restore only marks that still equal this capture's temporary state.
@@ -1649,8 +1673,16 @@ function __exportStillFrame(outputPath, ticks) {
   }
 
   if (restorationFailure) { __stillFrameRecoveryRequired = true; return { ok: false, error: restorationFailure, recoveryRequired: true, mutationOutcome: "unknown", notes: notes }; }
-  written = __firstWrittenFile(outputPath);
-  if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+  if (amePath !== outputPath) {
+    written = __promoteWrittenStill(amePath);
+    if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+    __discardUnusedStillTemp(amePath);
+  } else if (!destinationExisted) {
+    // A pre-existing destination is not a new still. Only trust a file that
+    // appeared at outputPath during this capture.
+    written = __firstWrittenFile(outputPath);
+    if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
+  }
 
   return {
     ok: false,

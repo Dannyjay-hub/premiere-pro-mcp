@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Still capture (`export_frame`, `freeze_frame`, and review-frame exporters) no longer deletes the requested output file before Premiere writes a replacement. A failed QE/AME capture left the original still gone; the destination is replaced only after a non-empty temp file exists.
+
 ## [1.24.1] - 2026-10-16
 
 ### Fixed
