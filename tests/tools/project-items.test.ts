@@ -14,6 +14,7 @@ import { sendCommand } from "../../src/bridge/file-bridge.js";
 import { getTrackTargetingTools } from "../../src/tools/track-targeting.js";
 import { getMediaTools } from "../../src/tools/media.js";
 import { getUtilityTools } from "../../src/tools/utility.js";
+import { getProjectTools } from "../../src/tools/project.js";
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/project-items", timeoutMs: 5000 };
@@ -21,7 +22,7 @@ type Result = { success: boolean; error?: string; data?: Record<string, unknown>
 beforeEach(() => vi.clearAllMocks());
 
 /** Project with a root bin holding a used clip (on a timeline) and an unused Bars item. */
-function project(options: { startTimeWritable?: boolean; existingBin?: string; deleteBinNoop?: boolean; frameTicks?: number } = {}) {
+function project(options: { startTimeWritable?: boolean; existingBin?: string; deleteBinNoop?: boolean; frameTicks?: number; offlineBars?: boolean; usedInBin?: boolean } = {}) {
   let startTicks = 0;
   type Node = { nodeId: string; name: string; type: number; children?: { numItems: number; [i: number]: Node }; parent?: Node };
   const makeBin = (nodeId: string, name: string): Node => ({ nodeId, name, type: 2, children: { numItems: 0 } });
@@ -35,8 +36,12 @@ function project(options: { startTimeWritable?: boolean; existingBin?: string; d
   };
   const used = { nodeId: "used", name: "Interview A.mp4", type: 1, startTime: () => ({ seconds: startTicks / 254016000000 }), setStartTime: (t: string) => { if (options.startTimeWritable !== false) startTicks = parseFloat(t); } } as Node & Record<string, unknown>;
   const bars = { nodeId: "bars", name: "Bars 1080p", type: 1 } as Node & Record<string, unknown>;
+  if (options.offlineBars) (bars as Record<string, unknown>).isOffline = () => true;
+  const oldBin = makeBin("oldbin", "Old Bin") as Node & Record<string, unknown>;
+  oldBin.deleteBin = () => remove(root, oldBin);
+  if (options.usedInBin) add(root, oldBin);
   for (const item of [used, bars]) {
-    add(root, item);
+    add(options.usedInBin && item === used ? oldBin : root, item);
     (item as Record<string, unknown>).moveBin = (bin: Node) => { remove(item.parent!, item); add(bin, item); };
   }
   (root as Record<string, unknown>).createBin = (name: string) => {
@@ -138,5 +143,49 @@ describe("delete_project_item for clip items", () => {
     await expect(getUtilityTools(bridgeOptions).delete_multiple_project_items.handler({ item_ids: ["bars", "used"] }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("No project items were deleted") });
     expect(names()).toEqual(["Interview A.mp4", "Bars 1080p"]);
+  });
+});
+
+describe("timeline-usage and offline guards", () => {
+  it("find_item_usages lists sequences and tracks for an item and for a bin's contents", async () => {
+    project({ usedInBin: true });
+    const result = await getUtilityTools(bridgeOptions).find_item_usages.handler({ item_ids: ["Old Bin", "bars"] }) as Result;
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        usedItems: 1,
+        safeToDelete: false,
+        items: [
+          { name: "Old Bin", isBin: true, used: true, timelineClips: 1, sequences: [{ sequence: "Edit", clips: 1, tracks: [{ type: "video", index: 0, clips: 1 }] }] },
+          { name: "Bars 1080p", used: false, timelineClips: 0, sequences: [] },
+        ],
+      },
+    });
+    await expect(getUtilityTools(bridgeOptions).find_item_usages.handler({ item_ids: [] }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("item_ids") });
+  });
+
+  it("delete_bin refuses a bin whose contents are on a timeline and lists where", async () => {
+    const { names } = project({ usedInBin: true });
+    const result = await getProjectTools(bridgeOptions).delete_bin.handler({ bin_id: "Old Bin" }) as Result;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/holds media used by 1 timeline clip\(s\) in Edit/);
+    expect(result.data).toMatchObject({ code: "ITEM_IN_USE", usages: [{ sequence: "Edit", tracks: [{ type: "video", index: 0 }] }] });
+    expect(names()).toContain("Old Bin");
+    await expect(getProjectTools(bridgeOptions).delete_bin.handler({ bin_id: "Old Bin", confirm_remove_from_sequences: true }))
+      .resolves.toMatchObject({ success: true, data: { deleted: true, verified: true, timelineClipsRemoved: 1, sequencesChanged: ["Edit"] } });
+    expect(names()).not.toContain("Old Bin");
+  });
+
+  it("refuses offline media unless allow_offline is true", async () => {
+    const { names } = project({ offlineBars: true });
+    await expect(getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "bars" }))
+      .resolves.toMatchObject({ success: false, data: { code: "ITEM_OFFLINE", offlineItems: ["Bars 1080p"] } });
+    await expect(getUtilityTools(bridgeOptions).delete_multiple_project_items.handler({ item_ids: ["bars"] }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("No project items were deleted") });
+    expect(names()).toContain("Bars 1080p");
+    await expect(getUtilityTools(bridgeOptions).delete_project_item.handler({ item_id: "bars", allow_offline: true }))
+      .resolves.toMatchObject({ success: true, data: { deleted: true } });
+    expect(names()).not.toContain("Bars 1080p");
   });
 });

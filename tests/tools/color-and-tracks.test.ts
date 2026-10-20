@@ -67,6 +67,12 @@ describe("colour parameters", () => {
 });
 
 describe("delete_track", () => {
+  it("refuses caption tracks with the manual route instead of a generic enum error", async () => {
+    await expect(getTrackTools(bridge).delete_track.handler({ track_type: "caption", track_index: 0 }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("Delete Track"), data: { code: "CAPTION_TRACK_DELETE_UNSUPPORTED", applied: false } });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
   function trackHost(clipCounts: number[], options: { names?: string[]; qeOffByOne?: boolean; renumbers?: boolean } = {}) {
     const list = clipCounts.map((n, i) => {
       const clips: Record<string | number, unknown> = { numItems: n };

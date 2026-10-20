@@ -51,7 +51,14 @@ project state, make only requested changes, and verify the timeline after mutati
 - On a user correction, reconcile pending work, inspect affected state, and
   replace affected previews before applying the revised plan.
 - After a timeout, inspect before retrying a mutation; its host outcome may be
-  unknown. Never blindly replay a confirmation token.
+  unknown. Never blindly replay a confirmation token. A client-side timeout does
+  not stop the server: call `get_last_operations` and do not resend a call that
+  is still running or already succeeded.
+- Before deleting or reorganizing bins, run `find_item_usages`. After
+  `import_fcp_xml` into an open project, check its `reusedItems`: the new
+  sequences may use items in an old bin. Delete tools refuse used or offline
+  media; pass `confirm_remove_from_sequences` or `allow_offline` only with the
+  user's explicit approval.
 
 ## Apply changes safely
 

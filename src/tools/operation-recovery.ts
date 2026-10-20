@@ -3,6 +3,7 @@ import { type BridgeOptions, getTempDir, sendCommand, withBridgeWorkflow } from 
 import { acknowledgeHostRecovery, inspectHostRecovery } from "../bridge/host-lease.js";
 import { buildToolScript } from "../bridge/script-builder.js";
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { OPERATION_LOG_LIMIT, recentOperations } from "../workflows/operation-log.js";
 
 const HOST_STATE_SCRIPT = `
   var project = app.project;
@@ -44,6 +45,19 @@ export function getOperationRecoveryTools(uxpBridge: UxpWebSocketBridge | undefi
     return { backend, ...state, hostStateRevision: digest(snapshot.data), snapshotBoundary: "bounded_active_sequence_clip_identity_and_ranges", snapshot: snapshot.data };
   }
   return {
+    get_last_operations: {
+      description: "Read-only: list the most recent state-changing tool calls this MCP server process handled, newest first, with status (running, succeeded, failed), receipt outcome and timing. Use it after a client-side timeout before retrying an edit: a call still running, or one that already succeeded, must not be sent again. Records only tool names, timing and outcomes; it does not prove Premiere state, and it starts empty when the server restarts.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      parameters: { type: "object", additionalProperties: false, properties: {
+        limit: { type: "integer", minimum: 1, maximum: OPERATION_LOG_LIMIT, description: `How many operations to return, newest first (default 10, max ${OPERATION_LOG_LIMIT}).` },
+      } },
+      handler: async (args: { limit?: number }) => {
+        const limit = args.limit ?? 10;
+        if (!Number.isInteger(limit) || limit < 1 || limit > OPERATION_LOG_LIMIT) return { success: false, error: `limit must be an integer from 1 through ${OPERATION_LOG_LIMIT}` };
+        const operations = recentOperations(limit);
+        return { success: true, data: { operations, running: operations.filter((entry) => entry.status === "running").length, scope: "this_server_process_memory", boundary: "Tool-call bookkeeping only; read the timeline back before relying on an edit's effect." } };
+      },
+    },
     inspect_operation_recovery: {
       description: "Inspect unknown execution outcomes and a bounded current host-state revision. Inspection remains available while dependent mutations are blocked. No edit is replayed.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

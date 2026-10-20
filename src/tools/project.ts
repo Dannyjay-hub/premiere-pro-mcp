@@ -568,7 +568,8 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
     },
 
     delete_bin: {
-      description: "Delete a bin (folder) from the project panel",
+      description:
+        "Delete a bin (folder) and everything inside it from the project panel, and read back that it is gone. Deleting a bin also removes its media's clips from every sequence, so a bin whose contents are used on a timeline is refused unless confirm_remove_from_sequences is true; the refusal lists the sequences and tracks (see find_item_usages). Bins holding offline media are refused unless allow_offline is true.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -576,21 +577,37 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             type: "string",
             description: "Name or node ID of the bin to delete",
           },
+          confirm_remove_from_sequences: {
+            type: "boolean",
+            description: "Delete even when something inside the bin is used in a sequence, which also removes those timeline clips (default: false).",
+          },
+          allow_offline: {
+            type: "boolean",
+            description: "Also delete a bin that holds offline (missing-media) items. Premiere can open a modal while deleting missing media, which blocks every later bridge command until it is closed (default: false).",
+          },
         },
         required: ["bin_id"],
       },
-      handler: async (args: { bin_id: string }) => {
+      handler: async (args: { bin_id: string; confirm_remove_from_sequences?: boolean; allow_offline?: boolean }) => {
         const script = buildToolScript(`
           var bin = __findProjectItem("${escapeForExtendScript(args.bin_id)}");
           if (!bin) return __error("Bin not found: ${escapeForExtendScript(args.bin_id)}");
           if (bin.type !== 2) return __error("Item is not a bin");
           var nodeId = String(bin.nodeId);
           var name = bin.name;
+          var usage = __projectItemUsage(bin);
+          if (usage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
+            return __jsonStringify({ success: false, error: name + " holds media used by " + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting the bin would remove those clips too, and this cannot be undone here, so nothing was deleted. Move the used items out first, or pass confirm_remove_from_sequences: true.", data: { code: "ITEM_IN_USE", usages: usage.details } });
+          }
+          var offline = __offlineItemsIn(bin);
+          if (offline.length > 0 && ${args.allow_offline === true ? "false" : "true"}) {
+            return __jsonStringify({ success: false, error: name + " holds offline media: " + offline.join(", ") + ". Premiere can open a modal while deleting missing media, which blocks the bridge, so nothing was deleted. Use organize_project_items_uxp with action 'remove', delete it in the Project panel, or pass allow_offline: true.", data: { code: "ITEM_OFFLINE", offlineItems: offline } });
+          }
           bin.deleteBin();
           if (__findProjectItem(nodeId)) {
             return __error("Premiere did not remove bin: " + name + ". The deletion is not reported as successful.");
           }
-          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId });
+          return __result({ deleted: true, verified: true, name: name, nodeId: nodeId, timelineClipsRemoved: usage.clips, sequencesChanged: usage.sequences });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -954,7 +971,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
 
     import_fcp_xml: {
       description:
-        "Import a Final Cut Pro XML file. Default mode new_project opens it as a new Premiere project: app.openFCPXML(path, projPath) requires a destination project path, and verified is true only when that destination exists as a file and Premiere has that exact path open. Mode into_open_project instead imports the XML into the currently open project with project.importFiles and succeeds only when the sequence count grew; the XML also brings its own clips, which can duplicate existing items.",
+        "Import a Final Cut Pro XML file. Default mode new_project opens it as a new Premiere project: app.openFCPXML(path, projPath) requires a destination project path, and verified is true only when that destination exists as a file and Premiere has that exact path open. Mode into_open_project instead imports the XML into the currently open project with project.importFiles and succeeds only when the sequence count grew; the XML also brings its own clips, which can duplicate existing items, or Premiere can link them to existing items that point at the same media. That mode reports reusedItems (pre-existing project items and their bins that the new sequences use), so a later bin cleanup does not silently empty the new timelines.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -997,12 +1014,56 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             if (!app.project) return __error("No open project to import into");
             ${binLookup}
             var sequencesBefore = app.project.sequences.numSequences;
+            // Premiere can link the XML's clips to project items that already
+            // point at the same media instead of importing new ones. Record which
+            // items existed (and where) so the reuse can be reported: deleting the
+            // old bin later would also remove the new sequences' clips.
+            var existingItems = {};
+            var walk = function (bin, binPath) {
+              var count = __childCount(bin);
+              for (var w = 0; w < count; w++) {
+                var child = __childAt(bin, w);
+                if (!child) continue;
+                if (__isBinItem(child)) walk(child, binPath + "/" + child.name);
+                else existingItems[String(child.nodeId)] = binPath || "/";
+              }
+            };
+            walk(app.project.rootItem, "");
+            var sequenceIdsBefore = {};
+            for (var sb = 0; sb < sequencesBefore; sb++) sequenceIdsBefore[String(app.project.sequences[sb].sequenceID)] = true;
             var importReturned = app.project.importFiles([xmlFile.fsName], true, targetBin, false);
             var sequencesAfter = app.project.sequences.numSequences;
             if (!(sequencesAfter > sequencesBefore)) {
               return __jsonStringify({ success: false, error: "Premiere did not add a sequence from the FCP XML; nothing verifiable was imported.", data: { importReturned: !!importReturned, sequencesBefore: sequencesBefore, sequencesAfter: sequencesAfter } });
             }
-            return __result({ imported: true, verified: true, mode: "into_open_project", newSequences: sequencesAfter - sequencesBefore, sequenceCount: sequencesAfter, targetBin: targetBin.name });
+            var reused = [];
+            var reusedSeen = {};
+            var newClipItems = {};
+            var newSequenceNames = [];
+            for (var sa = 0; sa < sequencesAfter; sa++) {
+              var importedSeq = app.project.sequences[sa];
+              if (sequenceIdsBefore[String(importedSeq.sequenceID)]) continue;
+              newSequenceNames.push(String(importedSeq.name));
+              var trackGroups = [importedSeq.videoTracks, importedSeq.audioTracks];
+              for (var tg = 0; tg < trackGroups.length; tg++) {
+                for (var tt = 0; tt < trackGroups[tg].numTracks; tt++) {
+                  var importedClips = trackGroups[tg][tt].clips;
+                  for (var ic = 0; ic < importedClips.numItems; ic++) {
+                    var clipItem = null;
+                    try { clipItem = importedClips[ic].projectItem; } catch (eItem) {}
+                    if (!clipItem) continue;
+                    var clipItemId = String(clipItem.nodeId);
+                    if (existingItems[clipItemId] === undefined) { newClipItems[clipItemId] = true; continue; }
+                    if (reusedSeen[clipItemId] || reused.length >= 200) continue;
+                    reusedSeen[clipItemId] = true;
+                    reused.push({ nodeId: clipItemId, name: String(clipItem.name), bin: existingItems[clipItemId] });
+                  }
+                }
+              }
+            }
+            var newItemCount = 0;
+            for (var nk in newClipItems) if (newClipItems.hasOwnProperty(nk)) newItemCount++;
+            return __result({ imported: true, verified: true, mode: "into_open_project", newSequences: sequencesAfter - sequencesBefore, newSequenceNames: newSequenceNames, sequenceCount: sequencesAfter, targetBin: targetBin.name, reusedItems: reused, reusedItemCount: reused.length, newClipItemCount: newItemCount, reuseNote: reused.length > 0 ? "The new sequences use project items that existed before this import. Deleting those items or their bins also removes these clips; check with find_item_usages first." : "No pre-existing project items are used by the new sequences." });
           `);
           return sendCommand(intoScript, bridgeOptions);
         }

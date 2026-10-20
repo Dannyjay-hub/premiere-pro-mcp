@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
@@ -163,5 +163,59 @@ describe("normalize_loudness_file safety boundary", () => {
     ffmpegHost(failure.outputPath, { fail: { stage: "measure", error: Object.assign(new Error("decode failed"), { stderr: "bad audio stream" }) } });
     await expect(tool.handler({ input_path: failure.inputPath, output_path: failure.outputPath }))
       .resolves.toMatchObject({ success: false, error: expect.stringContaining("bad audio stream") });
+  });
+
+  it("renders again with a lowered ceiling when encoding pushes the true peak over it, and keeps the passing attempt", async () => {
+    const { inputPath } = fixture();
+    const outputPath = inputPath.replace("input.wav", "normalized.mp4");
+    const applies: string[][] = [];
+    mockedExecFileAsync.mockImplementation(async (command: string, args: string[]) => {
+      if (command === "ffprobe") return { stdout: JSON.stringify({ streams: [{ sample_rate: "48000", bit_rate: "317000" }] }), stderr: "" };
+      if (args.some((a) => a.includes("ebur128"))) {
+        // The first AAC render overshoots the -1.5 dBFS ceiling; the retry lands under it.
+        return { stdout: "", stderr: measuredSummary(-16.1, args.includes(outputPath) ? -0.9 : -1.7) };
+      }
+      if (args.some((a) => a.includes("measured_I"))) {
+        applies.push(args);
+        writeFileSync(args[args.length - 1], args.includes(outputPath) ? "attempt-1" : "attempt-2");
+        return { stdout: "", stderr: FIRST_PASS };
+      }
+      return { stdout: "", stderr: FIRST_PASS };
+    });
+
+    const result = await tool.handler({ input_path: inputPath, output_path: outputPath, max_true_peak_dbfs: -1.5 });
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        verified: true,
+        truePeakPass: true,
+        measured: { truePeakDbfs: -1.7 },
+        attempts: [
+          { attempt: 1, appliedTruePeakDbfs: -1.5, truePeakDbfs: -0.9, truePeakPass: false, kept: false },
+          { attempt: 2, appliedTruePeakDbfs: -2.2, truePeakDbfs: -1.7, truePeakPass: true, kept: true },
+        ],
+      },
+    });
+    expect(applies).toHaveLength(2);
+    expect(applies[1][applies[1].indexOf("-af") + 1]).toContain("TP=-2.2");
+    expect(readFileSync(outputPath, "utf8")).toBe("attempt-2");
+    expect(readdirSync(dirname(outputPath)).filter((name) => name.includes(".retry-"))).toEqual([]);
+  });
+
+  it("keeps the first output and stops when max_attempts is 1 or a retry fails", async () => {
+    const single = fixture();
+    ffmpegHost(single.outputPath, { measured: measuredSummary(-16, -0.5) });
+    await expect(tool.handler({ input_path: single.inputPath, output_path: single.outputPath, max_attempts: 1 }))
+      .resolves.toMatchObject({ success: true, data: { verified: false, attempts: [{ attempt: 1, kept: true }] } });
+
+    // ffmpegHost writes only the real output path, so the retry produces no file.
+    const failedRetry = fixture();
+    ffmpegHost(failedRetry.outputPath, { measured: measuredSummary(-16, -0.5) });
+    await expect(tool.handler({ input_path: failedRetry.inputPath, output_path: failedRetry.outputPath }))
+      .resolves.toMatchObject({ success: true, data: { verified: false, attempts: [{ attempt: 1, kept: true }] } });
+    expect(readFileSync(failedRetry.outputPath, "utf8")).toBe("normalized-audio");
+
+    await expect(tool.handler({ input_path: "in.wav", output_path: "out.wav", max_attempts: 5 }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("max_attempts") });
   });
 });

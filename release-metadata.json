@@ -1,9 +1,9 @@
 {
   "version": "1.24.1",
-  "coreTools": 434,
-  "defaultProfileTools": 432,
+  "coreTools": 436,
+  "defaultProfileTools": 434,
   "uxpAdditionalTools": 96,
-  "defaultProfileWithUxpTools": 528,
+  "defaultProfileWithUxpTools": 530,
   "toolModules": 67,
   "resources": 4,
   "guidedWorkflows": 29,
