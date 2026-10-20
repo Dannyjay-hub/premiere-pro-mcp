@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Marker creation and batch/source marker ranges now retain exact integer ticks when floating seconds would store a boundary one tick early. Time writes are read back exactly, and receipts expose requested and stored clocks; keyframe inspection also returns native tick strings.
 - `overwrite_clip` and `overwrite_from_source` no longer smash V0 or A0 when the item has only one media kind. `Sequence.overwriteClip` treats every index as a real track, so a still or WAV with the default unused-kind index `0` overwrote that track and still reported `verified: true`. Single-kind overwrites now use `Track.overwriteClip` on the receiving track only; linked A/V items still use `Sequence.overwriteClip` with both requested indices.
 - Still capture (`export_frame`, `freeze_frame`, and review-frame exporters) no longer deletes the requested output file before Premiere writes a replacement. A failed QE/AME capture left the original still gone; the destination is replaced only after a non-empty temp file exists.
+- Still capture no longer treats a prefix-matching sibling (`hero-v2.tiff` when asking for `hero.tiff`) as the new frame. Media Encoder numbered suffixes are accepted only when that file appeared during this capture, and an existing destination is moved aside and restored if the replacement cannot be renamed onto it.
 
 ## [1.24.1] - 2026-10-16
 

@@ -1521,30 +1521,67 @@ function __findStillPreset(outputPath) {
   return "";
 }
 
-// Returns the path actually written, or "" if nothing was. Media Encoder treats a
-// still export as a one-frame image *sequence* and appends a frame number to the
-// filename, so an exact-path miss is not proof that nothing was written.
-function __firstWrittenFile(outputPath) {
+// Media Encoder treats a still export as a one-frame image sequence and may
+// append a frame number (hero.png -> hero1.png / hero_0001.png). Only those
+// suffixes count as this capture. A prefix match such as hero-v2.png is a
+// sibling the caller already had, not a new still.
+function __ameStillSiblingKind(base, ext, nm) {
+  var lowerNm = String(nm).toLowerCase();
+  var lowerExt = String(ext).toLowerCase();
+  var stem = String(nm);
+  if (lowerExt) {
+    if (lowerNm.length < lowerExt.length || lowerNm.substring(lowerNm.length - lowerExt.length) !== lowerExt) return "";
+    stem = String(nm).substring(0, String(nm).length - String(ext).length);
+  }
+  if (stem === base) return "exact";
+  if (stem.indexOf(base) !== 0) return "";
+  var suffix = stem.substring(base.length);
+  if (/^[_-]?\\d+$/.test(suffix)) return "ame";
+  return "";
+}
+
+function __stillSiblingNames(outputPath) {
+  var names = {};
+  var exact = new File(outputPath);
+  var dir = exact.parent;
+  if (!dir || !dir.exists || typeof dir.getFiles !== "function") return names;
+  var fullName = decodeURI(exact.name);
+  var dot = fullName.lastIndexOf(".");
+  var base = dot === -1 ? fullName : fullName.substring(0, dot);
+  var ext = dot === -1 ? "" : fullName.substring(dot);
+  var files = dir.getFiles();
+  if (!files) return names;
+  for (var i = 0; i < files.length; i++) {
+    if (files[i] instanceof Folder) continue;
+    var nm = decodeURI(files[i].name);
+    if (__ameStillSiblingKind(base, ext, nm)) names[nm] = true;
+  }
+  return names;
+}
+
+// Returns the path actually written, or "" if nothing was. Never rename a
+// sibling that was already on disk before this capture.
+function __firstWrittenFile(outputPath, existingNames) {
   var exact = new File(outputPath);
   if (exact.exists && exact.length > 0) return exact.fsName;
 
   var dir = exact.parent;
-  if (!dir || !dir.exists) return "";
+  if (!dir || !dir.exists || typeof dir.getFiles !== "function") return "";
 
   var fullName = decodeURI(exact.name);
   var dot = fullName.lastIndexOf(".");
   var base = dot === -1 ? fullName : fullName.substring(0, dot);
-  var ext = dot === -1 ? "" : fullName.substring(dot).toLowerCase();
+  var ext = dot === -1 ? "" : fullName.substring(dot);
+  var prior = existingNames || {};
 
   var matches = dir.getFiles(function(candidate) {
     if (candidate instanceof Folder) return false;
     var nm = decodeURI(candidate.name);
-    if (nm.indexOf(base) !== 0) return false;
-    return ext === "" || nm.toLowerCase().substring(nm.length - ext.length) === ext;
+    if (prior[nm]) return false;
+    return __ameStillSiblingKind(base, ext, nm) === "ame";
   });
   if (!matches || !matches.length) return "";
 
-  // Normalize back to the caller's requested path so they get the name they asked for.
   var produced = matches[0];
   if (produced.length <= 0) return "";
   try {
@@ -1612,6 +1649,7 @@ function __exportStillFrame(outputPath, ticks) {
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
   var destinationExisted = new File(outputPath).exists;
+  var stillSiblingsBefore = __stillSiblingNames(outputPath);
   // QE cuts its output name at the first dot ("shot-12.5s" became "shot-12.png"),
   // so hand it a dot-free temporary name in the same folder and rename after.
   var qeBase = outputPath.substring(0, slash + 1) + "mcp-frame-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000000);
@@ -1625,23 +1663,53 @@ function __exportStillFrame(outputPath, ticks) {
   var staleQe = new File(qePath);
   if (staleQe.exists) { try { staleQe.remove(); } catch (e) {} }
 
+  function __uniqueStillBackupPath(destPath) {
+    var candidate = destPath + ".mcp-prev";
+    var n = 0;
+    while (new File(candidate).exists) {
+      n++;
+      candidate = destPath + ".mcp-prev-" + n;
+      if (n > 20) return "";
+    }
+    return candidate;
+  }
+
   function __promoteWrittenStill(fromPath) {
     var produced = new File(fromPath);
     if (!produced.exists || !(produced.length > 0)) return "";
     var dest = new File(outputPath);
     if (produced.fsName === dest.fsName) return produced.fsName;
+    var destName = decodeURI(new File(outputPath).name);
+    var backupPath = "";
     if (dest.exists) {
-      try { dest.remove(); } catch (eRm) {}
+      backupPath = __uniqueStillBackupPath(outputPath);
+      if (!backupPath) {
+        notes.push("could not replace the existing still at " + outputPath);
+        return "";
+      }
+      try { dest.rename(decodeURI(new File(backupPath).name)); } catch (eBk) {
+        notes.push("could not replace the existing still at " + outputPath);
+        return "";
+      }
       if (new File(outputPath).exists) {
         notes.push("could not replace the existing still at " + outputPath);
         return "";
       }
     }
-    try { produced.rename(decodeURI(new File(outputPath).name)); } catch (eRen) {
+    try { produced.rename(destName); } catch (eRen) {
       notes.push("could not rename " + fromPath + ": " + eRen.toString());
     }
     dest = new File(outputPath);
-    return (dest.exists && dest.length > 0) ? dest.fsName : "";
+    if (dest.exists && dest.length > 0) {
+      if (backupPath) { try { new File(backupPath).remove(); } catch (eDrop) {} }
+      return dest.fsName;
+    }
+    if (backupPath) {
+      try { new File(backupPath).rename(destName); } catch (eRestore) {
+        notes.push("original still remains at " + backupPath);
+      }
+    }
+    return "";
   }
 
   function __discardUnusedStillTemp(fromPath) {
@@ -1772,7 +1840,7 @@ function __exportStillFrame(outputPath, ticks) {
   } else if (!destinationExisted) {
     // A pre-existing destination is not a new still. Only trust a file that
     // appeared at outputPath during this capture.
-    written = __firstWrittenFile(outputPath);
+    written = __firstWrittenFile(outputPath, stillSiblingsBefore);
     if (written) return { ok: true, method: "ame", path: written, notes: notes, timecode: null, frame: null };
   }
 
