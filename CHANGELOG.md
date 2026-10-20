@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.24.2] - 2026-10-20
+
 ### Added
 
 - Localized onboarding READMEs for 14 major languages, with a shared language switcher and the English README identified as the canonical source for mutable release facts.
