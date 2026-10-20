@@ -9,9 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Localized onboarding READMEs for 14 major languages, with a shared language switcher and the English README identified as the canonical source for mutable release facts.
+- `find_item_usages` lists, per project item or bin, the sequences, tracks and clip counts that use it, plus offline items inside it. A bin counts everything it contains, because deleting a bin deletes its contents and their timeline clips.
+- `get_last_operations` lists the most recent state-changing calls this server process handled (status `running`/`succeeded`/`failed`, receipt outcome, timing; never arguments or paths). A client whose own request timeout fires keeps the server waiting on Premiere; a retry then queued the same edit again, so a timed-out `roll_edit` could apply twice. Check this before resending.
+- `overwrite_clip` accepts `audio_track_index: "auto_empty"`: the lowest audio track with no clip over the placement range, so overwriting a nested sequence no longer lands on existing music. It refuses, changing nothing, when every audio track is occupied there.
+- `normalize_loudness_file` retries (`max_attempts`, default 2) when the remeasured output misses the target or true-peak ceiling, for example after AAC encoding raises the true peak. Each retry renders to a private file with a ceiling lowered by the measured overshoot (or a target offset by the measured miss) and replaces the output only when it is at least as good. Results add `attempts` with each render's measured I and TP.
+- `export_sequence_edl` accepts `return_content: false` with `output_path`, returning only the path, event count, `record_duration_seconds`, checksum and validation instead of the per-event list.
 
 ### Fixed
 
+- `delete_bin` no longer deletes a bin whose contents are used on a timeline. It deleted straight away, so removing an "unused" old bin after `import_fcp_xml` (which had linked the new sequences to the same items) emptied those timelines with no warning. It now refuses with `ITEM_IN_USE` and the sequences and tracks, unless `confirm_remove_from_sequences: true`, matching `delete_project_item`.
+- `delete_project_item`, `delete_multiple_project_items` and `delete_bin` refuse offline (missing-media) items unless `allow_offline: true`. Premiere can open a modal while deleting missing media, and the modal blocked every later bridge command. The refusal names `organize_project_items_uxp` remove and the Project panel. Refusals for used items now include per-sequence usage details.
+- Recent-operation bookkeeping never retains arbitrary failure text, paths or media names. Loudness retries keep the first valid derivative recoverable until a better retry is safely renamed into place.
+- `import_fcp_xml` in `into_open_project` mode reports `reusedItems` (pre-existing project items, with their bin paths, that the new sequences use), `newClipItemCount` and `newSequenceNames`.
+- `delete_track` with a caption `track_type` explains that caption tracks cannot be deleted through the bridge (no QE or UXP API) and gives the manual route, instead of a generic enum error.
 - Project-item restore marks subtract private `MediaStart` timecode before comparing against zero-based DOM marks, so time-of-day camera media no longer restores absolute source clocks or fails safe-integer checks solely because its start timecode is late in the day (#876).
 - `set_item_in_out` and `set_source_in_out` only report `verified` when Premiere stores the mark on the frame the request floors to (an exact boundary keeps its own frame). They used to accept any stored mark within one whole media frame of the request, so a mark that landed on the next frame still read as verified. Audio items and items without a usable frame grid keep the existing half-millisecond tolerance.
 - Raw XMP patches now compare each supplied leaf field with the stored metadata, refuse empty or oversized patches before writing, and distinguish mismatches from unreadable post-write state.
@@ -24,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Marker creation and batch/source marker ranges now retain exact integer ticks when floating seconds would store a boundary one tick early. Time writes are read back exactly, and receipts expose requested and stored clocks; keyframe inspection also returns native tick strings.
 - `overwrite_clip` and `overwrite_from_source` no longer smash V0 or A0 when the item has only one media kind. `Sequence.overwriteClip` treats every index as a real track, so a still or WAV with the default unused-kind index `0` overwrote that track and still reported `verified: true`. Single-kind overwrites now use `Track.overwriteClip` on the receiving track only; linked A/V items still use `Sequence.overwriteClip` with both requested indices.
 - Still capture (`export_frame`, `freeze_frame`, and review-frame exporters) no longer deletes the requested output file before Premiere writes a replacement. A failed QE/AME capture left the original still gone; the destination is replaced only after a non-empty temp file exists.
+- Still capture no longer treats a prefix-matching sibling (`hero-v2.tiff` when asking for `hero.tiff`) as the new frame. Media Encoder numbered suffixes are accepted only when that file appeared during this capture, and an existing destination is moved aside and restored if the replacement cannot be renamed onto it.
 
 ## [1.24.1] - 2026-10-16
 

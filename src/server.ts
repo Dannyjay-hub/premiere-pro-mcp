@@ -102,6 +102,7 @@ import {
 } from "./workflows/tool-packs.js";
 import { getTelemetry, telemetryErrorType, type Telemetry } from "./telemetry.js";
 import { currentInvocation, withInvocationContext, reportProgress } from "./workflows/invocation-context.js";
+import { beginOperation, finishOperation } from "./workflows/operation-log.js";
 import { mutationReceipt } from "./workflows/mutation-receipt.js";
 import { argumentDiagnostics, strictDeclaredObjects } from "./workflows/strict-schema.js";
 import { recordPerformance } from "./workflows/performance-diagnostics.js";
@@ -568,10 +569,15 @@ export function createServer(
       }, async () => {
         const startedAt = Date.now();
         const mutating = capabilitiesForToolInvocation(name, args).some(capability => capability !== "inspect");
-        const structured = (success: boolean, data?: unknown, error?: string) => ({
-          ...structuredToolResult(name, success, data, error),
-          ...(mutating ? { receipt: mutationReceipt(success, data, currentInvocation()) } : {}),
-        });
+        const logEntry = mutating ? beginOperation(name, startedAt) : null;
+        const structured = (success: boolean, data?: unknown, error?: string) => {
+          const receipt = mutating ? mutationReceipt(success, data, currentInvocation()) : undefined;
+          if (logEntry && receipt) finishOperation(logEntry, success, receipt.outcome);
+          return {
+            ...structuredToolResult(name, success, data, error),
+            ...(receipt ? { receipt } : {}),
+          };
+        };
         try {
           await reportProgress(0, 1, "Tool started; host completion remains unverified.");
           // Every call that may change the project records the undo position:

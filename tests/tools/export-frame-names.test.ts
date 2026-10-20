@@ -136,6 +136,118 @@ describe("__exportStillFrame keeps an existing destination until a replacement e
     expect(files.get(dest)).toBe(1024);
     expect([...files.keys()].some((path) => path.includes("mcp-frame-"))).toBe(false);
   });
+
+  it("restores the original still when the replacement cannot be renamed onto it", () => {
+    const files = new Map<string, number>([[dest, 32]]);
+    class File {
+      fsName: string;
+      constructor(path: string) { this.fsName = path; }
+      get name() { return encodeURI(this.fsName.substring(this.fsName.lastIndexOf("/") + 1)); }
+      get exists() { return files.has(this.fsName); }
+      get length() { return files.get(this.fsName) ?? 0; }
+      get parent() { return null; }
+      remove() { files.delete(this.fsName); return true; }
+      rename(name: string) {
+        const target = this.fsName.substring(0, this.fsName.lastIndexOf("/") + 1) + name;
+        if (name === "hero.png" && this.fsName.includes("mcp-frame-")) throw new Error("replacement locked");
+        files.set(target, files.get(this.fsName) ?? 0);
+        files.delete(this.fsName);
+        this.fsName = target;
+        return true;
+      }
+    }
+    const qeSeq = { name: "Sweep", exportFramePNG(_timecode: string, base: string) { files.set(`${base}.png`, 1024); return true; } };
+    const Time = function (this: { ticks: string; getFormatted: () => string }) { this.ticks = "0"; this.getFormatted = () => "00:00:00:00"; };
+    const result = runInNewContext(`${getHelpersSource()}\n__exportStillFrame(${JSON.stringify(dest)}, "0");`, {
+      File, Time,
+      app: { enableQE() {}, encoder: { ENCODE_IN_TO_OUT: 1 }, project: { activeSequence: { timebase: String(TICKS / 24), getPlayerPosition: () => ({ ticks: "0" }) } } },
+      qe: { project: { getActiveSequence: () => qeSeq } },
+    });
+    expect(result).toMatchObject({ ok: false });
+    expect(files.get(dest)).toBe(32);
+    expect([...files.keys()].filter((path) => path.includes(".mcp-prev"))).toEqual([]);
+  });
+});
+
+describe("__exportStillFrame does not steal a sibling still as the capture", () => {
+  function listingHost(options: { dest?: string; siblings?: Record<string, number>; qeWrites?: string; ameWrites?: string }) {
+    const dest = options.dest ?? "/renders/hero.tiff";
+    const files = new Map<string, number>(Object.entries(options.siblings ?? {}));
+    class File {
+      fsName: string;
+      constructor(path: string) { this.fsName = path; }
+      get name() { return encodeURI(this.fsName.substring(this.fsName.lastIndexOf("/") + 1)); }
+      get exists() { return files.has(this.fsName); }
+      get length() { return files.get(this.fsName) ?? 0; }
+      get parent() {
+        const dir = this.fsName.substring(0, this.fsName.lastIndexOf("/") + 1);
+        return {
+          exists: true,
+          getFiles(filter?: (file: File) => boolean) {
+            const listed = [...files.keys()].filter((path) => path.startsWith(dir) && path !== dir).map((path) => new File(path));
+            return typeof filter === "function" ? listed.filter(filter) : listed;
+          },
+        };
+      }
+      remove() { files.delete(this.fsName); return true; }
+      rename(name: string) {
+        const target = this.fsName.substring(0, this.fsName.lastIndexOf("/") + 1) + name;
+        files.set(target, files.get(this.fsName) ?? 0);
+        files.delete(this.fsName);
+        this.fsName = target;
+        return true;
+      }
+    }
+    const qeSeq = {
+      name: "Sweep",
+      exportFramePNG(_timecode: string, base: string) {
+        if (options.qeWrites) files.set(options.qeWrites.replace("QE_BASE", base), 1024);
+        return true;
+      },
+    };
+    const Time = function (this: { ticks: string; getFormatted: () => string }) { this.ticks = "0"; this.getFormatted = () => "00:00:00:00"; };
+    const seq = {
+      timebase: String(TICKS / 24),
+      sequenceID: "seq",
+      getPlayerPosition: () => ({ ticks: "0" }),
+      getInPointAsTime: () => ({ ticks: "0" }),
+      getOutPointAsTime: () => ({ ticks: String(TICKS) }),
+      setInPoint() {},
+      setOutPoint() {},
+      exportAsMediaDirect(path: string) { if (options.ameWrites) files.set(path.replace(dest, options.ameWrites), 2048); },
+    };
+    const result = runInNewContext(`${getHelpersSource()}
+      __findStillPreset = function () { return options.ameWrites ? "/tmp/still.epr" : ""; };
+      __exportStillFrame(${JSON.stringify(dest)}, "0");`, {
+      File, Time, Folder: function Folder() { return {}; }, options,
+      app: { enableQE() { throw new Error("QE unavailable"); }, encoder: { ENCODE_IN_TO_OUT: 1 }, project: { activeSequence: seq } },
+      qe: { project: { getActiveSequence: () => qeSeq } },
+    });
+    return { dest, result, files };
+  }
+
+  it("leaves hero-v2.tiff alone when hero.tiff was never written", () => {
+    const sibling = "/renders/hero-v2.tiff";
+    const { dest, result, files } = listingHost({ siblings: { [sibling]: 64 } });
+    expect(result).toMatchObject({ ok: false });
+    expect(files.get(sibling)).toBe(64);
+    expect(files.has(dest)).toBe(false);
+  });
+
+  it("promotes a newly written AME numbered still onto the requested name", () => {
+    const { dest, result, files } = listingHost({ dest: "/renders/hero.png", ameWrites: "/renders/hero1.png" });
+    expect(result).toMatchObject({ ok: true, method: "ame", path: dest });
+    expect(files.get(dest)).toBe(2048);
+    expect(files.has("/renders/hero1.png")).toBe(false);
+  });
+
+  it("does not promote a pre-existing numbered sibling as this capture", () => {
+    const numbered = "/renders/hero1.png";
+    const { dest, result, files } = listingHost({ dest: "/renders/hero.png", siblings: { [numbered]: 64 }, ameWrites: "" });
+    expect(result).toMatchObject({ ok: false });
+    expect(files.get(numbered)).toBe(64);
+    expect(files.has(dest)).toBe(false);
+  });
 });
 
 describe("export_sequence extension and default preset", () => {

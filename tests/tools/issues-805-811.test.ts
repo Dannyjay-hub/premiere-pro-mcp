@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/bridge/file-bridge.js", () => ({
@@ -9,6 +10,7 @@ vi.mock("../../src/bridge/file-bridge.js", () => ({
 }));
 
 import { sendCommand } from "../../src/bridge/file-bridge.js";
+import { getHelpersSource } from "../../src/bridge/script-builder.js";
 import { getMediaTools } from "../../src/tools/media.js";
 import { getMetadataTools } from "../../src/tools/metadata.js";
 import { getProjectTools } from "../../src/tools/project.js";
@@ -98,6 +100,37 @@ describe("issue #811 — import_fcp_xml into_open_project", () => {
     expect(script).toContain("sequencesAfter > sequencesBefore");
     expect(script).toContain('__findProjectItem("edits")');
     expect(script).not.toContain("openFCPXML");
+  });
+
+  it("reports the pre-existing project items, with their bins, that the imported sequences reuse", async () => {
+    type Node = { nodeId: string; name: string; type: number; children?: { numItems: number; [i: number]: Node } };
+    const bin = (nodeId: string, name: string, kids: Node[]): Node => ({ nodeId, name, type: 2, children: Object.assign({ numItems: kids.length }, kids) });
+    const bgm = { nodeId: "bgm", name: "BGM.wav", type: 1 };
+    const fresh = { nodeId: "fresh", name: "Card.png", type: 1 };
+    const oldBin = bin("old", "Old Edit", [bin("music", "Music", [bgm])]);
+    const root = bin("root", "Project", [oldBin]);
+    const sequences: Record<string | number, unknown> & { numSequences: number } = { numSequences: 1, 0: { sequenceID: "s-old", name: "Old", videoTracks: { numTracks: 0 }, audioTracks: { numTracks: 0 } } };
+    const imported = {
+      sequenceID: "s-new", name: "EP1",
+      videoTracks: { numTracks: 1, 0: { clips: { numItems: 1, 0: { projectItem: fresh } } } },
+      audioTracks: { numTracks: 1, 0: { clips: { numItems: 2, 0: { projectItem: bgm }, 1: { projectItem: bgm } } } },
+    };
+    mockedSendCommand.mockImplementation(async (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+      File: function File(this: { exists: boolean; fsName: string }, p: string) { this.exists = true; this.fsName = p; },
+      app: { project: { rootItem: root, sequences, importFiles: () => { sequences[1] = imported; sequences.numSequences = 2; return true; } } },
+    }))));
+    await expect(project.import_fcp_xml.handler({ path: "/tmp/edit.xml", mode: "into_open_project" })).resolves.toMatchObject({
+      success: true,
+      data: {
+        verified: true,
+        newSequences: 1,
+        newSequenceNames: ["EP1"],
+        reusedItems: [{ nodeId: "bgm", name: "BGM.wav", bin: "/Old Edit/Music" }],
+        reusedItemCount: 1,
+        newClipItemCount: 1,
+        reuseNote: expect.stringContaining("find_item_usages"),
+      },
+    });
   });
 
   it("rejects an unknown mode", async () => {

@@ -795,6 +795,49 @@ describe("overwrite_clip verification", () => {
     expect(script).toContain("verified: true");
   });
 
+  it("auto_empty places the audio on the lowest audio track that is free for the clip's duration", async () => {
+    const t = (seconds: number) => String(seconds * 254016000000);
+    const item = { nodeId: "nest", name: "EP1 nest", getInPoint: () => ({ ticks: "0" }), getOutPoint: () => ({ ticks: t(2) }) };
+    type Clip = { projectItem: { nodeId: string }; start: { ticks: string }; end: { ticks: string } };
+    const music: Clip = { projectItem: { nodeId: "bgm" }, start: { ticks: t(0) }, end: { ticks: t(20) } };
+    const later: Clip = { projectItem: { nodeId: "sfx" }, start: { ticks: t(6) }, end: { ticks: t(8) } };
+    const lists: Clip[][] = [[], [music], [later], []];
+    const track = (clips: Clip[]) => ({ clips: new Proxy({}, { get: (_t, key) => key === "numItems" ? clips.length : clips[Number(key)] }) });
+    const host = (audioLists: Clip[][]) => {
+      const seq = {
+        timebase: String(254016000000 / 25),
+        videoTracks: Object.assign({ numTracks: 1 }, [track(lists[0])]),
+        audioTracks: Object.assign({ numTracks: audioLists.length }, audioLists.map(track)),
+        overwriteClip: vi.fn((_item: unknown, startTicks: string, v: number, a: number) => {
+          const placed = { projectItem: item, start: { ticks: startTicks }, end: { ticks: String(Number(startTicks) + Number(t(2))) } };
+          lists[v].push(placed);
+          audioLists[a].push(placed);
+        }),
+      };
+      mockedSendCommand.mockImplementationOnce(async (script) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+        Time: class { ticks = "0"; },
+        app: { project: { rootItem: { children: Object.assign({ numItems: 1 }, [item]) }, activeSequence: seq } },
+      }))));
+      return seq;
+    };
+    // A1 holds music over 0-20 s and A2 a sound effect at 6-8 s: a 2 s clip at 5 s overlaps both, so A3 is used.
+    const seq = host([lists[1], lists[2], lists[3]]);
+    await expect(advanced.overwrite_clip.handler({ item_id: "nest", start_seconds: 5, audio_track_index: "auto_empty" })).resolves.toMatchObject({
+      success: true,
+      data: { verified: true, audioTrackIndex: 2, audioTrackAutoSelected: true },
+    });
+    expect(seq.overwriteClip).toHaveBeenCalledWith(item, expect.any(String), 0, 2);
+
+    host([[music]]);
+    await expect(advanced.overwrite_clip.handler({ item_id: "nest", start_seconds: 5, audio_track_index: "auto_empty" })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("no audio track free"),
+      data: { code: "NO_EMPTY_AUDIO_TRACK" },
+    });
+    await expect(advanced.overwrite_clip.handler({ item_id: "nest", audio_track_index: "nearest" as never }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("auto_empty") });
+  });
+
   const ticks = (seconds: number) => String(seconds * 254016000000);
   function overwriteHost(options: { videoSpan: number; audioSpan: number; dropAudio?: boolean; dropVideo?: boolean }) {
     const item = {
