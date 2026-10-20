@@ -14,11 +14,9 @@ export interface OperationLogEntry {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
-  error: string | null;
 }
 
 export const OPERATION_LOG_LIMIT = 50;
-const MAX_ERROR_LENGTH = 300;
 const entries: OperationLogEntry[] = [];
 let nextSequence = 1;
 
@@ -31,21 +29,19 @@ export function beginOperation(tool: string, now = Date.now()): OperationLogEntr
     startedAt: new Date(now).toISOString(),
     finishedAt: null,
     durationMs: null,
-    error: null,
   };
   entries.push(entry);
   if (entries.length > OPERATION_LOG_LIMIT) entries.splice(0, entries.length - OPERATION_LOG_LIMIT);
   return entry;
 }
 
-export function finishOperation(entry: OperationLogEntry, success: boolean, outcome: MutationReceipt["outcome"], error?: string, now = Date.now()): void {
+export function finishOperation(entry: OperationLogEntry, success: boolean, outcome: MutationReceipt["outcome"], now = Date.now()): void {
   // The first result wins; later structured results for the same call are ignored.
   if (entry.status !== "running") return;
   entry.status = success ? "succeeded" : "failed";
   entry.outcome = outcome;
   entry.finishedAt = new Date(now).toISOString();
   entry.durationMs = Math.max(0, now - Date.parse(entry.startedAt));
-  entry.error = error ? error.slice(0, MAX_ERROR_LENGTH) : null;
 }
 
 /** Newest first. */

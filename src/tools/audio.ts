@@ -1209,11 +1209,31 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
           attempts.push(retry);
           const passes = (attempt: Attempt) => Number(attempt.loudnessPass) + Number(attempt.truePeakPass);
           if (passes(retry) >= passes(best)) {
-            // Only files this call created are replaced: the output did not exist
-            // before the first attempt.
-            rmSync(outputPath, { force: true });
-            renameSync(retryPath, outputPath);
-            best = retry;
+            // Keep the previous valid attempt recoverable until the better file
+            // is in place. A direct remove-then-rename could lose the only valid
+            // output when antivirus, permissions or another process blocks rename.
+            const previousPath = `${retryPath}.previous`;
+            let movedPrevious = false;
+            try {
+              renameSync(outputPath, previousPath);
+              movedPrevious = true;
+              renameSync(retryPath, outputPath);
+              rmSync(previousPath, { force: true });
+              best = retry;
+            } catch {
+              if (movedPrevious && !existsSync(outputPath) && existsSync(previousPath)) {
+                try { renameSync(previousPath, outputPath); } catch { /* reported below */ }
+              }
+              if (existsSync(outputPath)) {
+                rmSync(retryPath, { force: true });
+                rmSync(previousPath, { force: true });
+                break;
+              }
+              return {
+                success: false,
+                error: `Could not replace the first normalized output safely. The previous attempt remains at ${previousPath}; move it back to ${outputPath} before retrying.`,
+              };
+            }
           } else {
             rmSync(retryPath, { force: true });
           }

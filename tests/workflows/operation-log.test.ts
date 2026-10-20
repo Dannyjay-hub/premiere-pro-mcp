@@ -12,14 +12,14 @@ describe("operation log", () => {
       { sequence: 2, tool: "export_sequence", status: "running", outcome: null },
       { sequence: 1, tool: "roll_edit", status: "running" },
     ]);
-    finishOperation(first, true, "verified", undefined, 4_000);
-    finishOperation(second, false, "unknown", "x".repeat(400), 5_000);
+    finishOperation(first, true, "verified", 4_000);
+    finishOperation(second, false, "unknown", 5_000);
     // Only the first result for a call is kept.
-    finishOperation(first, false, "not_applied", "late", 6_000);
+    finishOperation(first, false, "not_applied", 6_000);
     const [exported, rolled] = recentOperations();
-    expect(rolled).toMatchObject({ status: "succeeded", outcome: "verified", durationMs: 3_000, error: null });
+    expect(rolled).toMatchObject({ status: "succeeded", outcome: "verified", durationMs: 3_000 });
     expect(exported).toMatchObject({ status: "failed", outcome: "unknown" });
-    expect(exported.error).toHaveLength(300);
+    expect(exported).not.toHaveProperty("error");
   });
 
   it("keeps a bounded window and returns copies", () => {

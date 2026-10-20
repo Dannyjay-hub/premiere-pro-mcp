@@ -572,7 +572,7 @@ export function createServer(
         const logEntry = mutating ? beginOperation(name, startedAt) : null;
         const structured = (success: boolean, data?: unknown, error?: string) => {
           const receipt = mutating ? mutationReceipt(success, data, currentInvocation()) : undefined;
-          if (logEntry && receipt) finishOperation(logEntry, success, receipt.outcome, error);
+          if (logEntry && receipt) finishOperation(logEntry, success, receipt.outcome);
           return {
             ...structuredToolResult(name, success, data, error),
             ...(receipt ? { receipt } : {}),
