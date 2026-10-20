@@ -1,8 +1,8 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { basename, dirname, extname, resolve } from "node:path";
+import { existsSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -1088,7 +1088,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
 
     normalize_loudness_file: {
       description:
-        "Create a new loudness-normalized media derivative with FFmpeg, then remeasure that exact output using EBU R128. Never overwrites the input or an existing output file.",
+        "Create a new loudness-normalized media derivative with FFmpeg, then remeasure that exact output using EBU R128. When the remeasured file misses the target or true-peak ceiling (AAC encoding can raise the true peak), it renders again with a lowered ceiling or offset target, up to max_attempts, keeps the best attempt and reports every attempt's measured I and TP. Never overwrites the input or an existing output file.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1097,18 +1097,21 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
           target_lufs: { type: "number", description: "Integrated loudness target from -70 through -5 LUFS (default: -16)" },
           max_true_peak_dbfs: { type: "number", description: "True-peak ceiling from -9 through 0 dBFS (default: -1.5)" },
           tolerance_lu: { type: "number", description: "Post-render integrated-loudness tolerance (default: 1 LU)" },
+          max_attempts: { type: "integer", minimum: 1, maximum: 4, description: "Renders allowed when the remeasured output misses the target or true-peak ceiling, for example after AAC encoding raises the true peak (default: 2; 1 disables retries)" },
         },
         required: ["input_path", "output_path"],
       },
-      handler: async (args: { input_path: string; output_path: string; target_lufs?: number; max_true_peak_dbfs?: number; tolerance_lu?: number }) => {
+      handler: async (args: { input_path: string; output_path: string; target_lufs?: number; max_true_peak_dbfs?: number; tolerance_lu?: number; max_attempts?: number }) => {
         const inputPath = resolve(args.input_path);
         const outputPath = resolve(args.output_path);
         const target = args.target_lufs ?? -16;
         const truePeak = args.max_true_peak_dbfs ?? -1.5;
         const tolerance = args.tolerance_lu ?? 1;
+        const maxAttempts = args.max_attempts ?? 2;
         if (!Number.isFinite(target) || target < -70 || target > -5) return { success: false, error: "target_lufs must be from -70 through -5" };
         if (!Number.isFinite(truePeak) || truePeak < -9 || truePeak > 0) return { success: false, error: "max_true_peak_dbfs must be from -9 through 0" };
         if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 5) return { success: false, error: "tolerance_lu must be from 0 through 5" };
+        if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 4) return { success: false, error: "max_attempts must be an integer from 1 through 4" };
         if (inputPath === outputPath) return { success: false, error: "output_path must differ from input_path" };
         if (!existsSync(inputPath) || !statSync(inputPath).isFile()) return { success: false, error: `Input file not found: ${inputPath}` };
         if (existsSync(outputPath)) return { success: false, error: `Output already exists and will not be overwritten: ${outputPath}` };
@@ -1117,7 +1120,7 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         // Two-pass loudnorm: measure, then apply linearly with the measured values.
         // Single-pass (dynamic) loudnorm undershot a dense, clipped music-video mix by
         // 1.6 LU and resampled its audio to 96 kHz at a lower bitrate (live check).
-        const failureOf = (error: unknown) => {
+        const failureOf = (error: unknown): { success: false; error: string } => {
           const failure = error as { code?: string; killed?: boolean; stderr?: string; message?: string };
           if (failure.code === "ENOENT") return { success: false, error: "ffmpeg was not found on PATH" };
           if (failure.killed) return { success: false, error: "ffmpeg loudness normalization timed out after 300 seconds" };
@@ -1138,56 +1141,106 @@ export function getAudioTools(bridgeOptions: BridgeOptions) {
         // A loudness-range target below the source's own range forces dynamic mode;
         // allow the source's range so the gain can stay linear.
         const lra = Math.min(50, Math.max(11, Math.ceil(Number(firstPass.input_lra)) + 1));
-        const filter = [
-          `loudnorm=I=${target}`, `TP=${truePeak}`, `LRA=${lra}`,
-          `measured_I=${firstPass.input_i}`, `measured_TP=${firstPass.input_tp}`, `measured_LRA=${firstPass.input_lra}`,
-          `measured_thresh=${firstPass.input_thresh}`, `offset=${firstPass.target_offset}`, "linear=true", "print_format=json",
-        ].join(":");
         const extension = extname(outputPath).toLowerCase();
         const aacContainer = [".mp4", ".m4a", ".mov", ".m4v", ".aac"].includes(extension);
         const audioCodecArgs = aacContainer
           ? ["-c:a", "aac", "-b:a", `${Math.max(192, Math.round((source.bitRate ?? 192000) / 1000))}k`]
           : [];
-        let secondPass: LoudnormStats;
-        try {
-          const applied = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-n", "-i", inputPath,
-            "-af", filter, "-ar", String(source.sampleRate ?? 48000), ...audioCodecArgs,
-            "-c:v", "copy", outputPath,
-          ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
-          secondPass = parseLoudnormJson(applied.stderr);
-        } catch (error) {
-          return failureOf(error);
+        type Attempt = { path: string; appliedTargetLufs: number; appliedTruePeakDbfs: number; measured: LoudnessMeasurement; deltaLu: number; loudnessPass: boolean; truePeakPass: boolean; normalizationType: string | null };
+        // Apply with the given targets to a new file, then remeasure that file.
+        const render = async (destination: string, appliedTarget: number, appliedTruePeak: number): Promise<Attempt | { success: false; error: string }> => {
+          const filter = [
+            `loudnorm=I=${appliedTarget}`, `TP=${appliedTruePeak}`, `LRA=${lra}`,
+            `measured_I=${firstPass.input_i}`, `measured_TP=${firstPass.input_tp}`, `measured_LRA=${firstPass.input_lra}`,
+            `measured_thresh=${firstPass.input_thresh}`, `offset=${firstPass.target_offset}`, "linear=true", "print_format=json",
+          ].join(":");
+          let secondPass: LoudnormStats;
+          try {
+            const applied = await execFileAsync("ffmpeg", [
+              "-nostdin", "-hide_banner", "-n", "-i", inputPath,
+              "-af", filter, "-ar", String(source.sampleRate ?? 48000), ...audioCodecArgs,
+              "-c:v", "copy", destination,
+            ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
+            secondPass = parseLoudnormJson(applied.stderr);
+          } catch (error) {
+            return failureOf(error);
+          }
+          if (!existsSync(destination) || !statSync(destination).isFile() || statSync(destination).size < 1) {
+            return { success: false, error: "ffmpeg reported completion but no non-empty output file exists" };
+          }
+          let measurement: LoudnessMeasurement;
+          try {
+            const measured = await execFileAsync("ffmpeg", [
+              "-nostdin", "-hide_banner", "-i", destination,
+              "-vn", "-sn", "-dn", "-af", "ebur128=peak=true", "-f", "null", "-",
+            ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
+            measurement = parseEbur128Summary(measured.stderr);
+          } catch (error) {
+            return { success: false, error: `Normalized output exists but EBU R128 verification failed: ${error instanceof Error ? error.message : String(error)}` };
+          }
+          if (measurement.integratedLufs === null) return { success: false, error: "Normalized output exists but integrated loudness was not measurable" };
+          const deltaLu = Number((measurement.integratedLufs - target).toFixed(1));
+          return {
+            path: destination, appliedTargetLufs: appliedTarget, appliedTruePeakDbfs: appliedTruePeak, measured: measurement, deltaLu,
+            loudnessPass: Math.abs(deltaLu) <= tolerance,
+            truePeakPass: measurement.truePeakDbfs !== null && measurement.truePeakDbfs <= truePeak,
+            normalizationType: secondPass.normalization_type ?? null,
+          };
+        };
+        const first = await render(outputPath, target, truePeak);
+        if ("success" in first) return first;
+        const attempts: Attempt[] = [first];
+        let best = first;
+        // Lossy encoding (AAC) can push the true peak over the ceiling or move the
+        // integrated loudness. Each retry renders to a private file beside the
+        // output, lowering the ceiling by the measured overshoot and offsetting the
+        // target by the measured miss, and keeps whichever attempt passes.
+        while (attempts.length < maxAttempts && !(best.loudnessPass && best.truePeakPass)) {
+          const last = attempts[attempts.length - 1];
+          const overshoot = last.measured.truePeakDbfs === null ? 0.5 : Math.max(0, last.measured.truePeakDbfs - truePeak);
+          const nextTruePeak = Number(Math.max(-9, last.appliedTruePeakDbfs - (last.truePeakPass ? 0 : overshoot + 0.1)).toFixed(2));
+          const nextTarget = Number(Math.min(-5, Math.max(-70, last.appliedTargetLufs - (last.loudnessPass ? 0 : last.deltaLu))).toFixed(2));
+          const retryPath = join(dirname(outputPath), `.${basename(outputPath, extension)}.retry-${attempts.length + 1}-${process.pid}${extension}`);
+          const retry = await render(retryPath, nextTarget, nextTruePeak);
+          if ("success" in retry) {
+            rmSync(retryPath, { force: true });
+            break;
+          }
+          attempts.push(retry);
+          const passes = (attempt: Attempt) => Number(attempt.loudnessPass) + Number(attempt.truePeakPass);
+          if (passes(retry) >= passes(best)) {
+            // Only files this call created are replaced: the output did not exist
+            // before the first attempt.
+            rmSync(outputPath, { force: true });
+            renameSync(retryPath, outputPath);
+            best = retry;
+          } else {
+            rmSync(retryPath, { force: true });
+          }
         }
-        if (!existsSync(outputPath) || !statSync(outputPath).isFile() || statSync(outputPath).size < 1) {
-          return { success: false, error: "ffmpeg reported completion but no non-empty output file exists" };
-        }
-
-        let measurement: LoudnessMeasurement;
-        try {
-          const measured = await execFileAsync("ffmpeg", [
-            "-nostdin", "-hide_banner", "-i", outputPath,
-            "-vn", "-sn", "-dn", "-af", "ebur128=peak=true", "-f", "null", "-",
-          ], { timeout: FFMPEG_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 });
-          measurement = parseEbur128Summary(measured.stderr);
-        } catch (error) {
-          return { success: false, error: `Normalized output exists but EBU R128 verification failed: ${error instanceof Error ? error.message : String(error)}` };
-        }
-        if (measurement.integratedLufs === null) return { success: false, error: "Normalized output exists but integrated loudness was not measurable" };
-        const deltaLu = Number((measurement.integratedLufs - target).toFixed(1));
-        const loudnessPass = Math.abs(deltaLu) <= tolerance;
-        const truePeakPass = measurement.truePeakDbfs !== null && measurement.truePeakDbfs <= truePeak;
+        const loudnessPass = best.loudnessPass;
+        const truePeakPass = best.truePeakPass;
         return {
           success: true,
           data: {
             inputPath, outputPath, outputSizeBytes: statSync(outputPath).size,
             target: { integratedLufs: target, maxTruePeakDbfs: truePeak, toleranceLu: tolerance },
-            measured: measurement, deltaLu,
+            measured: best.measured, deltaLu: best.deltaLu,
             input: { integratedLufs: Number(firstPass.input_i), truePeakDbfs: Number(firstPass.input_tp), loudnessRangeLu: Number(firstPass.input_lra) },
-            normalizationType: secondPass.normalization_type ?? null,
+            normalizationType: best.normalizationType,
             audio: { sampleRate: source.sampleRate ?? 48000, codec: aacContainer ? "aac" : "ffmpeg default for the container", bitrateKbps: aacContainer ? Math.max(192, Math.round((source.bitRate ?? 192000) / 1000)) : null },
             verified: loudnessPass && truePeakPass,
             loudnessPass, truePeakPass,
+            attempts: attempts.map((attempt, index) => ({
+              attempt: index + 1,
+              appliedTargetLufs: attempt.appliedTargetLufs,
+              appliedTruePeakDbfs: attempt.appliedTruePeakDbfs,
+              integratedLufs: attempt.measured.integratedLufs,
+              truePeakDbfs: attempt.measured.truePeakDbfs,
+              loudnessPass: attempt.loudnessPass,
+              truePeakPass: attempt.truePeakPass,
+              kept: attempt === best,
+            })),
             verificationScope: "The new output file exists and was remeasured locally. This does not prove subjective mix quality, rights, or Premiere timeline state.",
           },
         };

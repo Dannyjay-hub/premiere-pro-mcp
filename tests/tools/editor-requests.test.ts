@@ -303,6 +303,23 @@ describe("editor-request tools", () => {
       expect(again.error).toMatch(/already exists/);
     });
 
+    it("omits the event and reel lists from a written EDL when return_content is false", async () => {
+      expect((await tools.export_sequence_edl.handler({ return_content: false })).error).toMatch(/return_content: false needs output_path/);
+      expect(mockedSendCommand).not.toHaveBeenCalled();
+      mockedSendCommand.mockResolvedValue({ success: true, data: READBACK });
+      const target = path.join(workspace, "compact.edl");
+      const result = await tools.export_sequence_edl.handler({ output_path: target, approved_workspace_path: workspace, return_content: false });
+      expect(result.success).toBe(true);
+      const data = result.data as Record<string, unknown>;
+      expect(data.events).toBeUndefined();
+      expect(data.reels).toBeUndefined();
+      expect(data.edl).toBeUndefined();
+      expect(data).toMatchObject({ written: true, event_count: 2, content_omitted: true, validation: { valid: true } });
+      expect(data.record_duration_seconds).toBeGreaterThan(0);
+      expect(typeof data.reel_count).toBe("number");
+      expect(readFileSync(target, "utf8")).toContain("TITLE:");
+    });
+
     it("propagates readback failures and generator errors", async () => {
       mockedSendCommand.mockResolvedValue({ success: false, error: "No active sequence" });
       expect(await tools.export_sequence_edl.handler({})).toEqual({ success: false, error: "No active sequence" });

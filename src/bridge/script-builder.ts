@@ -797,24 +797,52 @@ function __projectItemUsage(item) {
     }
   };
   collect(item);
-  var usage = { clips: 0, sequences: [] };
+  var usage = { clips: 0, sequences: [], details: [] };
   for (var sq = 0; sq < app.project.sequences.numSequences; sq++) {
     var sequenceInUse = app.project.sequences[sq];
-    var hit = false;
+    var detail = { sequence: String(sequenceInUse.name), sequenceId: String(sequenceInUse.sequenceID), clips: 0, tracks: [] };
     var groups = [sequenceInUse.videoTracks, sequenceInUse.audioTracks];
     for (var g = 0; g < groups.length; g++) {
       for (var t = 0; t < groups[g].numTracks; t++) {
         var trackClips = groups[g][t].clips;
+        var onTrack = 0;
         for (var c = 0; c < trackClips.numItems; c++) {
           try {
-            if (trackClips[c].projectItem && wanted[String(trackClips[c].projectItem.nodeId)]) { usage.clips++; hit = true; }
+            if (trackClips[c].projectItem && wanted[String(trackClips[c].projectItem.nodeId)]) onTrack++;
           } catch (eUse) {}
+        }
+        if (onTrack > 0) {
+          detail.tracks.push({ type: g === 0 ? "video" : "audio", index: t, clips: onTrack });
+          detail.clips += onTrack;
         }
       }
     }
-    if (hit) usage.sequences.push(String(sequenceInUse.name));
+    if (detail.clips > 0) {
+      usage.clips += detail.clips;
+      usage.sequences.push(detail.sequence);
+      usage.details.push(detail);
+    }
   }
   return usage;
+}
+
+// Names of offline (missing-media) clip/file items at or inside this item.
+// Premiere can raise a modal while deleting missing media, and a modal blocks
+// every later bridge command, so delete tools refuse these by default.
+function __offlineItemsIn(item) {
+  var found = [];
+  var visit = function (entry) {
+    if (found.length >= 20) return;
+    if (__isBinItem(entry)) {
+      var count = __childCount(entry);
+      for (var k = 0; k < count; k++) { var child = __childAt(entry, k); if (child) visit(child); }
+      return;
+    }
+    try { if (entry.type !== 1 && entry.type !== 4) return; } catch (eType) { return; }
+    try { if (typeof entry.isOffline === "function" && entry.isOffline()) found.push(String(entry.name)); } catch (eOffline) {}
+  };
+  visit(item);
+  return found;
 }
 
 // Premiere has no documented delete for a clip/file project item, but deleting

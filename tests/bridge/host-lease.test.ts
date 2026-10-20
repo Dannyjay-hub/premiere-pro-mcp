@@ -71,7 +71,9 @@ describe("cooperating-process Premiere execution lease", () => {
     const path = directory(), lock = join(path, ".host-owner-lease");
     const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" }); await once(child, "exit");
     mkdirSync(lock, { mode: 0o700 }); writeFileSync(join(lock, "owner.json"), JSON.stringify({ version: 1, pid: child.pid, token: "dead" }), { mode: 0o600 });
-    await withHostLease(path, 100, async () => expect(inspectHostRecovery(path)).toMatchObject({ recoveryRequired: true, reason: "abandoned_process_lease" }));
+    // Reaping the dead owner takes several fs calls; under Windows coverage runs
+    // they can exceed a 100 ms budget before the retry acquires the lease.
+    await withHostLease(path, 2000, async () => expect(inspectHostRecovery(path)).toMatchObject({ recoveryRequired: true, reason: "abandoned_process_lease" }));
     const state = inspectHostRecovery(path);
     expect(() => acknowledgeHostRecovery(path, "stale", true)).toThrow(/latest inspected/);
     expect(() => acknowledgeHostRecovery(path, state.recoveryRevision!, false)).toThrow(/latest inspected/);

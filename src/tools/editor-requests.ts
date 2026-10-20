@@ -744,9 +744,11 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           output_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Optional absolute .edl path to write. Requires approved_workspace_path; the file must not already exist. When omitted the EDL text is returned inline." },
           approved_workspace_path: { type: "string", maxLength: MAX_PATH_LENGTH, description: "Absolute existing directory that must contain output_path. Required with output_path." },
           timeout_minutes: { type: "number", minimum: 1, maximum: 240, description: "Maximum wait for Premiere timeline readback (default: 30 minutes)." },
+          return_content: { type: "boolean", description: "Include the per-event list and reel list in the result (default true). With output_path, false returns only the path, event count, record duration, checksum and validation, which keeps long EDLs out of the conversation." },
         },
       },
       handler: async (args: {
+        return_content?: boolean;
         sequence_id?: string;
         track_type?: "video" | "audio";
         track_index?: number;
@@ -772,6 +774,7 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           const hasOutput = args.output_path !== undefined;
           if (hasOutput && args.approved_workspace_path === undefined) throw new Error("approved_workspace_path is required when output_path is provided");
           if (!hasOutput && args.approved_workspace_path !== undefined) throw new Error("approved_workspace_path is only accepted together with output_path");
+          if (!hasOutput && args.return_content === false) throw new Error("return_content: false needs output_path, because the EDL text is otherwise the result");
           target = hasOutput ? resolveContainedOutputPath(args.approved_workspace_path, args.output_path) : null;
           if (target && path.extname(target).toLowerCase() !== ".edl") throw new Error("output_path must use the .edl extension");
         } catch (error) {
@@ -847,12 +850,16 @@ export function getEditorRequestTools(bridgeOptions: BridgeOptions) {
           });
           const bytes = Buffer.byteLength(exported.edl, "utf8");
           const { edl, ...summary } = exported;
+          const lastEvent = exported.events[exported.events.length - 1];
+          const recordDurationSeconds = lastEvent ? Number((lastEvent.record_out_seconds - exported.record_start_seconds).toFixed(6)) : 0;
           if (target) {
             writeFileSync(target, edl, { encoding: "utf8", flag: "wx" });
+            const { events, reels, ...compact } = summary;
             return {
               success: true,
               data: {
-                ...summary,
+                ...(args.return_content === false ? { ...compact, reel_count: reels.length, content_omitted: true } : summary),
+                record_duration_seconds: recordDurationSeconds,
                 written: true,
                 output_path: target,
                 bytes,

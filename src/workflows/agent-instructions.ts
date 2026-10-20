@@ -96,7 +96,8 @@ AVAILABLE WORKFLOW ROUTES:
 ${routes.length ? routes.join("\n") : "- Use task-keyword discovery to identify the operations enabled in this session."}
 
 RECOVER AND VERIFY:
-- Treat MCP isError and structuredContent.ok: false as failures. A timeout can leave host outcome unknown: inspect before retrying a mutation and never blindly replay an apply token.
+- Treat MCP isError and structuredContent.ok: false as failures. A timeout can leave host outcome unknown: inspect before retrying a mutation and never blindly replay an apply token. A client-side request timeout does not stop the server: call get_last_operations first, and do not resend a call that is still running or already succeeded.
+- Before deleting or reorganizing bins, especially after import_fcp_xml (which can link its sequences to existing project items and reports reusedItems), run find_item_usages. Delete tools refuse used or offline media by default; do not pass confirm_remove_from_sequences or allow_offline without the user's explicit approval.
 - For unavailable or unsupported operations, report the concrete prerequisite or supported alternative. Raw scripting requires explicit user authorization and configured authority.
 - Verify affected timing, ordering, tracks, effects, and captions using fresh readback. Use images for visual claims and playback for audio/motion claims; report checks the client or host cannot perform.
 - Save after successful verification when persistent changes are authorized. Overwrites and destructive actions must remain within the user's explicit scope and the tool's approval contract.

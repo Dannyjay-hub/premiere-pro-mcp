@@ -1055,8 +1055,10 @@ export function getAdvancedTools(
             description: "Video track index (0-based, default: 0)",
           },
           audio_track_index: {
-            type: "number",
-            description: "Audio track index (0-based, default: 0)",
+            type: ["integer", "string"],
+            minimum: 0,
+            pattern: "^auto_empty$",
+            description: "Audio track index (0-based, default: 0), or \"auto_empty\" to use the lowest audio track with no clip in the placement range (for example when overwriting a nested sequence above existing music). auto_empty refuses, changing nothing, when every audio track is occupied there.",
           },
         },
         required: ["item_id"],
@@ -1065,11 +1067,12 @@ export function getAdvancedTools(
         item_id: string;
         start_seconds?: number;
         track_index?: number;
-        audio_track_index?: number;
+        audio_track_index?: number | "auto_empty";
       }) => {
         const startSeconds = args.start_seconds ?? 0;
         const trackIndex = args.track_index ?? 0;
-        const audioTrackIndex = args.audio_track_index ?? 0;
+        const autoEmptyAudio = args.audio_track_index === "auto_empty";
+        const audioTrackIndex: number = autoEmptyAudio ? 0 : (args.audio_track_index as number | undefined) ?? 0;
         if (!Number.isFinite(startSeconds) || startSeconds < 0) {
           return { success: false, error: "start_seconds must be a non-negative finite number" };
         }
@@ -1077,7 +1080,7 @@ export function getAdvancedTools(
           return { success: false, error: "track_index must be a non-negative integer" };
         }
         if (!Number.isSafeInteger(audioTrackIndex) || audioTrackIndex < 0) {
-          return { success: false, error: "audio_track_index must be a non-negative integer" };
+          return { success: false, error: "audio_track_index must be a non-negative integer or \"auto_empty\"" };
         }
 
         const script = buildToolScript(`
@@ -1090,6 +1093,7 @@ export function getAdvancedTools(
           if (${audioTrackIndex} >= seq.audioTracks.numTracks) {
             return __error("Audio track index ${audioTrackIndex} is out of range: the sequence has " + seq.audioTracks.numTracks + " audio track(s).");
           }
+          var audioTrackIndex = ${audioTrackIndex};
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Project item not found: ${escapeForExtendScript(args.item_id)}");
 
@@ -1108,6 +1112,31 @@ export function getAdvancedTools(
           var audioSpan = mediaSpan(2);
           var videoReceives = !(videoSpan !== null && !isNaN(videoSpan) && !(videoSpan > 0));
           var audioReceives = !(audioSpan !== null && !isNaN(audioSpan) && !(audioSpan > 0));
+          var audioTrackChosen = null;
+          if (${autoEmptyAudio ? "true" : "false"}) {
+            // Lowest audio track with no clip overlapping [start, start + span).
+            var placementSpan = (audioSpan !== null && audioSpan > 0) ? audioSpan : videoSpan;
+            if (placementSpan === null || isNaN(placementSpan) || !(placementSpan > 0)) {
+              return __error("audio_track_index auto_empty needs the item's duration, which Premiere did not report for " + item.name + ". Nothing was changed; pass an explicit audio_track_index.");
+            }
+            var rangeStart = parseFloat(__secondsToTicks(${startSeconds}).toString());
+            var rangeEnd = rangeStart + placementSpan;
+            audioTrackChosen = -1;
+            for (var at = 0; at < seq.audioTracks.numTracks && audioTrackChosen < 0; at++) {
+              var occupied = false;
+              var atClips = seq.audioTracks[at].clips;
+              for (var ac = 0; ac < atClips.numItems; ac++) {
+                var clipStart = parseFloat(atClips[ac].start.ticks);
+                var clipEnd = parseFloat(atClips[ac].end.ticks);
+                if (clipStart < rangeEnd && clipEnd > rangeStart) { occupied = true; break; }
+              }
+              if (!occupied) audioTrackChosen = at;
+            }
+            if (audioTrackChosen < 0) {
+              return __error("audio_track_index auto_empty found no audio track free from ${startSeconds}s for the item's duration; all " + seq.audioTracks.numTracks + " audio track(s) hold clips there. Nothing was changed. Add an audio track (add_track) and retry, or pass an explicit audio_track_index.", { code: "NO_EMPTY_AUDIO_TRACK" });
+            }
+            audioTrackIndex = audioTrackChosen;
+          }
 
           function __isPlacedOn(track) {
             for (var clipIndex = 0; clipIndex < track.clips.numItems; clipIndex++) {
@@ -1123,8 +1152,8 @@ export function getAdvancedTools(
           }
 
           var videoWasPlaced = __isPlacedOn(seq.videoTracks[${trackIndex}]);
-          var audioWasPlaced = __isPlacedOn(seq.audioTracks[${audioTrackIndex}]);
-          var placed = __overwriteItemOnRequestedTracks(seq, item, startTicks, ${trackIndex}, ${audioTrackIndex}, videoReceives, audioReceives);
+          var audioWasPlaced = __isPlacedOn(seq.audioTracks[audioTrackIndex]);
+          var placed = __overwriteItemOnRequestedTracks(seq, item, startTicks, ${trackIndex}, audioTrackIndex, videoReceives, audioReceives);
           if (!placed.ok) {
             if (placed.attempted) return __error(placed.error + " Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: null });
             return __error(placed.error);
@@ -1134,7 +1163,7 @@ export function getAdvancedTools(
           // the target tracks back by source node ID and frame-snapped position
           // instead of trusting the method's return value or a clip-count delta.
           var videoPlaced = __isPlacedOn(seq.videoTracks[${trackIndex}]);
-          var audioPlaced = __isPlacedOn(seq.audioTracks[${audioTrackIndex}]);
+          var audioPlaced = __isPlacedOn(seq.audioTracks[audioTrackIndex]);
           if (!videoPlaced && !audioPlaced) {
             return __error("overwrite_clip did not place project item " + item.name + " on either requested track at ${startSeconds}s. Premiere reported no verifiable timeline change.");
           }
@@ -1145,7 +1174,7 @@ export function getAdvancedTools(
             var missingStreams = [];
             if (missingVideo) missingStreams.push("video");
             if (missingAudio) missingStreams.push("audio");
-            return __error("overwrite_clip did not place the clip's " + missing + " on the requested video track " + ${trackIndex} + " / audio track " + ${audioTrackIndex} + " at ${startSeconds}s. Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: videoPlaced, placedOnAudioTrack: audioPlaced, missingStreams: missingStreams });
+            return __error("overwrite_clip did not place the clip's " + missing + " on the requested video track " + ${trackIndex} + " / audio track " + audioTrackIndex + " at ${startSeconds}s. Inspect the timeline before retrying.", { outcome: "committed_unverified", verified: false, timelineChanged: true, placedOnVideoTrack: videoPlaced, placedOnAudioTrack: audioPlaced, missingStreams: missingStreams });
           }
           if ((videoPlaced && videoWasPlaced) && (audioPlaced && audioWasPlaced)) {
             return __error("overwrite_clip produced no verifiable new placement: project item " + item.name + " was already present at ${startSeconds}s on the requested track(s).");
@@ -1156,7 +1185,8 @@ export function getAdvancedTools(
             verified: true,
             item: item.name,
             trackIndex: ${trackIndex},
-            audioTrackIndex: ${audioTrackIndex},
+            audioTrackIndex: audioTrackIndex,
+            audioTrackAutoSelected: audioTrackChosen !== null,
             startSeconds: ${startSeconds},
             placedOnVideoTrack: videoPlaced,
             placedOnAudioTrack: audioPlaced

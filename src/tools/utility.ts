@@ -245,10 +245,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: "Delete even when the item (or something inside the bin) is used in a sequence, which also removes those timeline clips (default: false).",
           },
+          allow_offline: {
+            type: "boolean",
+            description: "Also delete offline (missing-media) items. Premiere can open a modal while deleting missing media, and the modal blocks every later bridge command until it is closed in Premiere, so these are refused by default (default: false).",
+          },
         },
         required: ["item_id"],
       },
-      handler: async (args: { item_id: string; confirm_remove_from_sequences?: boolean }) => {
+      handler: async (args: { item_id: string; confirm_remove_from_sequences?: boolean; allow_offline?: boolean }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
@@ -271,7 +275,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           if (!sequence && (item.type === 1 || item.type === 2 || item.type === 4)) {
             usage = __projectItemUsage(item);
             if (usage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
-              return __error(name + (item.type === 2 ? " holds media used by " : " is used by ") + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here, so nothing was deleted. Remove the clips first, or pass confirm_remove_from_sequences: true.");
+              return __jsonStringify({ success: false, error: name + (item.type === 2 ? " holds media used by " : " is used by ") + usage.clips + " timeline clip(s) in " + usage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here, so nothing was deleted. Remove the clips first, or pass confirm_remove_from_sequences: true.", data: { code: "ITEM_IN_USE", usages: usage.details } });
+            }
+            var offline = __offlineItemsIn(item);
+            if (offline.length > 0 && ${args.allow_offline === true ? "false" : "true"}) {
+              return __jsonStringify({ success: false, error: (item.type === 2 ? name + " holds offline media: " : "Offline media: ") + offline.join(", ") + ". Premiere can open a modal while deleting missing media, which blocks the bridge, so nothing was deleted. Use organize_project_items_uxp with action 'remove', delete it in the Project panel, or pass allow_offline: true.", data: { code: "ITEM_OFFLINE", offlineItems: offline } });
             }
           }
           if (item.type === 2) {
@@ -298,6 +306,53 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       },
     },
 
+    find_item_usages: {
+      description:
+        "Read-only: list where project items are used on timelines, as sequence name/ID, track type/index and clip count. A bin counts everything inside it, because deleting a bin deletes its contents and their timeline clips. Run this before deleting or reorganizing bins, especially after import_fcp_xml, which can reuse existing project items for its sequences. Also reports offline (missing-media) items inside each target.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          item_ids: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+            maxItems: 100,
+            description: "Node IDs or names of project items or bins to check (1-100)",
+          },
+        },
+        required: ["item_ids"],
+      },
+      handler: async (args: { item_ids: string[] }) => {
+        if (!Array.isArray(args.item_ids) || args.item_ids.length < 1 || args.item_ids.length > 100 || !args.item_ids.every((id) => typeof id === "string" && id.trim())) {
+          return { success: false, error: "item_ids must be an array of 1-100 non-empty node IDs or names" };
+        }
+        const idsJson = JSON.stringify(args.item_ids);
+        const script = buildToolScript(`
+          var ids = ${idsJson};
+          var results = [];
+          var usedCount = 0;
+          for (var i = 0; i < ids.length; i++) {
+            var item = __findProjectItem(ids[i]);
+            if (!item) return __error("Item not found: " + ids[i]);
+            var usage = __projectItemUsage(item);
+            if (usage.clips > 0) usedCount++;
+            results.push({
+              query: ids[i],
+              nodeId: String(item.nodeId),
+              name: String(item.name),
+              isBin: __isBinItem(item),
+              used: usage.clips > 0,
+              timelineClips: usage.clips,
+              sequences: usage.details,
+              offlineItems: __offlineItemsIn(item)
+            });
+          }
+          return __result({ items: results, usedItems: usedCount, safeToDelete: usedCount === 0, sequencesScanned: app.project.sequences.numSequences });
+        `);
+        return sendCommand(script, bridgeOptions);
+      },
+    },
+
     delete_multiple_project_items: {
       description:
         "Delete several project items (bins, sequences, clips or files) and read back that each is gone. Every item is checked before any is deleted. " +
@@ -315,10 +370,14 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             type: "boolean",
             description: "Delete even when an item (or something inside a bin) is used in a sequence, which also removes those timeline clips (default: false).",
           },
+          allow_offline: {
+            type: "boolean",
+            description: "Also delete offline (missing-media) items. Premiere can open a modal while deleting missing media, and the modal blocks every later bridge command until it is closed in Premiere, so these are refused by default (default: false).",
+          },
         },
         required: ["item_ids"],
       },
-      handler: async (args: { item_ids: string[]; confirm_remove_from_sequences?: boolean }) => {
+      handler: async (args: { item_ids: string[]; confirm_remove_from_sequences?: boolean; allow_offline?: boolean }) => {
         const idsJson = JSON.stringify(args.item_ids);
         const script = buildToolScript(`
           var ids = ${idsJson};
@@ -346,7 +405,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
             if (!sequence) {
               var itemUsage = __projectItemUsage(item);
               if (itemUsage.clips > 0 && ${args.confirm_remove_from_sequences === true ? "false" : "true"}) {
-                return __error(item.name + (item.type === 2 ? " holds media used by " : " is used by ") + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here. No project items were deleted; pass confirm_remove_from_sequences: true to delete anyway.");
+                return __jsonStringify({ success: false, error: item.name + (item.type === 2 ? " holds media used by " : " is used by ") + itemUsage.clips + " timeline clip(s) in " + itemUsage.sequences.join(", ") + ". Deleting it would remove those clips too, and this cannot be undone here. No project items were deleted; pass confirm_remove_from_sequences: true to delete anyway.", data: { code: "ITEM_IN_USE", item: String(item.name), usages: itemUsage.details } });
+              }
+              var offlineItems = __offlineItemsIn(item);
+              if (offlineItems.length > 0 && ${args.allow_offline === true ? "false" : "true"}) {
+                return __jsonStringify({ success: false, error: "Offline media in " + item.name + ": " + offlineItems.join(", ") + ". Premiere can open a modal while deleting missing media, which blocks the bridge. No project items were deleted; use organize_project_items_uxp with action 'remove', the Project panel, or pass allow_offline: true.", data: { code: "ITEM_OFFLINE", item: String(item.name), offlineItems: offlineItems } });
               }
             }
             planned.push({ nodeId: String(item.nodeId), name: item.name, item: item, sequence: sequence });

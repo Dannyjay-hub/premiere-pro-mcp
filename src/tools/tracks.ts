@@ -105,7 +105,7 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
 
     delete_track: {
       description:
-        "EXPERIMENTAL (undocumented QE DOM: removeVideoTrack/removeAudioTrack). Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true.",
+        "EXPERIMENTAL (undocumented QE DOM: removeVideoTrack/removeAudioTrack). Delete a video or audio track from the active sequence through QE and verify that exactly that track was removed (the remaining tracks keep their clips, custom names and lock/mute state in order). Refuses a track that still holds clips unless force is true. Caption tracks cannot be deleted (no host API); a caption track_type is refused with the manual route.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -126,6 +126,14 @@ export function getTrackTools(bridgeOptions: BridgeOptions) {
         required: ["track_type", "track_index"],
       },
       handler: async (args: { track_type: string; track_index: number; force?: boolean }) => {
+        if (args.track_type === "caption" || args.track_type === "captions") {
+          return {
+            success: false,
+            error:
+              "Caption tracks cannot be deleted through this bridge: QE removeVideoTrack/removeAudioTrack only remove video and audio tracks, and Premiere's UXP caption track API has no delete. Nothing was changed. Delete it in Premiere (right-click the caption track header > Delete Track); inspect_caption_tracks_uxp lists caption tracks.",
+            data: { code: "CAPTION_TRACK_DELETE_UNSUPPORTED", applied: false },
+          };
+        }
         if (args.track_type !== "video" && args.track_type !== "audio") {
           return { success: false, error: "track_type must be either video or audio" };
         }
