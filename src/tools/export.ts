@@ -1160,7 +1160,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_review_frames: {
       description:
-        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. Still capture does not verify temporal animation, playback, audio, or editorial quality; PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export.",
+        "Export 2-24 evenly spaced, file-verified frames from an active-sequence range in one bridge round trip for visual review. If Media Encoder still capture cannot restore sequence In/Out, remaining frames are not attempted and the call fails. Still capture does not verify temporal animation, playback, audio, or editorial quality; PNG frames keep the sequence's transparency (straight alpha), so composite them over black before comparing with a video export.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1231,6 +1231,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             while (number.length < 3) number = "0" + number;
             var requestedPath = outputFolder.fsName + "/review_" + number + ".png";
             var result = __exportStillFrame(requestedPath, __secondsToTicks(atSeconds).toString());
+            if (result.recoveryRequired) {
+              failures.push({ index: i, timeSeconds: atSeconds, requestedPath: requestedPath, error: result.error, notes: result.notes });
+              return __error(result.error || "Still export left sequence in/out unrestored; inspect marks or Undo before exporting again.", { frames: frames, failures: failures, exported: frames.length, requested: requested, complete: false });
+            }
             if (result.ok) {
               frames.push({ index: i, timeSeconds: atSeconds, outputPath: result.path, method: result.method });
             } else {
@@ -1257,7 +1261,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_marker_review_frames: {
       description:
-        "Export up to 24 file-verified still frames at active-sequence marker positions in one bridge request for marker-driven review. It reads markers and writes image files only; it does not add, update, or remove Premiere markers.",
+        "Export up to 24 file-verified still frames at active-sequence marker positions in one bridge request for marker-driven review. If Media Encoder still capture cannot restore sequence In/Out, remaining frames are not attempted and the call fails. It reads markers and writes image files only; it does not add, update, or remove Premiere markers.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -1356,6 +1360,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             while (number.length < 3) number = "0" + number;
             var requestedPath = outputFolder.fsName + "/marker_review_" + number + ".png";
             var result = __exportStillFrame(requestedPath, __secondsToTicks(entry.timeSeconds).toString());
+            if (result.recoveryRequired) {
+              failures.push({ index: i, marker: entry, requestedPath: requestedPath, error: result.error, notes: result.notes });
+              return __error(result.error || "Still export left sequence in/out unrestored; inspect marks or Undo before exporting again.", { frames: frames, failures: failures, exported: frames.length, requested: requested, complete: false });
+            }
             if (result.ok) {
               frames.push({ index: i, marker: entry, outputPath: result.path, method: result.method });
             } else {
@@ -1385,7 +1393,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
     export_sequence_clip_review_frames: {
       description:
-        "Export one file-verified still frame at the midpoint of each clip on a chosen video track in one bridge request. Read-only in Premiere; it does not mute tracks or claim visual quality.",
+        "Export one file-verified still frame at the midpoint of each clip on a chosen video track in one bridge request. If Media Encoder still capture cannot restore sequence In/Out, remaining frames are not attempted and the call fails. Read-only in Premiere; it does not mute tracks or claim visual quality.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1424,6 +1432,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
             while (number.length < 3) number = "0" + number;
             var requestedPath = outputFolder.fsName + "/clip_" + number + ".png";
             var result = __exportStillFrame(requestedPath, __secondsToTicks(atSeconds).toString());
+            if (result.recoveryRequired) {
+              failures.push({ index: i, clipName: clip.name, timeSeconds: atSeconds, error: result.error, notes: result.notes });
+              return __error(result.error || "Still export left sequence in/out unrestored; inspect marks or Undo before exporting again.", { frames: frames, failures: failures, exported: frames.length, requested: count, complete: false });
+            }
             if (result.ok) frames.push({ index: i, clipName: clip.name, nodeId: clip.nodeId, timeSeconds: atSeconds, outputPath: result.path, method: result.method });
             else failures.push({ index: i, clipName: clip.name, timeSeconds: atSeconds, error: result.error, notes: result.notes });
           }

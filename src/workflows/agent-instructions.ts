@@ -47,7 +47,7 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
     "Create scoped review images when requested. Inspect the resulting images in a client that can view local artifacts; distinguish image review from playback and audio review.");
   route(["capture_frame", "export_frame", "export_sequence_review_frames", "export_sequence_marker_review_frames", "export_sequence_clip_review_frames"],
-    "Still capture verifies output files, not motion over time. QE PNG stills keep the sequence's transparency as straight alpha: a fading clip keeps its colours and carries the fade only in alpha, so composite stills over black before measuring them or comparing them with a short actual video export.");
+    "Still capture verifies output files, not motion over time. If a batch review still cannot restore sequence In/Out after a Media Encoder fallback, treat the call as failed and inspect marks before exporting again. QE PNG stills keep the sequence's transparency as straight alpha: a fading clip keeps its colours and carries the fade only in alpha, so composite stills over black before measuring them or comparing them with a short actual video export.");
   route(["export_sequence", "verify_delivery_file", "verify_delivery_conformance"],
     "Preflight the requested destination and preset, export, then verify the actual file and delivery requirements. Queue acceptance is not render completion.");
   route(["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder"],

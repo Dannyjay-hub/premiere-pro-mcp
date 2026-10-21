@@ -50,6 +50,7 @@ describe("export_sequence_marker_review_frames", () => {
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("failures.push");
     expect(script).toContain("complete: frames.length === requested");
+    expect(script).toContain("result.recoveryRequired");
     expect(script).toContain("verified on disk by the Premiere bridge at the matched marker start");
   });
 });

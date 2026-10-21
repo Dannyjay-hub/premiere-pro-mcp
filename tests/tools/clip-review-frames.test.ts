@@ -16,6 +16,7 @@ describe("export_sequence_clip_review_frames", () => {
     expect(script).toContain("Math.min(track.clips.numItems, 20)");
     expect(script).toContain("clip.start.seconds + ((clip.end.seconds - clip.start.seconds) / 2)");
     expect(script).toContain("__exportStillFrame(");
+    expect(script).toContain("result.recoveryRequired");
   });
 
   it("rejects unsafe bounds before contacting Premiere", async () => {
