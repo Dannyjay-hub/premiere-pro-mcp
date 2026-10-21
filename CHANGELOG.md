@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.24.3] - 2026-10-21
+
 ### Fixed
 
 - Batch still review (`export_sequence_review_frames`, marker and clip variants) now fails closed when Media Encoder cannot restore sequence In/Out. A later frame used to re-read the unrestored one-frame window as the official marks, then "successfully" restore that window and return `success: true`. Remaining frames are not attempted.
