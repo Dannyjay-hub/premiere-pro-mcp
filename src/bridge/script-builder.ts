@@ -1795,6 +1795,18 @@ function __exportStillFrame(outputPath, ticks) {
       // sequence pinned to a one-frame export range after QE-to-AME fallback.
       if (savedIn === null || savedIn === undefined || savedOut === null || savedOut === undefined) {
         notes.push("AME: could not read sequence in/out points, so they were not changed for a one-frame export");
+      } else if (__stillFrameRecoveryRequired) {
+        // A prior still in this command already left marks unrestored. Reading
+        // them now would treat the one-frame export window as the official
+        // baseline and a later "successful" restore would lock that in.
+        notes.push("AME: skipped because a previous still export left sequence in/out unrestored");
+        return {
+          ok: false,
+          error: "A previous Media Encoder still export left the sequence in/out points unrestored. The sequence may still be pinned to a one-frame range; restore the marks in Premiere or Undo before exporting again.",
+          recoveryRequired: true,
+          mutationOutcome: "unknown",
+          notes: notes
+        };
       } else {
         // seq.timebase is ticks-per-frame, but Sequence.setInPoint/setOutPoint take
         // seconds (unlike setPlayerPosition, which takes ticks). Convert before

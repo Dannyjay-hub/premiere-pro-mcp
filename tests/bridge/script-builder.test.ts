@@ -369,6 +369,51 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
     expect(marks.outPoint).toBeCloseTo(5 + 1 / 24, 8);
   });
 
+  it("does not treat an unrestored one-frame window as the next AME restore baseline", () => {
+    const marks = { inPoint: 10, outPoint: 20 };
+    let exportCount = 0;
+    const sequence = {
+      name: "Seq",
+      timebase: String(TICKS / 24),
+      getPlayerPosition() { return { ticks: String(TICKS * 5) }; },
+      getInPointAsTime() { return { ticks: String(marks.inPoint * TICKS) }; },
+      getOutPointAsTime() { return { ticks: String(marks.outPoint * TICKS) }; },
+      setInPoint(value: number) {
+        if (Math.abs(value - 10) < 0.0001) return;
+        marks.inPoint = value;
+      },
+      setOutPoint(value: number) {
+        if (Math.abs(value - 20) < 0.0001) return;
+        marks.outPoint = value;
+      },
+      exportAsMediaDirect() { exportCount += 1; return true; },
+    };
+    const sandbox: Record<string, unknown> = {
+      File: FileStub,
+      Folder: function Folder() { return {}; },
+      Time: function Time() { return { ticks: "0", getFormatted: () => "00:00:00:00" }; },
+      app: {
+        enableQE() { throw new Error("QE unavailable"); },
+        encoder: { ENCODE_IN_TO_OUT: 1 },
+        project: { activeSequence: sequence },
+      },
+    };
+    const result = runInNewContext(
+      `${getHelpersSource()}
+      __findStillPreset = function () { return "/tmp/still.epr"; };
+      var first = __exportStillFrame("/tmp/frame1.png", "${TICKS * 5}");
+      var second = __exportStillFrame("/tmp/frame2.png", "${TICKS * 8}");
+      ({ first: first, second: second });`,
+      sandbox,
+    ) as { first: { ok: boolean; recoveryRequired?: boolean }; second: { ok: boolean; recoveryRequired?: boolean; notes?: string[] } };
+    expect(result.first).toMatchObject({ ok: false, recoveryRequired: true });
+    expect(result.second).toMatchObject({ ok: false, recoveryRequired: true });
+    expect(result.second.notes?.join(" ")).toMatch(/previous still export left sequence in\/out unrestored/);
+    expect(exportCount).toBe(1);
+    expect(marks.inPoint).toBe(5);
+    expect(marks.outPoint).toBeCloseTo(5 + 1 / 24, 8);
+  });
+
   it("preserves later user mark changes and reports recovery instead of restoring stale marks", () => {
     const marks = { inPoint: 10, outPoint: 20 };
     const result = runExport({

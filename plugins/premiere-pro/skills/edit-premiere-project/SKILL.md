@@ -193,7 +193,7 @@ Use the Premiere MCP planners before styling captions in the host UI.
    missing. Keep Cafe typography and colors off Watch Club kits, and the reverse.
 4. Premiere cannot create speaker-colored stacked captions from raw text. Apply
    reviewed colors and stack positions in Essential Graphics or a MOGRT, then
-   inspect `export_sequence_review_frames` before export. Still captures verify output files, not motion over time. QE PNG stills keep transparency as straight alpha, so composite them over black before comparing them with a short actual video export.
+   inspect `export_sequence_review_frames` before export. Still captures verify output files, not motion over time. If a batch review still cannot restore sequence In/Out after a Media Encoder fallback, treat the call as failed and inspect marks before exporting again. QE PNG stills keep transparency as straight alpha, so composite them over black before comparing them with a short actual video export.
 
 Sequence inspection tools return bounded pages (50 clips or gaps by default). Follow `pagination.nextOffset` with unchanged filters until `truncated` is false before using the snapshot as complete QA or edit-plan evidence. Re-read after timeline mutations. Marker and transition collections have separate caps; inspect them separately when truncated.
 

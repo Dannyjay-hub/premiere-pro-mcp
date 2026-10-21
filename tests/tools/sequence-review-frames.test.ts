@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 
 vi.mock("../../src/bridge/file-bridge.js", () => ({
   sendCommand: vi.fn().mockResolvedValue({ success: true, data: {} }),
@@ -44,6 +45,31 @@ describe("export_sequence_review_frames", () => {
     const script = mockedSendCommand.mock.calls[0][0];
     expect(script).toContain("failures.push");
     expect(script).toContain("complete: frames.length === requested");
+    expect(script).toContain("result.recoveryRequired");
     expect(script).toContain("Temporal animation, playback, audio, and editorial quality remain unverified");
+  });
+
+  it("stops the batch after sequence-mark recovery instead of returning success", async () => {
+    await tools.export_sequence_review_frames.handler({ output_dir: "/tmp/review", frame_count: 4 });
+    const script = mockedSendCommand.mock.calls[0][0];
+    let calls = 0;
+    const TICKS = 254016000000;
+    const result = JSON.parse(String(runInNewContext(String(script), {
+      app: { project: { activeSequence: { name: "Seq", end: String(TICKS * 10), sequenceID: "s1" } } },
+      Folder: function Folder(this: { exists: boolean; fsName: string }, path: string) {
+        this.exists = true;
+        this.fsName = path;
+      },
+      __ticksToSeconds: (ticks: string | number) => Number(ticks) / TICKS,
+      __secondsToTicks: (seconds: number) => Math.round(seconds * TICKS),
+      __exportStillFrame: () => {
+        calls += 1;
+        return { ok: false, recoveryRequired: true, error: "unrestored", notes: ["AME"] };
+      },
+      __error: (msg: string, data?: unknown) => JSON.stringify({ success: false, error: msg, data }),
+      __result: (data: unknown) => JSON.stringify({ success: true, data }),
+    })));
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({ success: false, error: "unrestored" });
   });
 });
