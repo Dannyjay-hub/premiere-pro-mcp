@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP Registry publication preflight looks up the exact server's latest record instead of depending on registry-wide search. Published npm identity checks, bounded retries and the workflow's separate immutable-version verification remain required.
+
 ## [1.24.3] - 2026-10-21
 
 ### Fixed
