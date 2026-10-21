@@ -206,14 +206,15 @@ describe("__exportStillFrame does not steal a sibling still as the capture", () 
       },
     };
     const Time = function (this: { ticks: string; getFormatted: () => string }) { this.ticks = "0"; this.getFormatted = () => "00:00:00:00"; };
+    let inTicks = 0, outTicks = TICKS;
     const seq = {
       timebase: String(TICKS / 24),
       sequenceID: "seq",
       getPlayerPosition: () => ({ ticks: "0" }),
-      getInPointAsTime: () => ({ ticks: "0" }),
-      getOutPointAsTime: () => ({ ticks: String(TICKS) }),
-      setInPoint() {},
-      setOutPoint() {},
+      getInPointAsTime: () => ({ ticks: String(inTicks) }),
+      getOutPointAsTime: () => ({ ticks: String(outTicks) }),
+      setInPoint(seconds: number) { inTicks = Math.floor(seconds * 48000) * (TICKS / 48000); },
+      setOutPoint(seconds: number) { outTicks = Math.floor(seconds * 48000) * (TICKS / 48000); },
       exportAsMediaDirect(path: string) { if (options.ameWrites) files.set(path.replace(dest, options.ameWrites), 2048); },
     };
     const result = runInNewContext(`${getHelpersSource()}
