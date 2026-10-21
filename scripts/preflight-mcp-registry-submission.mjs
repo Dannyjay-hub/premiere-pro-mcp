@@ -15,9 +15,8 @@ function fail(message) {
   process.exitCode = 1;
 }
 
-// The official registry search has taken over 45 seconds to answer, which
-// failed two releases in a row at a 30 second limit. Allow 90 seconds per
-// attempt and retry timeouts and server errors twice before failing.
+// Keep bounded retries for transient npm/registry failures. Look up this
+// exact server rather than depending on the registry-wide search service.
 const FETCH_TIMEOUT_MS = 90_000;
 const FETCH_ATTEMPTS = 3;
 
@@ -49,7 +48,7 @@ if (!npmPackage || manifest.name !== packageJson.mcpName) {
   fail("local registry package, version, or transport metadata is not publishable.");
 } else {
   const npmUrl = `https://registry.npmjs.org/${encodeURIComponent(packageJson.name)}/${encodeURIComponent(packageJson.version)}`;
-  const registryUrl = `https://registry.modelcontextprotocol.io/v0.1/servers?search=${encodeURIComponent(manifest.name)}`;
+  const registryUrl = `https://registry.modelcontextprotocol.io/v0.1/servers/${encodeURIComponent(manifest.name)}/versions/latest`;
 
   try {
     const [npmResponse, registryResponse] = await Promise.all([
@@ -59,33 +58,33 @@ if (!npmPackage || manifest.name !== packageJson.mcpName) {
 
     if (!npmResponse.ok) {
       fail(`published npm artifact was not found (${npmResponse.status}).`);
-    } else if (!registryResponse.ok) {
-      fail(`official registry search failed (${registryResponse.status}).`);
+    } else if (!registryResponse.ok && registryResponse.status !== 404) {
+      fail(`official registry lookup failed (${registryResponse.status}).`);
     } else {
-      const [publishedPackage, registrySearch] = await Promise.all([
+      const missing = registryResponse.status === 404;
+      const [publishedPackage, registryBody] = await Promise.all([
         npmResponse.json(),
-        registryResponse.json(),
+        missing ? Promise.resolve(null) : registryResponse.json(),
       ]);
+      const existing = registryBody?.server ?? registryBody;
 
       if (
         publishedPackage.version !== packageJson.version ||
         publishedPackage.mcpName !== packageJson.mcpName
       ) {
         fail("published npm artifact does not expose the expected version and mcpName metadata.");
+      } else if (!missing && (
+        !existing || existing.name !== manifest.name ||
+        typeof existing.version !== "string" || !existing.version.trim()
+      )) {
+        fail("official registry lookup returned unexpected server identity or version metadata.");
       } else {
-        const servers = Array.isArray(registrySearch.servers)
-          ? registrySearch.servers
-          : [];
-        const matches = servers.filter((server) =>
-          [server.name, server.server?.name].includes(manifest.name),
-        );
-
         console.log(
           `Published npm artifact verified: ${packageJson.name}@${packageJson.version} (${packageJson.mcpName}).`,
         );
         console.log(
-          matches.length
-            ? `Official MCP Registry already has ${matches.length} matching record(s) for ${manifest.name}; inspect them before publishing another immutable version.`
+          !missing
+            ? `Official MCP Registry latest record is ${manifest.name}@${existing.version}; inspect it before publishing another immutable version.`
             : `Official MCP Registry has no matching record for ${manifest.name}; metadata is ready for the owner-authorized publisher login.`,
         );
       }
