@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool authority now requires filesystem access for user-file reads and writes and edit access for host and encoder mutations, including action-specific native tools and durable context. Arbitrary scripting cannot bypass a narrower edit, export or filesystem profile.
+- Audio normalization retries use private staging, bounded file readers reject non-regular and oversized inputs, and MOGRT workspace operations refuse symlink escapes. Still and project export destinations require explicit overwrite consent.
+- HTTP and stdio error logs retain only bounded error categories, telemetry startup omits endpoint credentials, and private connector files use explicit owner-only permissions with owned staging cleanup.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added
