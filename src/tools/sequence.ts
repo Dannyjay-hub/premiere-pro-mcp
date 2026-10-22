@@ -1,7 +1,7 @@
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, extname, join, resolve, win32 } from "node:path";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { describePresetFolder } from "./encoder-formats.js";
 
 /**
@@ -872,7 +872,7 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
     },
 
     get_export_file_extension: {
-      description: "Get the export file extension from Premiere. If Premiere returns none, infer it only for an existing .epr in a recognized Adobe Media Encoder format folder; that fallback is marked unconfirmed and should be checked before delivery.",
+      description: "Get the export file extension from Premiere. If Premiere returns none, infer it only for an existing .epr whose real filesystem parent is a recognized Adobe Media Encoder format folder; report that resolved preset path. This fallback is unconfirmed and should be checked before delivery.",
       operationalCapability: {
         backend: "local + CEP/ExtendScript" as const,
         backends: ["local" as const, "cep" as const, "extendscript" as const],
@@ -886,12 +886,17 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
         properties: {
           preset_path: {
             type: "string",
-            description: "Full path to the export preset file (.epr)",
+            minLength: 1,
+            maxLength: 4096,
+            description: "Absolute path on this server to the export preset file (.epr). Relative paths, NUL bytes and trailing directory separators are refused before host dispatch.",
           },
         },
         required: ["preset_path"],
       },
       handler: async (args: { preset_path: string }) => {
+        if (typeof args.preset_path !== "string" || !isAbsolute(args.preset_path) || args.preset_path.length > 4096 || args.preset_path.includes("\0") || args.preset_path.endsWith("/") || (process.platform === "win32" && args.preset_path.endsWith("\\"))) {
+          return { success: false, error: "preset_path must be an absolute path to a named preset on this server, at most 4096 characters, without NUL bytes or trailing directory separators." };
+        }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
@@ -909,18 +914,20 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
         }
 
         const presetPath = args.preset_path;
-        const pathApi = presetPath.includes("\\") ? win32 : { basename, dirname, extname };
         let usablePreset = false;
+        let resolvedPresetPath: string | null = null;
         try {
-          const presetStats = statSync(presetPath);
-          usablePreset = pathApi.extname(presetPath).toLowerCase() === ".epr" && presetStats.isFile() && presetStats.size > 0;
+          resolvedPresetPath = realpathSync(presetPath);
+          const presetStats = statSync(resolvedPresetPath);
+          usablePreset = extname(resolvedPresetPath).toLowerCase() === ".epr" && presetStats.isFile() && presetStats.size > 0;
         } catch { /* unavailable */ }
-        const format = usablePreset ? describePresetFolder(pathApi.basename(pathApi.dirname(presetPath))) : null;
+        const format = usablePreset && resolvedPresetPath ? describePresetFolder(basename(dirname(resolvedPresetPath))) : null;
         if (!format?.extension) {
           return { success: false, error: "Premiere did not provide an export extension for this preset on this host, and its .epr format folder cannot establish one. Inspect the preset or choose an output path explicitly before exporting." };
         }
         return { success: true, data: {
           ...data,
+          presetPath: resolvedPresetPath,
           extension: `.${format.extension}`,
           extensionSource: "preset_folder",
           hostConfirmed: false,

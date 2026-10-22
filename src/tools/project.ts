@@ -367,7 +367,7 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var requestedPath = "${escapeForExtendScript(requestedPath)}";
           function __normalizedProjectPath(path) {
-            return String(path || "").replace(/\\\\/g, "/").toLowerCase();
+            return __hostPathKey(path);
           }
           var beforePath = app.project ? String(app.project.path || "") : "";
           if (__normalizedProjectPath(beforePath) === __normalizedProjectPath(requestedPath)) {

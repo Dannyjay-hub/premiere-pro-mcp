@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Project identity and approved rendering-folder comparisons use the host's filesystem spelling, preserving POSIX case and literal backslashes while retaining Windows path aliases.
+- Export-preset extension lookup resolves the actual preset file before checking its format folder, and refuses relative paths, NUL characters and file paths ending in a separator.
+- Native workspace paths retain UNC and drive-root identity, encode filename characters in file URLs, and accept alternate Unicode spellings only when independent canonical lookup confirms the approved directory.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added
