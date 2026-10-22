@@ -52,7 +52,7 @@ project state, make only requested changes, and verify the timeline after mutati
   replace affected previews before applying the revised plan.
 - After a timeout, inspect before retrying a mutation; its host outcome may be
   unknown. Never blindly replay a confirmation token. A client-side timeout does
-  not stop the server: call `get_last_operations` and do not resend a call that
+  not stop the server: call `get_last_operations`, check `running` and `runningOperations` even when recent history omits the call, and do not resend a call that
   is still running or already succeeded.
 - Before deleting or reorganizing bins, run `find_item_usages`. After
   `import_fcp_xml` into an open project, check its `reusedItems`: the new
