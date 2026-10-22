@@ -245,10 +245,10 @@
     "@types/node": "^26.6.3",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/parser": "^8.71.0",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^9.39.3",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "@hono/node-server": "^2.0.5",
