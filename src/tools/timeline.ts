@@ -1,3 +1,4 @@
+import { pointUnitsError } from "./point-units.js";
 import { prepareAdjacentMediaBounds } from "./adjacent-media-bounds.js";
 import { probeMediaDurationTicks } from "./media-evidence.js";
 import { rippleDeleteScriptBody } from "./ripple-delete-script.js";
@@ -1460,7 +1461,7 @@ export function getTimelineTools(
 
     set_clip_properties: {
       description:
-        "Set supported clip properties (opacity, scale, position, rotation) and read each requested value back. Clip speed is unsupported and fails before mutation; use set_clip_duration to change a clip's timeline length.",
+        "Set supported clip properties (opacity, scale, position, rotation) and read each requested value back. Position uses pixels by default or explicit normalized 0–1 fractions; an omitted-unit 0–1 pair retains pixels with a warning. Clip speed is unsupported and fails before mutation; use set_clip_duration to change a clip's timeline length.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1471,8 +1472,9 @@ export function getTimelineTools(
             description: "Unsupported by Premiere's documented scripting APIs. Supplying this returns an actionable error without mutating the clip; use set_clip_duration to change timeline length.",
           },
           scale: { type: "number", minimum: 0, maximum: 10000, description: "Scale percentage (0-10000; 100 = original size)" },
-          position_x: { type: "number", description: "Horizontal position in sequence pixels" },
-          position_y: { type: "number", description: "Vertical position in sequence pixels" },
+          units: { type: "string", enum: ["pixels", "normalized"], description: "Position units; pixels by default or normalized 0–1 sequence-frame fractions. Requires a position value." },
+          position_x: { type: "number", description: "Horizontal position in the selected units: sequence pixels by default or normalized 0–1 fractions." },
+          position_y: { type: "number", description: "Vertical position in the selected units: sequence pixels by default or normalized 0–1 fractions." },
           rotation: { type: "number", description: "Rotation in degrees" },
         },
         required: ["node_id"],
@@ -1482,10 +1484,13 @@ export function getTimelineTools(
         opacity?: number;
         speed?: number;
         scale?: number;
+        units?: "pixels" | "normalized";
         position_x?: number;
         position_y?: number;
         rotation?: number;
       }) => {
+        const invalidUnits = pointUnitsError(args.units, args.position_x, args.position_y, true);
+        if (invalidUnits) return { success: false, error: invalidUnits };
         if (args.speed !== undefined) return { success: false, error: SPEED_UNAVAILABLE_ERROR };
         if (args.opacity !== undefined && (!Number.isFinite(args.opacity) || args.opacity < 0 || args.opacity > 100)) {
           return { success: false, error: "opacity must be finite and between 0 and 100." };
@@ -1560,7 +1565,7 @@ export function getTimelineTools(
           var beforePosition = null;
           try { beforePosition = positionProp.getValue(); } catch (ePosition) {}
           if (!beforePosition || typeof beforePosition !== "object" || beforePosition.length < 2 || typeof beforePosition[0] !== "number" || typeof beforePosition[1] !== "number" || !isFinite(beforePosition[0]) || !isFinite(beforePosition[1])) return __error("Position value could not be read before mutation; nothing was changed.");
-          var positionScale = __motionPointScale(positionProp, __sequenceFrameSize(app.project.activeSequence));
+          var positionScale = __motionPointScale(positionProp, __sequenceFrameSize(app.project.activeSequence), "${escapeForExtendScript(args.units ?? "pixels")}");
           if (!positionScale) return __error("The sequence frame size is unreadable, so position pixels cannot be converted; nothing was changed.");
           var wantedPositionX = ${args.position_x !== undefined ? `${args.position_x} * positionScale.x` : "Number(beforePosition[0])"};
           var wantedPositionY = ${args.position_y !== undefined ? `${args.position_y} * positionScale.y` : "Number(beforePosition[1])"};
@@ -1640,7 +1645,7 @@ export function getTimelineTools(
           ${args.position_x !== undefined ? `changes.position_x = ${args.position_x};` : ""}
           ${args.position_y !== undefined ? `changes.position_y = ${args.position_y};` : ""}
           ${args.rotation !== undefined ? `changes.rotation = ${args.rotation};` : ""}
-          return __result({ updated: true, verified: true, outcome: "verified", clipName: clip.name, changes: changes, readback: readback });
+          return __result({ updated: true, verified: true, outcome: "verified", clipName: clip.name, changes: changes, readback: readback, units: "${escapeForExtendScript(args.units ?? "pixels")}", warning: __pointUnitsWarning(${args.position_x ?? "null"}, ${args.position_y ?? "null"}, ${args.units !== undefined}, app.project.activeSequence) });
         `);
         return sendCommand(script, bridgeOptions);
       },

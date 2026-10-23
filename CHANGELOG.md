@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Motion Position and Anchor Point writes accept explicit pixel or normalized units across single and batch property tools. Omitted units retain pixel behavior and warn when fractional-looking values could be mistaken for normalized coordinates; mask-fit guidance now names its units.
+
 ## [1.24.4] - 2026-10-23
 
 ### Fixed

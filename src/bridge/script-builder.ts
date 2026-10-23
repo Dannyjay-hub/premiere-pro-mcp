@@ -627,13 +627,19 @@ function __clipSourceFrameSize(clip, seq) {
 }
 
 // Premiere's scripting API stores Motion Position and Anchor Point normalized
-// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools take pixels,
-// so scale before writing. Writing pixels directly threw clips ~1000 frame
+// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools default to pixels,
+// with explicit normalized fractions also accepted. Writing pixels directly threw clips ~1000 frame
 // widths off screen. The current value is not used to guess the space: a clip
 // already damaged that way reads back in the thousands.
-function __motionPointScale(prop, frame) {
+function __motionPointScale(prop, frame, units) {
   if (!(frame.width > 0 && frame.height > 0)) return null;
-  return { x: 1 / frame.width, y: 1 / frame.height, normalized: true };
+  return { x: units === "normalized" ? 1 : 1 / frame.width, y: units === "normalized" ? 1 : 1 / frame.height, normalized: true };
+}
+
+function __pointUnitsWarning(x, y, unitsProvided, seq) {
+  var frame = __sequenceFrameSize(seq);
+  if (!unitsProvided && x !== null && y !== null && x >= 0 && x <= 1 && y >= 0 && y <= 1 && frame.width > 2) return "These values look normalized, but omitted units means pixels. Pass units: normalized to use fractions of the frame.";
+  return null;
 }
 
 // Premiere renames Motion "Scale" to "Scale Height" once a clip has been set
