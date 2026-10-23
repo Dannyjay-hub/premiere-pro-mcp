@@ -367,7 +367,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
 
     add_keyframe: {
       description:
-        "Add and read back a keyframe on an effect property. The receipt warns when its time is outside the clip's visible range. This verifies stored parameter data only; render/playback verification remains host-dependent.",
+        "Add and read back a keyframe on an effect property. The receipt warns when its time is outside the clip's visible range. Two-component numeric values must match the current host value shape; Motion Position and Anchor Point use normalized 0–1 coordinates only. Colour keys refuse because CEP has no lossless time-specific colour setter. This verifies stored parameter data only; render/playback verification remains host-dependent.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -389,8 +389,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             description: `${CLIP_TIME} where to add the keyframe`,
           },
           value: {
-            type: "number",
-            description: "Value at the keyframe",
+            type: ["number", "array"],
+            anyOf: [{ type: "number" }, { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 }],
+            description: "Finite scalar or numeric vector matching the host property shape. Motion Position/Anchor Point require normalized 0–1 pairs. Colour arrays are recognized but refused without a lossless colour-key API.",
           },
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds", "value"],
@@ -401,12 +402,14 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         property_name: string;
         property_index?: number;
         time_seconds: number;
-        value: number;
+        value: number | number[];
       }) => {
         const indexError = propertyIndexError(args.property_index);
         if (indexError) return { success: false, error: indexError };
-        const invalid = keyframeArgumentError(args, ["time_seconds"], "value");
+        const invalid = keyframeArgumentError(args, ["time_seconds"]);
         if (invalid) return { success: false, error: invalid };
+        if (!(typeof args.value === "number" ? Number.isFinite(args.value) : Array.isArray(args.value) && [2, 4].includes(args.value.length) && args.value.every(v => typeof v === "number" && Number.isFinite(v)))) return { success: false, error: "value must be a finite number. A finite numeric pair is also accepted; colour arrays need a lossless colour-key API." };
+        const valueLiteral = JSON.stringify(args.value);
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -437,6 +440,22 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           } catch(eSupports) {}
           ${keyBaseScript([["time_seconds", args.time_seconds]])}
 
+          var wantedValue = ${valueLiteral};
+          var currentValue;
+          try { currentValue = typeof prop.getValue === "function" ? prop.getValue() : prop.getValueAtTime(__clipKeyTime(keyBase, ${args.time_seconds})); }
+          catch (shapeError) { return __error("The current property value shape could not be read; nothing was changed."); }
+          function keyValueMatches(actual, wanted) {
+            if (typeof wanted === "number") return typeof actual === "number" && isFinite(actual) && Math.abs(actual - wanted) <= 0.0001;
+            if (Object.prototype.toString.call(actual) !== "[object Array]" || actual.length !== wanted.length) return false;
+            for (var vi = 0; vi < wanted.length; vi++) if (typeof actual[vi] !== "number" || !isFinite(actual[vi]) || Math.abs(actual[vi] - wanted[vi]) > 0.0001) return false;
+            return true;
+          }
+          var wantedVector = Object.prototype.toString.call(wantedValue) === "[object Array]";
+          if (wantedVector ? Object.prototype.toString.call(currentValue) !== "[object Array]" || currentValue.length !== 2 || wantedValue.length !== 2 || typeof currentValue[0] !== "number" || typeof currentValue[1] !== "number" || !isFinite(currentValue[0]) || !isFinite(currentValue[1]) : typeof currentValue !== "number" || !isFinite(currentValue)) return __error("value must match the current scalar or two-component property shape; nothing was changed.");
+          if (wantedVector && (comp.matchName === "AE.ADBE Motion" || comp.displayName === "Motion") && (__videoIntrinsicPropertyMatches(prop, "Position") || __videoIntrinsicPropertyMatches(prop, "Anchor Point"))) {
+            if (wantedValue[0] < 0 || wantedValue[0] > 1 || wantedValue[1] < 0 || wantedValue[1] > 1) return __error("Motion Position and Anchor Point keyframes require normalized values from 0 to 1; nothing was changed.");
+          }
+
           // Enable keyframes if not already
           try {
             if (!prop.isTimeVarying()) {
@@ -446,15 +465,13 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
 
           var time = __clipKeyTime(keyBase, ${args.time_seconds});
           prop.addKey(time);
-          prop.setValueAtKey(time, ${args.value}, true);
+          prop.setValueAtKey(time, wantedValue, true);
           var readBack = null;
           try { readBack = prop.getValueAtKey(time); } catch(eReadBack) {}
           if (readBack === null || readBack === undefined) {
-            return __error("Premiere did not return the keyframe value after writing it; storage is not reported as verified.");
+            return __error("Premiere did not return the keyframe value after writing it; inspect before retrying.", { outcome: "committed_unverified", timelineChanged: true, verified: false });
           }
-          if (typeof readBack === "number" && Math.abs(readBack - ${args.value}) > 0.0001) {
-            return __error("Premiere returned " + readBack + " after writing keyframe value ${args.value}; storage is not reported as verified.");
-          }
+          if (!keyValueMatches(readBack, wantedValue)) return __error("Premiere did not store every requested keyframe component; inspect before retrying.", { outcome: "committed_unverified", timelineChanged: true, verified: false, requestedValue: wantedValue, readBackValue: readBack });
           
           return __result({
             added: true,
@@ -465,7 +482,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             property: "${escapeForExtendScript(args.property_name)}",
             time: ${args.time_seconds},
             mediaSeconds: __ticksToSeconds(time.ticks),
-            value: ${args.value},
+            value: wantedValue,
+            verified: true,
+            coordinateSpace: wantedVector && (comp.matchName === "AE.ADBE Motion" || comp.displayName === "Motion") ? "normalized" : "property_value",
             readBackValue: readBack,
             keyframesOutsideVisibleRange: outsideVisibleRange === null ? null : (outsideVisibleRange ? 1 : 0),
             warning: outsideVisibleRange === true

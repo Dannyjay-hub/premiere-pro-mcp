@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Effect keyframes accept host-validated numeric pairs and read every stored component back. Motion Position and Anchor Point use normalized coordinates; unavailable lossless colour-key writes refuse before mutation.
+
 ## [1.24.4] - 2026-10-23
 
 ### Fixed
