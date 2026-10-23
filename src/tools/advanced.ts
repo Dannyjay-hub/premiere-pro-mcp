@@ -49,7 +49,7 @@ export function getAdvancedTools(
   return {
     ripple_delete: {
       description:
-        "Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. With the default scope the clip's linked audio/video partners are removed with it and their tracks close up too, even when not sync-locked; with scope 'own_track' the partners stay in place (reported as linkedPartnersKept). Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed.",
+        "Refuses attached transitions or unreadable transition collections before structural edits; inspect transitionsAffected and use remove_transition first. Remove a clip and close the gap it leaves, shifting later clips earlier on the clip's own track and on every sync-locked track so audio stays in sync. With the default scope the clip's linked audio/video partners are removed with it and their tracks close up too, even when not sync-locked; with scope 'own_track' the partners stay in place (reported as linkedPartnersKept). Premiere's QE rippleDelete() and the DOM's rippleEdit flag are both non-functional on 26.x, so this is done explicitly and verified. Refuses without changing anything if a clip on a participating track straddles the ripple point or sits inside the range being closed.",
       parameters: {
         type: "object" as const,
         properties: {

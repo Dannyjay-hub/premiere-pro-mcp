@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Structural edits refuse attached transitions before changing clip edges or ripple suffixes; remove_transition removes one exact CEP transition with independent span readback instead of leaving it stranded. Unreadable transition collections refuse safely.
+
 ## [1.24.4] - 2026-10-23
 
 ### Fixed

@@ -98,6 +98,10 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     }
     var trackError = addTracks("video", seq.videoTracks) || addTracks("audio", seq.audioTracks);
     if (trackError) return __error("Ripple range removal refused; nothing changed. " + trackError);
+    var transitionScopes = [];
+    for (var tsi = 0; tsi < tracks.length; tsi++) transitionScopes.push({ type: tracks[tsi].type, index: tracks[tsi].index, start: ranges[0].start, end: Number.MAX_VALUE });
+    var transitionFailure = __transitionEditGuard(seq, transitionScopes);
+    if (transitionFailure) return transitionFailure;
     var clips = [], seen = {};
     for (var tr = 0; tr < tracks.length; tr++) {
       var t = tracks[tr];
@@ -167,7 +171,7 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
       spanningByCut[qi] = {};
       for (tr = 0; tr < tracks.length; tr++) { spanKey = tracks[tr].type+":"+tracks[tr].index; if (spanCounts[spanKey] > 0) spanningByCut[qi][spanKey] = true; }
     }
-    var summary = { ranges: [], plannedClips: [], plannedClipsTruncated: false, plannedClipsTotal: plan.length, trackCounts: {}, clipsRemoved: 0, clipsShifted: 0, estimatedSeconds: 0, verified: false };
+    var summary = { transitionsAffected: [], ranges: [], plannedClips: [], plannedClipsTruncated: false, plannedClipsTotal: plan.length, trackCounts: {}, clipsRemoved: 0, clipsShifted: 0, estimatedSeconds: 0, verified: false };
     for (ri = 0; ri < ranges.length; ri++) summary.ranges.push({ startSeconds: __ticksToSeconds(ranges[ri].start), endSeconds: __ticksToSeconds(ranges[ri].end), removedSeconds: __ticksToSeconds(ranges[ri].end-ranges[ri].start) });
     for (ci2 = 0; ci2 < plan.length; ci2++) {
       if (plan[ci2].removed) summary.clipsRemoved++; else if (plan[ci2].shift > 0) summary.clipsShifted++;
@@ -230,7 +234,7 @@ export function getRippleRemoveRangesTools(bridgeOptions: BridgeOptions, depende
   const capabilities = dependencies.capabilities ?? resolveCapabilities();
   return {
     ripple_remove_timeline_ranges: {
-      description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
+      description: "Refuses attached transitions or unreadable transition collections before structural edits; inspect transitionsAffected and use remove_transition first. Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
       parameters: { type: "object" as const, properties: {
         sequence_id: { type: "string", description: "Sequence name or ID; defaults to the active sequence. It must be the active sequence, because the edit runs through QE; another sequence is refused without changes." },
         ranges: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", properties: { start: { type: "number", minimum: 0, description: "Range start in timeline seconds." }, end: { type: "number", exclusiveMinimum: 0, description: "Range end in timeline seconds." } }, required: ["start", "end"], additionalProperties: false }, description: "Sorted, non-overlapping timeline intervals to remove." },

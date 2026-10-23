@@ -561,3 +561,8 @@ Public product research informed five independently implemented local review too
 ## Filmcraft-inspired bounded contracts (2026-10-11)
 
 See `docs/filmcraft-improvements.md` for the 52-item implementation ledger, source boundaries and supported workflow routes. This adaptation adds exact local time/edit algebra, replay/recovery protection, explicit delivery evidence and bounded interchange analysis; it does not replace Adobe codecs or claim unrun licensed-host coverage. Documented UXP OTIO import/export remains format-specific and runtime-probed. FCP 7 xmeml is distinct from modern FCPXML.
+
+
+## Track transition removal and structural edit boundaries
+
+The recorded Premiere26.5.2 editing finding identifies TrackTransition.remove(false, false) as the working CEP removal shape; calling remove() without its two arguments throws. The removal tool uses that existing DOM surface without a QE fallback and checks the entire surviving span list. This is local fake-host coverage, pending native verification. Structural edits conservatively refuse transitions occupying an edited clip span or the participating ripple suffix, since no documented transition-follow-edge contract is established here. Stored span readback does not prove rendered appearance.

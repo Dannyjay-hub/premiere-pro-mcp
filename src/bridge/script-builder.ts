@@ -2388,6 +2388,12 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label, validatedPa
       } catch (eLinkedRead) { return __error("Linked membership could not be verified; nothing was changed. " + String(eLinkedRead)); }
     }
   }
+  if (label === "trim" || label === "duration change") {
+    var transitionScopes = [{ type: target.trackType, index: target.trackIndex, start: Number(target.clip.start.ticks), end: Number(target.clip.end.ticks) }];
+    for (var tpi = 0; tpi < partners.length; tpi++) transitionScopes.push({ type: partners[tpi].trackType, index: partners[tpi].trackIndex, start: Number(partners[tpi].clip.start.ticks), end: Number(partners[tpi].clip.end.ticks) });
+    var transitionFailure = __transitionEditGuard(app.project.activeSequence, transitionScopes);
+    if (transitionFailure) return transitionFailure;
+  }
   // Each clip's position when it was checked. A partner is edited only if it is
   // still there when its turn comes: if Premiere moved it while writing the
   // main clip, applying the offset again would double it and still read back
@@ -2482,12 +2488,45 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label, validatedPa
     edited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex, verified: partnerVerified });
   }
   main.data.linkedPartnersEdited = edited;
+  if (label === "trim" || label === "duration change") main.data.transitionsAffected = [];
   if (!verified) {
     main.data.verified = false;
     main.data.outcome = "committed_unverified";
     if (!main.data.warning) main.data.warning = "The " + label + " was applied, but not every linked clip's result could be verified; inspect them.";
   }
   return __result(main.data);
+}
+
+// Structural edits refuse rather than guessing how a transition follows an edge.
+function __transitionSnapshot(track) {
+  var list = track && track.transitions;
+  if (!list || typeof list.numItems !== "number" || !isFinite(list.numItems) || list.numItems < 0 || Math.floor(list.numItems) !== list.numItems || list.numItems > 10000) throw new Error("Transition collection is unreadable or exceeds 10000 entries");
+  var result = [];
+  for (var i = 0; i < list.numItems; i++) {
+    var item = list[i], start = item && item.start ? Number(item.start.ticks) : NaN, end = item && item.end ? Number(item.end.ticks) : NaN;
+    if (!item || !item.start || !item.end || !/^\\d+$/.test(String(item.start.ticks)) || !/^\\d+$/.test(String(item.end.ticks)) || !isFinite(start) || !isFinite(end) || start < 0 || end <= start) throw new Error("Transition " + i + " has unreadable start/end ticks");
+    result.push({ index: i, startTicks: String(item.start.ticks), endTicks: String(item.end.ticks), nodeId: item.nodeId ? String(item.nodeId) : null });
+  }
+  return result;
+}
+function __transitionEditGuard(seq, scopes) {
+  var affected = [], seen = {};
+  try {
+    for (var si = 0; si < scopes.length; si++) {
+      var scope = scopes[si], tracks = scope.type === "video" ? seq.videoTracks : seq.audioTracks;
+      if (!tracks || !tracks[scope.index] || !isFinite(scope.start) || !(scope.end >= scope.start)) throw new Error("Edited track or span is unreadable");
+      var entries = __transitionSnapshot(tracks[scope.index]);
+      for (var ti = 0; ti < entries.length; ti++) {
+        var entry = entries[ti], key = scope.type + ":" + scope.index + ":" + ti;
+        if (Number(entry.endTicks) < scope.start || Number(entry.startTicks) > scope.end || seen[key]) continue;
+        seen[key] = true; entry.trackType = scope.type; entry.trackIndex = scope.index; affected.push(entry);
+      }
+    }
+  } catch (transitionReadError) {
+    return __error("Transition safety could not be inspected; no edit was attempted. Inspect the track in Premiere before retrying. " + String(transitionReadError), { mutationOutcome: "not_applied", timelineChanged: false, mutationAttempted: false, transitionsAffected: null });
+  }
+  if (affected.length) return __error("The edit could strand an attached transition. Use remove_transition for the listed indices, or edit the transition in Premiere, then inspect and retry; nothing changed.", { mutationOutcome: "not_applied", timelineChanged: false, mutationAttempted: false, transitionsAffected: affected });
+  return null;
 }
 
 // Start/end keys of a track's transitions, so readback can tell a transition
