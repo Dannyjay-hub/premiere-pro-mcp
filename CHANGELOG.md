@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Required tool arguments now refuse before handler dispatch, preserving capability checks and returning the missing field name instead of crashing during script escaping. Direct effect-property inspection has the same guard.
+
 ## [1.24.4] - 2026-10-23
 
 ### Fixed
