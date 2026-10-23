@@ -561,3 +561,33 @@ Public product research informed five independently implemented local review too
 ## Filmcraft-inspired bounded contracts (2026-10-11)
 
 See `docs/filmcraft-improvements.md` for the 52-item implementation ledger, source boundaries and supported workflow routes. This adaptation adds exact local time/edit algebra, replay/recovery protection, explicit delivery evidence and bounded interchange analysis; it does not replace Adobe codecs or claim unrun licensed-host coverage. Documented UXP OTIO import/export remains format-specific and runtime-probed. FCP 7 xmeml is distinct from modern FCPXML.
+
+
+### Title style boundary (2026-10-23)
+
+Local source review only; no application, network or rendering probe was run.
+`stock-titles.ts` and `mogrt-text.ts` already read AE-authored MGT text controls
+as JSON containing `textEditValue`; existing stock-title fixtures preserve
+`fontName` and `fontSize`. These private keys are conditional template contracts,
+not a general Premiere font API. The title style path modifies only one existing
+top-level key and compares final raw JSON in Node. Missing, nested, duplicated,
+animated or unreadable controls remain unverified. Stored font-name equality
+does not establish installed fonts or rendered glyphs.
+
+The existing `advanced.ts` color setter uses ComponentParam `setColorValue` /
+`getColorValue` with ARGB channels in 0–255 and rejects animation. Title fill
+uses that contract only for exactly one static exposed `Fill Color` control;
+it does not invent a private Source Text color encoding. The existing
+`script-builder.ts` Motion helper records normalized Motion Position (0.5,0.5
+is the center); title position writes that intrinsic whole-graphic point and
+compares both stored components. It does not move internal text anchors.
+
+`mogrt-bake.ts` preserves Premiere-authored Source Text JSON, including opaque
+style structures; it only has a tested text-baking contract. It is not extended
+to guess font runs, fill encodings or alignment enums. Live font/fill styling
+on those templates and every `align` request are refused before bake/import.
+Tracking is unsupported. No CEP 26.5.2 compatibility or font-rendering claim
+is established by these fake-host tests. Templates with suitable exposed
+controls and matching fonts still require an operator-run scratch scenario,
+save/reopen and rendered review. No undocumented fallback or external editor
+is invoked.

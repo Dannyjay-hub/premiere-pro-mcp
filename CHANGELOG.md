@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional title font (PostScript name), size, exposed fill color and normalized whole-graphic position controls with per-field stored readback. Font and size write every text run of Premiere 26 AE-authored titles (`fontEditValue` / `fontSizeEditValue`) and refuse when the template locks font editing. Unexposed or animated controls remain unverified; unsupported alignment and Premiere-authored font/fill styling refuse before import. Stored font names do not establish font availability or rendered appearance.
+
 ## [1.24.4] - 2026-10-23
 
 ### Fixed
