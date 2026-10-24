@@ -269,6 +269,8 @@ const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[
   create_sequence_from_preset: ["edit", "filesystem"],
   add_to_render_queue: ["edit", "export", "filesystem"],
   export_sequence_job_start: ["edit", "export", "filesystem"],
+  // Reads the job output file size to judge whether the export settled.
+  get_export_job_status: ["inspect", "filesystem"],
   get_export_file_extension: ["inspect", "filesystem"],
   roll_edit: ["inspect", "edit", "filesystem"],
   slide_edit: ["inspect", "edit", "filesystem"],

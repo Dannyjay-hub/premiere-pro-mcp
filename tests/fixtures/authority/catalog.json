@@ -5235,5 +5235,65 @@
       "export",
       "filesystem"
     ]
+  },
+  {
+    "tool": "export_sequence_job_start",
+    "args": {},
+    "required": [
+      "edit",
+      "export",
+      "filesystem"
+    ]
+  },
+  {
+    "tool": "get_export_job_status",
+    "args": {},
+    "required": [
+      "inspect",
+      "filesystem"
+    ]
+  },
+  {
+    "tool": "create_source_freeze_frame",
+    "args": {},
+    "required": [
+      "inspect",
+      "edit",
+      "filesystem"
+    ]
+  },
+  {
+    "tool": "audit_project_structure",
+    "args": {},
+    "required": [
+      "inspect"
+    ]
+  },
+  {
+    "tool": "audit_project_structure",
+    "args": {
+      "apply": true
+    },
+    "required": [
+      "inspect",
+      "edit"
+    ]
+  },
+  {
+    "tool": "retime_caption_file",
+    "args": {},
+    "required": [
+      "inspect"
+    ]
+  },
+  {
+    "tool": "retime_caption_file",
+    "args": {
+      "input_path": "captions.srt"
+    },
+    "required": [
+      "inspect",
+      "filesystem"
+    ]
   }
 ]
