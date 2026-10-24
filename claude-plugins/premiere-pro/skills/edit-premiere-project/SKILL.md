@@ -19,7 +19,7 @@ project state, make only requested changes, and verify the timeline after mutati
    silently fall back to CEP after a failed UXP probe.
 3. If `ping` fails, stop editing and tell the user to:
    - Open or restart Premiere Pro.
-   - Install the bridge with `npx -y premiere-pro-mcp@1.24.4 --install-cep` if needed.
+   - Install the bridge with `npx -y premiere-pro-mcp@1.25.0 --install-cep` if needed.
    - Open **Window > Extensions > MCP Bridge** and confirm it reports **Running**.
 4. Call `get_premiere_state` and inspect the active sequence before planning changes.
 5. Do not claim that a project, sequence, or export exists until a live tool result confirms it.
@@ -54,13 +54,30 @@ project state, make only requested changes, and verify the timeline after mutati
   unknown. Never blindly replay a confirmation token. A client-side timeout does
   not stop the server: call `get_last_operations`, check `running` and `runningOperations` even when recent history omits the call, and do not resend a call that
   is still running or already succeeded.
+- Pass a fresh `idempotency_key` with each intended edit and reuse it only when
+  retrying that same edit. The server then refuses a duplicate that is still
+  running (`IDEMPOTENCY_IN_PROGRESS`), replays a finished one instead of
+  applying it twice (`replayed: true`), and refuses the key with different
+  arguments (`IDEMPOTENCY_KEY_REUSED`). Only a `not_applied` failure runs again.
+  Keys live in server memory (200 keys, 1 hour) and are lost on restart.
+- When CEP calls keep timing out, call `get_bridge_telemetry`. It sends no
+  command; `blocking.state` (`idle`, `busy`, `likely_blocked_by_dialog`,
+  `stuck`, `connector_not_running`, `unknown`) and `nextSteps` show whether a
+  modal dialog such as Missing Media is blocking Premiere. Ask the user to
+  dismiss the dialog; the server cannot.
 - Before deleting or reorganizing bins, run `find_item_usages`. After
   `import_fcp_xml` into an open project, check its `reusedItems`: the new
   sequences may use items in an old bin. A Sequences bin is in use when the
   sequences inside it have clips, even if the media lives elsewhere. Delete
-  tools refuse used or offline media, contained sequences, and nested
-  sequences; pass `confirm_remove_from_sequences` or `allow_offline` only with the
-  user's explicit approval.
+  tools, including `delete_sequence`, refuse used or offline media, contained
+  sequences, and nested sequences; pass `confirm_remove_from_sequences` or
+  `allow_offline` only with the user's explicit approval.
+- To check Project-panel layout rules, run `audit_project_structure` without
+  `apply` first and show its violations and proposed moves. Apply only after the
+  user approves, with the same `rules` and the returned `planToken` as
+  `plan_token`. It refuses stale plans, truncated walks, and ambiguous target
+  bins, never deletes or renames, and is `verified` only when every move reads
+  back; treat `partial` or `failed` as unfinished and audit again.
 
 ## Apply changes safely
 
@@ -97,6 +114,11 @@ For other mutations:
 3. Save only after successful verification when the user requested persistent changes.
 4. For exports, validate the active sequence, destination, filename, and preset before
    calling `export_sequence`; then verify and report the returned artifact path.
+   For long renders that may outlast a client request timeout (full episodes),
+   use `export_sequence_job_start`, then poll `get_export_job_status` until it
+   reports `completed`, `failed`, or `cancelled`. Report `completed` as verified
+   only when `verified` is true; `unknown` (for example `server_restarted`) is
+   not success.
 5. Report completed, skipped, and failed work separately. Include any remaining
    verification that requires playback or human visual judgment.
 
@@ -146,6 +168,11 @@ never replace a complete metadata packet just to apply a facility table.
   with the next clip, and reports verified or restored results. Clip speed has no
   documented scripting setter: `speed_change` and `set_clip_speed_qe` always fail
   before mutation, so retime in the Speed/Duration dialog or pre-render the media.
+- For a freeze frame from a source-media time (not a sequence time), use
+  `create_source_freeze_frame` when it is registered. It decodes the frame with
+  local ffmpeg, never overwrites an existing file or an occupied timeline range,
+  and can add Motion Scale/Position punch-in keyframes. Check its `completed` and
+  `unverified` lists; an imported still remains if a later step fails.
 
 ## Clip metadata and XMP
 
@@ -181,6 +208,20 @@ Premiere metadata is several surfaces. Do not dump packets or mix them up.
    schema enumerator; Adobe does not expose one.
 5. Treat GPS, camera serials, and similar EXIF as sensitive. After a failed UXP
    metadata write, inspect; never silently retry through CEP.
+
+## Captions after ripple edits
+
+Caption track items do not move with `ripple_remove_timeline_ranges` or
+`insert_from_source`, and no host API can retime them.
+
+1. Keep the caption track's source SRT/VTT inside an approved workspace.
+2. Call `retime_caption_file` with the same `ranges` you removed
+   (`ripple_remove_ranges`) or the insert point and duration (`ripple_insert`),
+   plus the sequence `fps`. Use `shift` and `edit_cue` for other fixes.
+3. Import the new file with `import_media`, then call `create_caption_track`
+   with action `import` and `start_seconds` 0. Remove the stale track.
+4. Caption styling is host-locked. Reapply the saved Track Style in Premiere
+   (`get_caption_style_guidance`), then confirm with `read_sequence_captions`.
 
 ## Reaction Shorts
 
