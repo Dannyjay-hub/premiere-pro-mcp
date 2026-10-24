@@ -7,7 +7,7 @@ import { getHelpersSource, helpersFileName, buildBootstrap } from "./script-buil
 import { validateBridgeScriptSize } from "./script-size.js";
 import { withHostLease, ownsHostLease, inspectHostRecovery, markHostRecovery, HostLeaseError } from "./host-lease.js";
 import { undoTrackingEnabled } from "./undo-tracking.js";
-import { assertInvocationNotCancelled, markHostDispatch, measureStage, measureStageSync, startStage } from "../workflows/invocation-context.js";
+import { assertInvocationNotCancelled, currentInvocation, markHostDispatch, measureStage, measureStageSync, startStage } from "../workflows/invocation-context.js";
 import { AsyncResource } from "node:async_hooks";
 
 export function getDarwinUserTempDirectory(): string | null {
@@ -607,8 +607,15 @@ async function executeOwnedCommand(tempDir: string, options: BridgeOptions | und
         const mutating = options?.mutating ?? (options?.mutationOnTimeout === true || undoTrackingEnabled());
         if (mutating && !getBridgeCompatibility(options).compatible) return { success: false, data: { mutationOutcome: "not_applied" }, error: "CEP_SCHEMA_INCOMPATIBLE: install the matching CEP panel before editing; no command was dispatched" };
         if (mutating && inspectHostRecovery(tempDir).recoveryRequired) return { success: false, data: { mutationOutcome: "not_applied", recoveryRequired: true }, error: "HOST_RECOVERY_REQUIRED: inspect current Premiere state and acknowledge the matching recovery revision before another edit" };
+        // __refuse proves only that this command changed nothing. An earlier
+        // command of the same tool call may already have written.
+        const priorDispatch = currentInvocation()?.dispatched === true;
         const result = await measureStage("host_wait", work);
-        const data = result.data as { mutationOutcome?: string } | undefined;
+        const data = result.data as { mutationOutcome?: string; timelineChanged?: boolean | null; refusedBeforeChange?: boolean } | undefined;
+        if (data?.refusedBeforeChange === true && priorDispatch) {
+          data.mutationOutcome = "unknown";
+          data.timelineChanged = null;
+        }
         if (data?.mutationOutcome === "unknown") markHostRecovery(tempDir, "unknown_command_outcome");
         return result;
       });

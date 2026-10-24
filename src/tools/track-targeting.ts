@@ -158,11 +158,11 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const exclusive = targeted && args.exclusive !== false;
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var tracks = ${isVideo ? "seq.videoTracks" : "seq.audioTracks"};
           var requestedIndex = ${args.track_index};
-          if (requestedIndex >= tracks.numTracks) return __error("Track index out of range");
+          if (requestedIndex >= tracks.numTracks) return __refuse("Track index out of range");
 
           var track = tracks[requestedIndex];
           var untargeted = [];
@@ -227,7 +227,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async () => {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           ${TARGET_READBACK_SOURCE}
           var video = __readTargetStates(seq.videoTracks);
@@ -273,7 +273,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const targeted = args.targeted === true;
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           ${TARGET_READBACK_SOURCE}
           var count = 0;
@@ -335,10 +335,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         if (!Number.isSafeInteger(args.track_index) || args.track_index < 0) return { success: false, error: "track_index must be a non-negative integer." };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var tracks = ${args.track_type === "video" ? "seq.videoTracks" : "seq.audioTracks"};
-          if (${args.track_index} >= tracks.numTracks) return __error("Track index out of range");
+          if (${args.track_index} >= tracks.numTracks) return __refuse("Track index out of range");
 
           var track = tracks[${args.track_index}];
           var oldName = track.name;
@@ -374,10 +374,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { track_type: string; track_index: number }) => {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var tracks = ${args.track_type === "video" ? "seq.videoTracks" : "seq.audioTracks"};
-          if (${args.track_index} >= tracks.numTracks) return __error("Track index out of range");
+          if (${args.track_index} >= tracks.numTracks) return __refuse("Track index out of range");
 
           var track = tracks[${args.track_index}];
           var info = {
@@ -448,7 +448,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           : `var ticks = seq.getPlayerPosition().ticks;`;
         const preflightScript = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           ${cutTime}
           function __trackSpans(domTrack, tickValue) {
             var point = parseFloat(tickValue);
@@ -469,7 +469,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           app.enableQE();
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var qeSeq = qe.project.getActiveSequence();
           ${
@@ -630,7 +630,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const clearOut = args.clear_out !== false;
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           function __markSeconds(time) { return time && typeof time.seconds === "number" && isFinite(time.seconds) ? time.seconds : NaN; }
           var mediaDuration = NaN;
@@ -740,7 +740,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const mediaType = args.media_type ?? 4;
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
           var markMediaType = __markMediaTypeForItem(item, ${mediaType});
 
           var originalMarks = __itemMarksForRestore(item, markMediaType);
@@ -852,7 +852,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       }) => {
         const script = buildToolScript(`
           var sourceFile = new File("${escapeForExtendScript(args.first_file_path)}");
-          if (!sourceFile.exists) return __error("The first image file does not exist: " + sourceFile.fsName);
+          if (!sourceFile.exists) return __refuse("The first image file does not exist: " + sourceFile.fsName);
           var targetBin = app.project.rootItem;
           ${
             args.target_bin
@@ -916,7 +916,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string; x: number; y: number }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var set = false;
@@ -967,7 +967,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string; scale: number }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var motion = null;
@@ -1005,7 +1005,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         if (typeof args.degrees !== "number" || !Number.isFinite(args.degrees)) return { success: false, error: "degrees must be a finite number." };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           ${clipParamScript("AE.ADBE Motion", "Motion", "Rotation")}
 
           var clip = result.clip;
@@ -1045,7 +1045,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string; x: number; y: number }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var set = false;
@@ -1099,7 +1099,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           ${clipParamScript("AE.ADBE Opacity", "Opacity", "Opacity")}
 
           var clip = result.clip;
@@ -1136,7 +1136,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const level = dbToPremiereLevel(args.volume_db);
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var set = false;
@@ -1204,7 +1204,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var level = null;
@@ -1270,9 +1270,9 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           : "null";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           if (${args.track_index} >= seq.audioTracks.numTracks)
-            return __error("Track index out of range");
+            return __refuse("Track index out of range");
           ${clipParamScript("Internal Volume", "Volume", "Level")}
 
           var track = seq.audioTracks[${args.track_index}];
@@ -1342,8 +1342,8 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
-          if (result.trackType !== "audio") return __error("Clip is not on an audio track");
+          if (!result) return __refuse("Clip not found");
+          if (result.trackType !== "audio") return __refuse("Clip is not on an audio track");
 
           var clip = result.clip;
           var panProperty = null;
@@ -1416,10 +1416,10 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           app.enableQE();
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var tracks = ${args.track_type === "video" ? "seq.videoTracks" : "seq.audioTracks"};
-          if (${args.track_index} >= tracks.numTracks) return __error("Track index out of range");
+          if (${args.track_index} >= tracks.numTracks) return __refuse("Track index out of range");
 
           var qeSeq = qe.project.getActiveSequence();
           var qeTrack = ${
@@ -1503,7 +1503,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       }) => {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var count = 0;
           var disabled = ${!args.enabled};
@@ -1559,7 +1559,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         if (args.ripple) return { success: false, error: "CEP selected-clip removal cannot reliably ripple. Nothing was removed; use a guarded ripple-range tool.", data: { removed: 0, ripple: false, requestedRipple: true, verified: false, outcome: "not_applied", timelineChanged: false } };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var removed = 0;
           var toRemove = [];
@@ -1616,7 +1616,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const clearOut = args.clear_out !== false;
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var frameTicks = __sequenceFrameTicks(seq);
           var halfFrameSeconds = isFinite(frameTicks) ? __ticksToSeconds(String(frameTicks)) / 2 : 0.001;
@@ -1648,7 +1648,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           if (problems.length) {
             state.outcome = "failed";
             state.verified = false;
-            return __error(problems.join("; ") + ".", state);
+            return __refuse(problems.join("; ") + ".", state);
           }
           state.clearedIn = ${clearIn};
           state.clearedOut = ${clearOut};
@@ -1748,7 +1748,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           app.enableQE();
           var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active sequence");
+          if (!qeSeq) return __refuse("No active sequence");
 
           var qeTrack = ${
             args.track_type === "video"
@@ -1976,7 +1976,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var targetIsRoot = "${escapeForExtendScript(args.target_bin)}" === "/" || "${escapeForExtendScript(args.target_bin)}".toLowerCase() === "root";
           var targetBin = targetIsRoot ? app.project.rootItem : __findProjectItem("${escapeForExtendScript(args.target_bin)}");
-          if (!targetBin || (!targetIsRoot && targetBin.type !== 2)) return __error("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
+          if (!targetBin || (!targetIsRoot && targetBin.type !== 2)) return __refuse("Target bin not found: ${escapeForExtendScript(args.target_bin)}");
 
           var ids = ${idsJson};
           var items = [];
@@ -2025,7 +2025,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string; enabled: boolean }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var antiFlicker = null;
@@ -2082,7 +2082,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         if (typeof args.uniform !== "boolean") return { success: false, error: "uniform must be true or false." };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           ${clipParamScript("AE.ADBE Motion", "Motion", "Uniform Scale")}
 
           var clip = result.clip;
@@ -2132,7 +2132,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var motion = null;

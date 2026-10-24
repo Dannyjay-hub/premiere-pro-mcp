@@ -641,10 +641,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           var presetPath = "${escapeForExtendScript(file.path)}";
           var extension = seq.getExportFileExtension(presetPath);
-          if (!extension) return __error("Premiere could not resolve an output extension for this preset");
+          if (!extension) return __refuse("Premiere could not resolve an output extension for this preset");
           return __result({ presetPath: presetPath, outputExtension: extension });
         `);
         const result = await sendCommand(script, bridgeOptions);
@@ -1005,7 +1005,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           
           var outputPath = "${escapeForExtendScript(args.output_path)}";
           
@@ -1207,10 +1207,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
-          if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
+          if (!outputFolder.exists) return __refuse("Output directory does not exist: " + outputFolder.fsName);
 
           var sequenceEndSeconds = __ticksToSeconds(seq.end);
           var rangeStart = ${args.start_seconds ?? 0};
@@ -1321,9 +1321,9 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
-          if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
+          if (!outputFolder.exists) return __refuse("Output directory does not exist: " + outputFolder.fsName);
 
           var sequenceEndSeconds = __ticksToSeconds(seq.end);
           var rangeStart = ${args.start_seconds ?? 0};
@@ -1417,10 +1417,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          if (${trackIndex} >= seq.videoTracks.numTracks) return __error("Video track index is out of range");
+          if (!seq) return __refuse("No active sequence");
+          if (${trackIndex} >= seq.videoTracks.numTracks) return __refuse("Video track index is out of range");
           var outputFolder = new Folder("${escapeForExtendScript(resolve(args.output_dir))}");
-          if (!outputFolder.exists) return __error("Output directory does not exist: " + outputFolder.fsName);
+          if (!outputFolder.exists) return __refuse("Output directory does not exist: " + outputFolder.fsName);
           var track = seq.videoTracks[${trackIndex}];
           var frames = [];
           var failures = [];
@@ -1474,10 +1474,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         const startedAt = Date.now();
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           var outputFile = new File("${escapeForExtendScript(args.output_path)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The FCP XML export directory does not exist: " + outputFile.parent);
+            return __refuse("The FCP XML export directory does not exist: " + outputFile.parent);
           }
           var existedBefore = !!outputFile.exists;
           var lengthBefore = existedBefore ? Number(outputFile.length) : -1;
@@ -1610,24 +1610,24 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           
           var encoder = app.encoder;
-          if (!encoder) return __error("Adobe Media Encoder not available");
-          if (typeof encoder.ENCODE_IN_TO_OUT !== "number") return __error("Premiere does not expose the IN_TO_OUT encode mode; the sequence was not queued.");
+          if (!encoder) return __refuse("Adobe Media Encoder not available");
+          if (typeof encoder.ENCODE_IN_TO_OUT !== "number") return __refuse("Premiere does not expose the IN_TO_OUT encode mode; the sequence was not queued.");
           var savedProjectPath = "";
           try { savedProjectPath = String(app.project.path || ""); } catch (projectPathError) { savedProjectPath = ""; }
           if (!savedProjectPath || savedProjectPath === "undefined") {
-            return __error("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
+            return __refuse("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
           }
           
           var outputFile = new File("${escapeForExtendScript(outputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The requested AME output directory does not exist: " + (outputFile.parent ? outputFile.parent.fsName : outputFile.fsName));
+            return __refuse("The requested AME output directory does not exist: " + (outputFile.parent ? outputFile.parent.fsName : outputFile.fsName));
           }
           var outputPath = outputFile.fsName;
           var presetFile = new File("${escapeForExtendScript(presetPath)}");
-          if (!presetFile.exists) return __error("AME preset file does not exist: " + presetFile.fsName);
+          if (!presetFile.exists) return __refuse("AME preset file does not exist: " + presetFile.fsName);
           var presetPath = presetFile.fsName;
           encoder.launchEncoder();
           
@@ -1674,20 +1674,20 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
       handler: async () => {
         const script = buildToolScript(`
           var encoder = app.encoder;
-          if (!encoder) return __error("Adobe Media Encoder not available");
+          if (!encoder) return __refuse("Adobe Media Encoder not available");
 
           if (typeof encoder.isRunning !== "function") {
-            return __error("This Premiere build does not expose app.encoder.isRunning, and app.encoder exposes no other documented queue-status method, so the Adobe Media Encoder queue state cannot be read. Check the Adobe Media Encoder application directly. Exporting through export_sequence or encode_project_item is a separate code path and is unaffected.");
+            return __refuse("This Premiere build does not expose app.encoder.isRunning, and app.encoder exposes no other documented queue-status method, so the Adobe Media Encoder queue state cannot be read. Check the Adobe Media Encoder application directly. Exporting through export_sequence or encode_project_item is a separate code path and is unaffected.");
           }
 
           var isRunning;
           try {
             isRunning = encoder.isRunning();
           } catch (encoderStatusError) {
-            return __error("app.encoder.isRunning exists but Premiere could not read the queue state: " + encoderStatusError.toString());
+            return __refuse("app.encoder.isRunning exists but Premiere could not read the queue state: " + encoderStatusError.toString());
           }
           if (typeof isRunning !== "boolean") {
-            return __error("app.encoder.isRunning did not return a boolean queue state, so the Adobe Media Encoder queue status cannot be trusted.");
+            return __refuse("app.encoder.isRunning did not return a boolean queue state, so the Adobe Media Encoder queue status cannot be trusted.");
           }
 
           return __result({
@@ -1730,7 +1730,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           var requestedInSeconds = ${args.in_seconds};
           var requestedOutSeconds = ${args.out_seconds};
@@ -1998,13 +1998,13 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         const outputBefore = fileSnapshot(args.output_path);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
           var outputFile = new File("${escapeForExtendScript(args.output_path)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The OMF output directory does not exist: " + outputFile.parent);
+            return __refuse("The OMF output directory does not exist: " + outputFile.parent);
           }
           if (outputFile.exists) {
-            return __error("Refusing to treat a pre-existing OMF as a new export. Choose a new output_path or remove the existing file first.");
+            return __refuse("Refusing to treat a pre-existing OMF as a new export. Choose a new output_path or remove the existing file first.");
           }
           
           app.project.exportOMF(
@@ -2073,15 +2073,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
       }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Project item not found: ${escapeForExtendScript(args.item_id)}");
+          if (!item) return __refuse("Project item not found: ${escapeForExtendScript(args.item_id)}");
           var savedProjectPath = "";
           try { savedProjectPath = String(app.project.path || ""); } catch (projectPathError) { savedProjectPath = ""; }
           if (!savedProjectPath || savedProjectPath === "undefined") {
-            return __error("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
+            return __refuse("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
           }
           var outputFile = new File("${escapeForExtendScript(args.output_path)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The requested AME output directory does not exist: " + outputFile.parent);
+            return __refuse("The requested AME output directory does not exist: " + outputFile.parent);
           }
           
           app.encoder.launchEncoder();
@@ -2168,15 +2168,15 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
 
         const script = buildToolScript(`
           var inputFile = new File("${escapeForExtendScript(args.input_path)}");
-          if (!inputFile.exists) return __error("Input file does not exist: " + inputFile.fsName);
+          if (!inputFile.exists) return __refuse("Input file does not exist: " + inputFile.fsName);
           var savedProjectPath = "";
           try { savedProjectPath = String(app.project.path || ""); } catch (projectPathError) { savedProjectPath = ""; }
           if (!savedProjectPath || savedProjectPath === "undefined") {
-            return __error("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
+            return __refuse("Save the Premiere project to a real .prproj path before AME handoff. Unsaved or scratch projects make Adobe Media Encoder resolve a Same as Project output token against a disposable folder.");
           }
           var outputFile = new File("${escapeForExtendScript(args.output_path)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The requested AME output directory does not exist: " + outputFile.parent);
+            return __refuse("The requested AME output directory does not exist: " + outputFile.parent);
           }
           app.encoder.launchEncoder();
           
@@ -2312,7 +2312,7 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
         const autoDiscovered = presetPath !== args.preset_path;
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           var action = "${args.action}";
 

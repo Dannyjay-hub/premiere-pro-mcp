@@ -81,7 +81,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string; effect_name: string }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           
           var clip = result.clip;
           var effectName = "${escapeForExtendScript(args.effect_name)}";
@@ -186,7 +186,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
               : String(args.value);
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           
           var clip = result.clip;
           var comp = null;
@@ -310,7 +310,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         if (indexError) return { success: false, error: indexError };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           
           var clip = result.clip;
           var comp = null;
@@ -409,7 +409,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
           
           var clip = result.clip;
           var clipDurationTicks = NaN;

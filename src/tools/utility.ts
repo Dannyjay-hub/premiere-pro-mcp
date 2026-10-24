@@ -255,8 +255,8 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { item_id: string; confirm_remove_from_sequences?: boolean; allow_offline?: boolean }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found: ${escapeForExtendScript(args.item_id)}");
-          if (item === app.project.rootItem) return __error("The project root cannot be deleted");
+          if (!item) return __refuse("Item not found: ${escapeForExtendScript(args.item_id)}");
+          if (item === app.project.rootItem) return __refuse("The project root cannot be deleted");
 
           var nodeId = String(item.nodeId);
           var name = item.name;
@@ -465,7 +465,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { item_id: string; new_name: string }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           var oldName = item.name;
           var sequence = null;
@@ -512,15 +512,15 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         if (!Number.isSafeInteger(track) || track < 0) return { success: false, error: "track_index must be a non-negative integer." };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
-          if (${track} >= seq.videoTracks.numTracks) return __error("Video track index ${track} is out of range: the sequence has " + seq.videoTracks.numTracks + " video track(s).");
+          if (!seq) return __refuse("No active sequence");
+          if (${track} >= seq.videoTracks.numTracks) return __refuse("Video track index ${track} is out of range: the sequence has " + seq.videoTracks.numTracks + " video track(s).");
 
           app.enableQE();
           var qeSeq = qe.project.getActiveSequence();
-          if (!qeSeq) return __error("No active QE sequence");
+          if (!qeSeq) return __refuse("No active QE sequence");
 
           var playerTicks = parseFloat(seq.getPlayerPosition().ticks);
-          if (!isFinite(playerTicks) || playerTicks < 0) return __error("Cannot read a valid playhead position; nothing was added.");
+          if (!isFinite(playerTicks) || playerTicks < 0) return __refuse("Cannot read a valid playhead position; nothing was added.");
           var domTrack = seq.videoTracks[${track}];
           var beforeClipIds = {};
           for (var bc = 0; bc < domTrack.clips.numItems; bc++) {
@@ -620,7 +620,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           ${
             args.time_seconds !== undefined
@@ -709,10 +709,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const frame = sequenceFrameTicks(args.frame_rate);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           var requestedFps = ${args.frame_rate};
           var requestedTicks = ${frame.ticks};
@@ -741,11 +741,11 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
           var applied = seq.getSettings();
           if (!applied || !applied.videoFrameRate) {
-            return __error("Premiere did not return the updated sequence frame rate");
+            return __refuse("Premiere did not return the updated sequence frame rate");
           }
           var appliedTicks = parseFloat(applied.videoFrameRate.ticks);
           if (!isFinite(appliedTicks) || Math.abs(appliedTicks - requestedTicks) > 1) {
-            return __error(
+            return __refuse(
               "Premiere did not apply the requested frame rate: expected " +
               requestedTicks + " ticks/frame, got " + appliedTicks
             );
@@ -807,10 +807,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           settings.videoFrameWidth = ${args.width};
           settings.videoFrameHeight = ${args.height};
@@ -870,10 +870,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           ${args.sample_rate !== undefined ? `
           var requestedSampleRate = ${args.sample_rate};
@@ -934,10 +934,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           var requestedRatio = "${ratio}";
           var currentRatio;
@@ -1025,10 +1025,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         }
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           settings.videoFieldType = ${args.field_type};
           seq.setSettings(settings);
@@ -1369,7 +1369,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { node_id: string }) => {
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
-          if (!result) return __error("Clip not found");
+          if (!result) return __refuse("Clip not found");
 
           var clip = result.clip;
           var info = {
@@ -1497,7 +1497,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async (args: { item_id: string }) => {
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           var markers = [];
           try {
@@ -1584,10 +1584,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const endSeconds = args.duration_seconds ? args.time_seconds + args.duration_seconds : undefined;
         const script = buildToolScript(`
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
-          if (!item) return __error("Item not found");
+          if (!item) return __refuse("Item not found");
 
           var markers = item.getMarkers();
-          if (!markers) return __error("This project item has no marker collection.");
+          if (!markers) return __refuse("This project item has no marker collection.");
           var markerBarrier = __rememberMarkerUndoBarrier(__readUndoIndex());
           if (!markerBarrier.ok) return __error(markerBarrier.error);
           var requestedMarkerTicks = __secondsToTicks(${args.time_seconds});
@@ -1660,10 +1660,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         args = { video_display_format: video, audio_display_format: audio };
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var settings = seq.getSettings();
-          if (!settings) return __error("Could not get sequence settings");
+          if (!settings) return __refuse("Could not get sequence settings");
 
           ${args.video_display_format !== undefined ? `settings.videoDisplayFormat = ${args.video_display_format};` : ""}
           ${args.audio_display_format !== undefined ? `settings.audioDisplayFormat = ${args.audio_display_format};` : ""}
@@ -1696,7 +1696,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const trackType = args.track_type || "both";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var posTicks = parseFloat(seq.getPlayerPosition().ticks);
           var clips = [];
@@ -1761,7 +1761,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const trackType = args.track_type || "both";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var posTicks = parseFloat(seq.getPlayerPosition().ticks);
           var editPoints = [];
@@ -1828,7 +1828,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const direction = args.direction || "next";
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var posTicks = parseFloat(seq.getPlayerPosition().ticks);
           var editPoints = [];
@@ -1934,7 +1934,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         // the project path and read the saved settings from the file.
         const script = buildToolScript(`
           var project = app.project;
-          if (!project || !project.path) return __error("No saved project is open");
+          if (!project || !project.path) return __refuse("No saved project is open");
           return __result({ projectPath: String(project.path) });
         `);
         const result = await sendCommand(script, bridgeOptions);
@@ -1980,7 +1980,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async () => {
         const script = buildToolScript(`
           var project = app.project;
-          if (!project) return __error("No project open");
+          if (!project) return __refuse("No project open");
           return __result({ count: project.sequences.numSequences });
         `);
         return sendCommand(script, bridgeOptions);
@@ -1994,7 +1994,7 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
       handler: async () => {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var video = 0, audio = 0;
           for (var t = 0; t < seq.videoTracks.numTracks; t++) video += seq.videoTracks[t].clips.numItems;
@@ -2028,10 +2028,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const trackIndex = args.track_index ?? 0;
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
-          if (!seq) return __error("No active sequence");
+          if (!seq) return __refuse("No active sequence");
 
           var tracks = ${trackType === "video" ? "seq.videoTracks" : "seq.audioTracks"};
-          if (${trackIndex} >= tracks.numTracks) return __error("Track index out of range");
+          if (${trackIndex} >= tracks.numTracks) return __refuse("Track index out of range");
 
           var posTicks = parseFloat(seq.getPlayerPosition().ticks);
           var track = tracks[${trackIndex}];
