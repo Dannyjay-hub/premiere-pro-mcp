@@ -114,6 +114,7 @@ const INSPECT_TOOL_NAMES = new Set([
   "plan_word_mute_ranges",
   "detect_repeated_takes",
   "check_caption_safe_zone",
+  "retime_caption_file",
   "rank_short_form_candidates",
   "plan_chapter_markers",
   "plan_emphasis_zoom_keyframes",
@@ -189,8 +190,12 @@ const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[
   acknowledge_operation_recovery: ["inspect", "edit"],
   apply_extended_edit_plan: ["inspect", "edit", "filesystem"],
   prepare_transcript_workflow: ["inspect"],
+  // Audit is read-only; apply: true adds edit (see capabilitiesForToolInvocation).
+  audit_project_structure: ["inspect"],
   preview_scene_review_workflow: ["inspect", "filesystem"],
   apply_scene_review_workflow: ["inspect", "edit", "filesystem"],
+  // Decodes the source file with ffmpeg, writes a new still, then imports/places it.
+  create_source_freeze_frame: ["inspect", "edit", "filesystem"],
   // Source bounds read the underlying media file through ffprobe.
   trim_clip: ["edit", "filesystem"],
   slip_edit: ["edit", "filesystem"],
@@ -198,6 +203,7 @@ const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[
   create_sequence: ["edit", "filesystem"],
   create_sequence_from_preset: ["edit", "filesystem"],
   add_to_render_queue: ["export", "filesystem"],
+  export_sequence_job_start: ["export", "filesystem"],
   get_export_file_extension: ["inspect", "filesystem"],
   roll_edit: ["inspect", "edit", "filesystem"],
   slide_edit: ["inspect", "edit", "filesystem"],
@@ -412,7 +418,11 @@ export function capabilityForTool(toolName: string): Capability {
 /** Resolve authority at the action level for consolidated multi-action tools. */
 export function capabilitiesForToolInvocation(toolName: string, args: unknown): readonly Capability[] {
   if (toolName === "export_interchange_uxp" && args && typeof args === "object" && (args as Record<string, unknown>).verify_artifact === true) return ["export", "filesystem"];
+  if (toolName === "audit_project_structure" && args && typeof args === "object" && (args as Record<string, unknown>).apply === true) return ["inspect", "edit"];
   if (toolName === "prepare_transcript_workflow" && args && typeof args === "object" && (args as Record<string, unknown>).start_if_missing === true) return ["inspect", "edit"];
+  // Inline caption retiming is pure computation; reading input_path or writing
+  // output_path touches the local filesystem and needs that authority too.
+  if (toolName === "retime_caption_file" && args && typeof args === "object" && ((args as Record<string, unknown>).input_path !== undefined || (args as Record<string, unknown>).output_path !== undefined)) return ["inspect", "filesystem"];
   const actionMap = ACTION_CAPABILITIES[toolName];
   if (toolName === "set_metadata" && args && typeof args === "object" && (args as Record<string, unknown>).packet === "xmp") {
     // XMP field writes land in the source media file, not just the project.
@@ -430,6 +440,22 @@ export function capabilitiesForToolInvocation(toolName: string, args: unknown): 
   return required
     ? required
     : [capabilityForTool(toolName)];
+}
+
+/**
+ * Whether any invocation of a tool can need more than inspect authority. Used
+ * to decide which tool schemas advertise the server-wide idempotency_key; the
+ * per-call decision still comes from capabilitiesForToolInvocation.
+ */
+export function toolMayChangeState(toolName: string): boolean {
+  // Argument-dependent escalations handled specially above.
+  if (toolName === "export_interchange_uxp" || toolName === "prepare_transcript_workflow" || toolName === "set_metadata" || toolName === "audit_project_structure" || toolName === "retime_caption_file") return true;
+  const actionMap = ACTION_CAPABILITIES[toolName];
+  const candidates: (readonly Capability[])[] = actionMap
+    ? [...Object.values(actionMap), [capabilityForTool(toolName)]]
+    : [TOOL_CAPABILITY_REQUIREMENTS[toolName] ?? [capabilityForTool(toolName)]];
+  if (toolName === "encode_media_uxp") candidates.push(["inspect", "filesystem"]);
+  return candidates.some((required) => required.some((capability) => capability !== "inspect"));
 }
 
 /**
