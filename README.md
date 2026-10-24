@@ -16,7 +16,7 @@ Free, MIT licensed, local-first, and published to npm as [`premiere-pro-mcp`](ht
 
 [Website](https://premiere-pro-mcp.com/) · [Recorded demo](https://premiere-pro-mcp.com/demo/) · [Compare servers](https://premiere-pro-mcp.com/compare/) · [Setup guides](https://premiere-pro-mcp.com/blog/how-to-set-up-premiere-pro-mcp/) · [Search tools](https://premiere-pro-mcp.com/tools/) · [Troubleshooting](https://premiere-pro-mcp.com/docs/troubleshooting/) · [Release facts](https://premiere-pro-mcp.com/facts/)
 
-Development source: 437 core tools across 67 modules, 4 resources, and 29 guided workflows. A connected UXP host adds 96 capability-gated tools.
+Development source: 442 core tools across 67 modules, 4 resources, and 29 guided workflows. A connected UXP host adds 96 capability-gated tools.
 
 The [completed AE render handoff](docs/after-effects-render-handoff.md) previews and confirms importing one finished render into an existing Premiere bin, with host and file rechecks and an import receipt.
 
@@ -127,17 +127,17 @@ and repository before configuring a client. The new
 VS Code, or Codex settings that point directly to this installation. It is a
 feature included in v1.15.1 and later.
 
-The current source exposes 437 core tools for supported workflow steps spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, connection verification, and guarded After Effects MOGRT authoring, batch, library, render-queue, inspection, and Premiere-handoff workflows. A compatible, authenticated UXP panel adds 96 documented, capability-gated tools without replacing the production CEP bridge.
+The current source exposes 442 core tools for supported workflow steps spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, connection verification, and guarded After Effects MOGRT authoring, batch, library, render-queue, inspection, and Premiere-handoff workflows. A compatible, authenticated UXP panel adds 96 documented, capability-gated tools without replacing the production CEP bridge.
 
 <a id="latest-release"></a>
 
-### Latest release: 1.24.4
+### Latest release: 1.25.0
 
-The published v1.24.4 npm artifact contains **436 core tools**, 434 in its default profile,
-and 530 with a compatible UXP connection. The development catalog above can include
+The published v1.25.0 npm artifact contains **441 core tools**, 439 in its default profile,
+and 535 with a compatible UXP connection. The development catalog above can include
 unreleased work. See the [versioned facts and package provenance](https://premiere-pro-mcp.com/facts/).
 
-GitHub releases use `v<SemVer>` for both title and tag, such as `v1.24.4`.
+GitHub releases use `v<SemVer>` for both title and tag, such as `v1.25.0`.
 See [release naming and version conventions](docs/release-conventions.md).
 
 ### Try a bounded workflow
@@ -203,7 +203,7 @@ if the connection is unavailable.
   local Premiere processes. See the generated [supported action catalog](docs/supported-actions.md)
   for individual capability and verification contracts.
 
-See the [v1.24.4 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.24.4)
+See the [v1.25.0 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.25.0)
 for complete details. Live installation in Premiere Pro still requires host verification.
 
 ### Current MCP protocol support
@@ -261,7 +261,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > ### Install the published package (verify the name)
 >
 > ```bash
-> npm i -g premiere-pro-mcp@1.24.4
+> npm i -g premiere-pro-mcp@1.25.0
 > ```
 >
 > This repository publishes only **`premiere-pro-mcp`**. A differently named package (`adobe-premiere-pro-mcp`) may also declare a `premiere-pro-mcp` executable. Before configuring a client, confirm:
@@ -269,7 +269,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > | Check | Expected |
 > | --- | --- |
 > | Package name | `premiere-pro-mcp` (not `adobe-premiere-pro-mcp`) |
-> | Version | `1.24.4` |
+> | Version | `1.25.0` |
 > | Homepage / repo | https://premiere-pro-mcp.com/ · https://github.com/leancoderkavy/premiere-pro-mcp |
 >
 > ```bash
@@ -282,9 +282,9 @@ their bins, media rules, and organization rules before a facility uses one.
 
 ### Easiest supported path: Claude Desktop
 
-1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.24.4/premiere-pro-mcp-1.24.4.mcpb).
+1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.25.0/premiere-pro-mcp-1.25.0.mcpb).
 2. In Claude Desktop, open **Settings > Extensions > Advanced settings > Install Extension**, select the downloaded bundle, and restart Claude Desktop.
-3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.24.4/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
+3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.25.0/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
 4. Restart Premiere, open a project, then open **Window > Extensions > MCP for Adobe Premiere Pro**.
 5. In Claude, enter: `Safely check my Premiere connection with verify_premiere_connection. Make no changes.`
 
@@ -588,11 +588,11 @@ From a clone of this repository:
 ```bash
 codex plugin marketplace add .
 codex plugin add premiere-pro@premiere-pro-mcp
-npx -y premiere-pro-mcp@1.24.4 --install-cep
+npx -y premiere-pro-mcp@1.25.0 --install-cep
 ```
 
 Restart Premiere Pro and start a new Codex session after installation. The plugin
-launches `premiere-pro-mcp@1.24.4` through `npx`; the separate CEP installation is
+launches `premiere-pro-mcp@1.25.0` through `npx`; the separate CEP installation is
 required because the MCP server communicates with the running Premiere host through
 the local bridge.
 
@@ -630,7 +630,7 @@ For Claude Code, add this repository as a marketplace and install the plugin:
 Then install the Premiere bridge and start a new Claude Code session:
 
 ```bash
-npx -y premiere-pro-mcp@1.24.4 --install-cep
+npx -y premiere-pro-mcp@1.25.0 --install-cep
 ```
 
 The Claude Code package lives in
@@ -959,7 +959,7 @@ Reviewed assistant-editing tools now provide dialogue candidate decisions, quote
 See [Filmcraft improvement ledger](docs/filmcraft-improvements.md) for exact-time
 planning, recovery, job observation, temporal evidence and facility workflows.
 
-## Tools (437 core total; 435 under the default profile; 531 with a connected UXP bridge)
+## Tools (442 core total; 440 under the default profile; 536 with a connected UXP bridge)
 
 The [complete supported-actions catalog](docs/supported-actions.md) lists every
 registered core tool, the two tools restricted behind explicit `unsafe-script`
@@ -986,7 +986,7 @@ the tables below are a shorter workflow-oriented overview.
 | `preview_editorial_plan` | Revalidate a local editorial plan and return a review receipt without changing Premiere |
 | `apply_editorial_organization_plan` | Apply a confirmed organization plan through guarded UXP bin transactions only |
 
-### Project Management (26)
+### Project Management (27)
 
 | Tool | Description |
 | :--- | :---------- |
@@ -994,6 +994,7 @@ the tables below are a shorter workflow-oriented overview.
 | `create_project` / `close_project` | Project lifecycle |
 | `import_media` / `import_folder` / `import_ae_comps` | Import media and AE comps |
 | `create_bin` / `delete_bin` / `rename_bin` / `create_smart_bin` | Bin management |
+| `audit_project_structure` | Audit Project-panel layout rules (allowed root names, extension-to-bin, sequences bin, depth, empty bins); optional `apply` with the audit's `plan_token` creates target bins and moves planned items with per-item parent readback. Never deletes or renames |
 | `import_sequences` / `import_fcp_xml` | Import from other projects |
 | `create_bars_and_tone` | Generate bars & tone media |
 | `set_scratch_disk_path` | Configure scratch disks |
@@ -1051,7 +1052,12 @@ call. It refuses retimed clips because CEP cannot prove their source-to-timeline
 reads both source points and visible timeline start/end/duration before reporting success. The
 default `keyframe_policy: "reject"` stops before a trim that would leave effect keyframes beyond
 the visible clip; `keyframe_policy: "preserve"` is an explicit opt-in and reports the remaining
-count. `split_clip` verifies a spanning clip, the expected count increase, and the left/right
+count. `keyframe_policy: "hold_last_value"` also keeps them, and makes each animated numeric
+parameter hold its edge value: a trim into an animation keys the new edge with the value sampled
+there, and an extension past hidden keys anchors the old and new edge at the old edge value. It
+refuses before mutation when keys would be revealed or a value cannot be sampled or written
+losslessly, and reads every value back at the new edge (`committed_unverified` if one differs). Only edge values are verified; a Bezier segment next to an added key can
+reshape between keys. `split_clip` verifies a spanning clip, the expected count increase, and the left/right
 cut boundaries. Its QE path cannot prove effect-keyframe redistribution, so a successful result
 labels those semantics `unverified`. These are CEP contract checks, not validation in a licensed
 Premiere Pro 26.x host.
@@ -1098,11 +1104,12 @@ adjusted. This is a CEP contract check, not validation in a licensed Premiere Pr
 | `get_value_at_time` | Query interpolated value at any time |
 | `set_color_value` | Set color properties on effects |
 
-### Export & Encoding (17)
+### Export & Encoding (19)
 
 | Tool | Description |
 | :--- | :---------- |
 | `export_sequence` | Export via Adobe Media Encoder |
+| `export_sequence_job_start` / `get_export_job_status` | Asynchronous AME export job for long renders: returns a job id at once, then reports queued, encoding, completed, or failed with event and output-file evidence |
 | `validate_export_preset` | Validate an `.epr` file and resolve its output extension in Premiere |
 | `verify_delivery_file` | Verify output size and calculate SHA-256/SHA-512 checksums |
 | `capture_frame` | Export frame as PNG, return as base64 image |
@@ -1225,12 +1232,13 @@ evidence behind these tools and their verification boundaries.
 | `rank_short_form_candidates` | Rank sentence-aligned windows as short-form candidates with explainable hook, completeness, density, evidence, and duration-fit scores |
 | `plan_chapter_markers` | Lexical-cohesion chapter segmentation with titles, YouTube timestamps, and ready Chapter marker payloads |
 
-### Caption Authoring (2)
+### Caption Authoring (3)
 
 | Tool | Description |
 | :--- | :---------- |
 | `build_caption_artifact` | Word-grouped SRT/VTT captions with karaoke timestamps, emphasis markup, speaker prefixes, and style presets, written inside an approved workspace |
 | `check_caption_safe_zone` | Overlap check for caption and graphic rectangles against approximate platform UI zones, with a suggested clear position |
+| `retime_caption_file` | Local SRT/VTT retimer for after ripple edits: shift, ripple-remove ranges, ripple-insert a gap, or edit one cue; re-import with `create_caption_track` |
 
 ### Reaction Shorts (3)
 
@@ -1450,7 +1458,7 @@ premiere-pro-mcp/
 ├── src/
 │   ├── index.ts                 # Entry point — stdio transport setup
 │   ├── http-server.ts           # Entry point — HTTP/SSE transport (Fly.io / remote)
-│   ├── server.ts                # MCP server — registers 437 tools, filtered by authority profile
+│   ├── server.ts                # MCP server — registers 442 tools, filtered by authority profile
 │   ├── bridge/
 │   │   ├── file-bridge.ts       # File-based IPC (write .jsx, poll .json)
 │   │   └── script-builder.ts    # ExtendScript generator with ES3 helpers
