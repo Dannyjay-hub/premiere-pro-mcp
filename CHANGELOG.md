@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `export_frame`, `capture_frame`, `export_sequence`, and `export_sequence_job_start` now refuse an output folder that does not exist as `not_applied`, before anything runs. Premiere reports a missing folder only after the command was dispatched (`export_sequence` failed inside the render with "OutputFilePath is in a folder that doesn't exist!"; QE and Media Encoder stills just wrote nothing), so these calls ended with an unknown outcome and locked further edits until recovery was acknowledged. The other exporters already checked the folder; with this change none of them locks on a missing folder. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

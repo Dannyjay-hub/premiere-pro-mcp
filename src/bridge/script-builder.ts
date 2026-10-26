@@ -1683,6 +1683,10 @@ function __exportStillFrame(outputPath, ticks) {
   var slash = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf("\\\\"));
   var ext = dot > slash ? outputPath.substring(dot).toLowerCase() : "";
   if (ext === "") { outputPath = outputPath + ".png"; ext = ".png"; }
+  // QE and Media Encoder report a missing folder only as an empty result after the
+  // export ran, so check it before anything is attempted.
+  var outputFolder = new File(outputPath).parent;
+  if (outputFolder && !outputFolder.exists) return { ok: false, notApplied: true, error: "Output folder does not exist: " + outputFolder.fsName + "; nothing was exported. Create the folder or choose an existing one.", notes: [] };
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";

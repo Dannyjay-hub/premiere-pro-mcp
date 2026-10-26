@@ -1245,6 +1245,10 @@ export function getExportTools(bridgeOptions: BridgeOptions) {
           // Premiere's native exporters on Windows reject URI-style paths that File accepts.
           outputPath = new File(outputPath).fsName;
           presetPath = new File(presetPath).fsName;
+          // Premiere reports a missing folder only from inside the render (live 26.5.2:
+          // "OutputFilePath is in a folder that doesn't exist!"), so check it first.
+          var outputFolder = new File(outputPath).parent;
+          if (outputFolder && !outputFolder.exists) return __error("Output folder does not exist: " + outputFolder.fsName + "; nothing was exported. Create the folder or choose an existing one.", { mutationOutcome: "not_applied", timelineChanged: false });
 
 ${presetExtensionGuardScript()}
 ${sequenceRangeGuardScript(range)}
@@ -1328,6 +1332,7 @@ ${sequenceRangeGuardScript(range)}
             : "null"};
 
           var res = __exportStillFrame(outputPath, ticks);
+          if (!res.ok && res.notApplied) return __error(res.error, { mutationOutcome: "not_applied", timelineChanged: false });
           if (!res.ok) return __error(res.error + " [" + res.notes.join("; ") + "]");
 
           return __result({ exported: true, outputPath: res.path, method: res.method, renderVerified: false, verificationScope: "Output file exists only; a single still does not establish motion over time, playback or audio." });
@@ -1908,7 +1913,7 @@ ${sequenceRangeGuardScript(range)}
           }
           var outputFile = new File("${escapeForExtendScript(outputPath)}");
           if (!outputFile.parent || !outputFile.parent.exists) {
-            return __error("The requested output folder does not exist: " + (outputFile.parent ? outputFile.parent.fsName : outputFile.fsName) + "; nothing was queued.");
+            return __error("The requested output folder does not exist: " + (outputFile.parent ? outputFile.parent.fsName : outputFile.fsName) + "; nothing was queued.", { mutationOutcome: "not_applied", timelineChanged: false });
           }
           var outputPath = outputFile.fsName;
           var presetFile = new File("${escapeForExtendScript(presetPath)}");
@@ -2301,6 +2306,7 @@ ${ameQueueBatchStartScript(startBatch)}
             : "null"};
 
           var res = __exportStillFrame(outputPath, ticks);
+          if (!res.ok && res.notApplied) return __error(res.error, { mutationOutcome: "not_applied", timelineChanged: false });
           if (!res.ok) return __error(res.error + " [" + res.notes.join("; ") + "]");
 
           var seq = app.project.activeSequence;

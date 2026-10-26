@@ -265,7 +265,7 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
     this.exists = false;
     this.length = 0;
     this.name = path.split("/").pop() || path;
-    this.parent = { exists: false, getFiles: () => [] };
+    this.parent = { exists: true, getFiles: () => [] };
     this.remove = () => undefined;
     this.rename = () => undefined;
   }
