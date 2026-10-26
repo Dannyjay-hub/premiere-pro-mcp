@@ -104,7 +104,7 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
       for (var ci = 0; ci < t.dom.clips.numItems; ci++) {
         var c = t.dom.clips[ci], id = String(c.nodeId);
         if (seen[id]) continue; seen[id] = true;
-        clips.push({ id: id, type: t.type, track: t.index, start: parseFloat(c.start.ticks), end: parseFloat(c.end.ticks), name: String(c.name) });
+        clips.push({ id: id, type: t.type, track: t.index, start: parseFloat(c.start.ticks), end: parseFloat(c.end.ticks), name: String(c.name), obj: c });
       }
     }
     var fingerprintText = String(seq.sequenceID || "")+"|";
@@ -190,6 +190,21 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     // Preflight and all mutations are in this one host command. Razor cuts then
     // recapture IDs: Premiere replaces TrackItems at each split.
     var undoBefore = __readUndoIndex();
+    // Live 26.5.2: pieces that move after the per-track razors come back unlinked
+    // from their audio/video partners. Record each clip's link group (its sorted
+    // linked node IDs) by track span so the moved pieces can be relinked.
+    // The preflight snapshot already holds each clip, so this needs no extra DOM reads.
+    var origins = [];
+    for (ci2 = 0; ci2 < clips.length; ci2++) {
+      if (!participating[clips[ci2].type+":"+clips[ci2].track]) continue;
+      var linkedIds = [], linked = null, snapshotClip = clips[ci2].obj;
+      try { linked = snapshotClip && typeof snapshotClip.getLinkedItems === "function" ? snapshotClip.getLinkedItems() : null; } catch (linkReadErr) { linked = null; }
+      if (linked && linked.numItems > 1) {
+        for (var li = 0; li < linked.numItems; li++) linkedIds.push(String(linked[li].nodeId));
+        linkedIds.sort();
+        origins.push({ type:clips[ci2].type, track:clips[ci2].track, start:clips[ci2].start, end:clips[ci2].end, group:linkedIds.join(",") });
+      }
+    }
     for (qi = 0; qi < uniqueCuts.length; qi++) {
       var cut = uniqueCuts[qi], tc = __qeTimecodeForTicks(seq, cut).timecode;
       for (tr = 0; tr < tracks.length; tr++) {
@@ -202,12 +217,16 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     // Re-read live clips after splits, then classify against snapped intervals.
     var live = [];
     for (tr=0; tr<tracks.length; tr++) { t=tracks[tr]; for (ci=0;ci<t.dom.clips.numItems;ci++) { c=t.dom.clips[ci]; live.push({clip:c, id:String(c.nodeId), type:t.type, track:t.index, start:parseFloat(c.start.ticks), end:parseFloat(c.end.ticks)}); } }
-    var remove = [], move = [];
+    var remove = [], move = [], linkPieces = {};
     for (ci2=0;ci2<live.length;ci2++) {
       var lc=live[ci2], inRange=false, shift=0, overlap=false;
       for (ri=0;ri<ranges.length;ri++) { rg=ranges[ri]; if(lc.start>=rg.start-tol && lc.end<=rg.end+tol){inRange=true;break;} if(lc.start<rg.end-tol && lc.end>rg.start+tol) overlap=true; if(rg.end<=lc.start+tol) shift+=rg.end-rg.start; }
       if(overlap && !inRange) return __error("A clip still straddles a snapped range edge after razoring; nothing removed, timeline may contain new cuts. Inspect before retrying.",{mutationOutcome:"unknown",timelineChanged:true,mutationAttempted:true,verified:false});
       if(inRange) remove.push(lc); else if(shift>0) move.push({clip:lc.clip,id:lc.id,type:lc.type,track:lc.track,start:lc.start,end:lc.end,shift:shift});
+      if(!inRange){
+        // A kept piece belongs with the pieces cut from its linked partners over the same span.
+        for (var oi=0; oi<origins.length; oi++) { var origin=origins[oi]; if(origin.type===lc.type && origin.track===lc.track && lc.start>=origin.start-tol && lc.end<=origin.end+tol){ var pieceKey=origin.group+"@"+Math.round(lc.start)+"-"+Math.round(lc.end); if(!linkPieces[pieceKey]) linkPieces[pieceKey]=[]; linkPieces[pieceKey].push(lc.id); break; } }
+      }
     }
     for (ci2=0;ci2<remove.length;ci2++) { try { remove[ci2].clip.remove(false,false); } catch(delErr) { return __error("Removal failed after mutation began; inspect timeline before retrying: "+delErr.toString(),{mutationOutcome:"unknown",timelineChanged:true,mutationAttempted:true,verified:false}); } }
     move.sort(function(a,b){return a.start-b.start;});
@@ -219,6 +238,37 @@ export function rippleRemoveRangesScript(args: Args, mutate: boolean, expectedFi
     for(ci2=0;ci2<move.length;ci2++){var wanted=move[ci2], got=byId[wanted.id];if(!got)verify.push(wanted.id+" missing");else { var actualStart=parseFloat(got.clip.start.ticks), actualEnd=parseFloat(got.clip.end.ticks); if(Math.abs(actualStart-(wanted.start-wanted.shift))>tol)verify.push(wanted.id+" unexpected start"); if(Math.abs((actualEnd-actualStart)-(wanted.end-wanted.start))>tol)verify.push(wanted.id+" duration changed"); }}
     for(ci2=0;ci2<remove.length;ci2++)if(byId[remove[ci2].id])verify.push(remove[ci2].id+" was not removed");
     if(verify.length)return __error("Ripple ranges were applied, but readback could not verify every clip: "+verify.join(", "),{outcome:"committed_unverified",mutationOutcome:"unknown",timelineChanged:true,mutationAttempted:true,verified:false});
+    // Relink pieces of one original link group that share a span, then read links back.
+    var relinked=0, linkFailures=[];
+    var linkedTo = function (clipObj, ids) {
+      var items=null; try { items=clipObj.getLinkedItems(); } catch (linkedErr) { return false; }
+      if(!items || items.numItems!==ids.length) return false;
+      for (var lk=0; lk<items.numItems; lk++){ var found=false; for (var lj=0; lj<ids.length; lj++) if(String(items[lk].nodeId)===ids[lj]) found=true; if(!found) return false; }
+      return true;
+    };
+    var deselectAll = function () {
+      var groupsAll = [seq.videoTracks, seq.audioTracks];
+      for (var ga = 0; ga < groupsAll.length; ga++) for (var gt = 0; gt < groupsAll[ga].numTracks; gt++) for (var gc = 0; gc < groupsAll[ga][gt].clips.numItems; gc++) { try { groupsAll[ga][gt].clips[gc].setSelected(false, true); } catch (deselectErr) {} }
+    };
+    for (var pk in linkPieces) {
+      if(!linkPieces.hasOwnProperty(pk)) continue;
+      var ids=linkPieces[pk]; if(ids.length<2) continue;
+      var members=[], already=true;
+      for (var mi=0; mi<ids.length; mi++){ var entry=byId[ids[mi]]; if(!entry){ already=false; members=null; break; } members.push(entry.clip); if(!linkedTo(entry.clip, ids)) already=false; }
+      if(!members){ linkFailures.push(ids.join("+")+" missing"); continue; }
+      if(already) continue;
+      try {
+        // linkSelection links every selected clip, so clear the whole sequence first.
+        deselectAll();
+        for (mi=0; mi<members.length; mi++) members[mi].setSelected(true, true);
+        seq.linkSelection();
+        for (mi=0; mi<members.length; mi++) members[mi].setSelected(false, true);
+      } catch (linkErr) { linkFailures.push(ids.join("+")+": "+linkErr.toString()); continue; }
+      var linkedNow=true; for (mi=0; mi<members.length; mi++) if(!linkedTo(members[mi], ids)) linkedNow=false;
+      if(linkedNow) relinked++; else linkFailures.push(ids.join("+")+" did not read back linked");
+    }
+    summary.relinkedGroups=relinked;
+    if(linkFailures.length) return __error("Ripple ranges were applied and verified, but some moved audio/video pieces could not be relinked: "+linkFailures.join("; ")+". Select each pair and link it in Premiere.",{outcome:"committed_unverified",mutationOutcome:"committed_unverified",timelineChanged:true,mutationAttempted:true,verified:false,clipsRemoved:remove.length,clipsShifted:move.length,relinkedGroups:relinked});
     summary.dryRun=false; summary.verified=true; summary.clipsRemoved=remove.length; summary.clipsShifted=move.length;
     var undoAfter = __readUndoIndex();
     if (undoBefore !== null && undoAfter !== null && undoAfter > undoBefore) { summary.undoSteps = undoAfter - undoBefore; summary.undoStackIndex = undoAfter; }
@@ -230,7 +280,7 @@ export function getRippleRemoveRangesTools(bridgeOptions: BridgeOptions, depende
   const capabilities = dependencies.capabilities ?? resolveCapabilities();
   return {
     ripple_remove_timeline_ranges: {
-      description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Large edits need allow_large_ripple: true.",
+      description: "Preview or apply a single-pass ripple removal for up to 50 sorted, non-overlapping timeline ranges on all unlocked, sync-locked tracks. Requires a preview confirmation token to apply. Integer frame rates only. The preview returns per-track counts and at most 50 planned-clip samples; clips fully inside ranges are removed. Kept pieces cut from one linked audio/video clip are relinked and read back after the move. Large edits need allow_large_ripple: true.",
       parameters: { type: "object" as const, properties: {
         sequence_id: { type: "string", description: "Sequence name or ID; defaults to the active sequence. It must be the active sequence, because the edit runs through QE; another sequence is refused without changes." },
         ranges: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", properties: { start: { type: "number", minimum: 0, description: "Range start in timeline seconds." }, end: { type: "number", exclusiveMinimum: 0, description: "Range end in timeline seconds." } }, required: ["start", "end"], additionalProperties: false }, description: "Sorted, non-overlapping timeline intervals to remove." },
