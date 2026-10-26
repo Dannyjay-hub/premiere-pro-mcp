@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `create_source_freeze_frame` no longer places a still when its Out mark did not verify. The previous handler occupancy-checked the requested duration and then called `overwriteClip`, so a no-op Out write left Premiere's default still length (often 5s) and could overwrite the next clip on that track.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added
