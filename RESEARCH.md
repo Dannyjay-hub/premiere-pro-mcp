@@ -591,3 +591,7 @@ is established by these fake-host tests. Templates with suitable exposed
 controls and matching fonts still require an operator-run scratch scenario,
 save/reopen and rendered review. No undocumented fallback or external editor
 is invoked.
+
+## Track transition removal and structural edit boundaries
+
+The recorded Premiere26.5.2 editing finding identifies TrackTransition.remove(false, false) as the working CEP removal shape; calling remove() without its two arguments throws. The removal tool uses that existing DOM surface without a QE fallback and checks the entire surviving span list. This is local fake-host coverage, pending native verification. Structural edits conservatively refuse transitions occupying an edited clip span or the participating ripple suffix, since no documented transition-follow-edge contract is established here. Stored span readback does not prove rendered appearance.

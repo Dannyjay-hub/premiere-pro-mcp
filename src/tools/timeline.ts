@@ -422,7 +422,7 @@ export function getTimelineTools(
     },
 
     move_clip: {
-      description: "EXPERIMENTAL (undocumented QE DOM for track changes): Move a clip to a new position on the timeline; optional track moves use Premiere's QE API and may not work on every version.",
+      description: "Refuses attached transitions or unreadable transition collections before structural edits; inspect transitionsAffected and use remove_transition first. EXPERIMENTAL (undocumented QE DOM for track changes): Move a clip to a new position on the timeline; optional track moves use Premiere's QE API and may not work on every version.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -476,6 +476,15 @@ export function getTimelineTools(
               Math.abs(spanTicks / frameTicks - Math.round(spanTicks / frameTicks)) > 0.001) {
             return __error("The clip's existing start, end or duration is off the active sequence frame grid. Repair it in Premiere before moving; no change was attempted.");
           }
+
+          var requestedStartTicks = __secondsToTicks(${args.new_start_seconds});
+          var newStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
+          var newEndTicks = newStartTicks + spanTicks;
+          var transitionFailure = __transitionEditGuard(seq, [
+            { type: result.trackType, index: result.trackIndex, start: Number(clip.start.ticks), end: Number(clip.end.ticks) },
+            { type: result.trackType, index: ${args.new_track_index ?? "result.trackIndex"}, start: newStartTicks, end: newEndTicks }
+          ]);
+          if (transitionFailure) return transitionFailure;
 
           ${args.new_track_index !== undefined ? `
           // The track change is attempted before the start time is written, so
@@ -544,9 +553,6 @@ export function getTimelineTools(
           // Writing start alone leaves end in place on Premiere Pro 26.x, which
           // stretches (earlier move) or trims (later move) the clip instead of
           // moving it. Write both edges in the order that keeps start < end.
-          var requestedStartTicks = __secondsToTicks(${args.new_start_seconds});
-          var newStartTicks = __snapSequenceTicks(seq, requestedStartTicks);
-          var newEndTicks = newStartTicks + spanTicks;
           try {
             __writeClipSpan(clip, newStartTicks, newEndTicks);
           } catch (moveWriteErr) {
@@ -597,6 +603,7 @@ export function getTimelineTools(
           ` : ""}
 
           var movePayload = {
+            transitionsAffected: [],
             moved: true,
             verified: true,
             clipName: clipName,
@@ -615,7 +622,7 @@ export function getTimelineTools(
 
     trim_clip: {
       description:
-        "Trim exactly one source in/out point and verify the corresponding visible timeline edge. Requires accessible physical media duration from ffprobe; unknown duration or linked partners using different source files refuse before mutation. Refuses retimed clips, extensions that would overlap the neighbouring clip on the same track, and, by default, trims that would leave effect keyframes outside the visible clip. Linked audio/video partners get the same trim by default (include_linked), applied as the same offset from each partner's own source point so a J/L cut or slipped audio stays in sync; every clip is checked before any is changed. To set a clip's timeline length or extend a still image, use set_clip_duration. Existing host Out padding below one sequence frame may be preserved or reduced, but never used to create additional padding.",
+        "Refuses attached transitions or unreadable transition collections before structural edits; inspect transitionsAffected and use remove_transition first. Trim exactly one source in/out point and verify the corresponding visible timeline edge. Requires accessible physical media duration from ffprobe; unknown duration or linked partners using different source files refuse before mutation. Refuses retimed clips, extensions that would overlap the neighbouring clip on the same track, and, by default, trims that would leave effect keyframes outside the visible clip. Linked audio/video partners get the same trim by default (include_linked), applied as the same offset from each partner's own source point so a J/L cut or slipped audio stays in sync; every clip is checked before any is changed. To set a clip's timeline length or extend a still image, use set_clip_duration. Existing host Out padding below one sequence frame may be preserved or reduced, but never used to create additional padding.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -1037,7 +1044,7 @@ export function getTimelineTools(
 
     set_clip_duration: {
       description:
-        "Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners get the same change by default (include_linked), applied as the same end offset so partners with a J/L cut keep their offset; every clip is checked before any is changed. Use this instead of speed changes, which Premiere does not expose to scripting. Existing host Out padding below one sequence frame may be preserved or reduced, but never used to create additional padding. Non-still sources require readable ffprobe duration evidence and a readable sequence frame grid.",
+        "Refuses attached transitions or unreadable transition collections before structural edits; inspect transitionsAffected and use remove_transition first. Set one timeline clip's visible duration by moving only its timeline end (TrackItem.end) while keeping its start fixed. Pass exactly one of duration_seconds or end_seconds. Works for extending still images past their import length. Refuses to overlap the next clip on the same track, rejects shortening that would strand effect keyframes unless keyframe_policy is preserve, reads start/end back, and restores the original end if Premiere clamps or ignores the write (for example when video media has no handle left). Linked audio/video partners get the same change by default (include_linked), applied as the same end offset so partners with a J/L cut keep their offset; every clip is checked before any is changed. Use this instead of speed changes, which Premiere does not expose to scripting. Existing host Out padding below one sequence frame may be preserved or reduced, but never used to create additional padding. Non-still sources require readable ffprobe duration evidence and a readable sequence frame grid.",
       parameters: {
         type: "object" as const,
         properties: {

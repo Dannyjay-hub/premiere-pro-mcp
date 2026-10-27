@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `close_project` no longer hangs until its timeout when it closes the last open project. Closing the last project sends Premiere to its Home screen and unloads workspace panels, including the visible MCP connector panel. When that panel had claimed the close command, its reply was lost: Premiere closed the project, but the server waited out the full timeout (10 minutes in one live run) and then recorded an unknown outcome that blocked further edits. The close command is now named `cmd_<id>.headless.jsx`. The connector's headless engine, which survives the close, advertises itself in `headless-engine.json`, and the visible panel leaves these commands to it while it is live. Older connectors still match `cmd_*.jsx` and run the command as before. Reinstall the CEP connector to get the fix.
 
+- Structural edits refuse attached transitions before changing clip edges or ripple suffixes; remove_transition removes one exact CEP transition with independent span readback instead of leaving it stranded. Unreadable transition collections refuse safely.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

@@ -64,7 +64,7 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
     if (typeof property === "string" && /^\d+$/.test(property)) clipReads++;
     return Reflect.get(target, property, receiver);
   } });
-  const track = { clips: clipsDom, isLocked: () => options.locked === true };
+  const track = { transitions: { numItems: 0 }, clips: clipsDom, isLocked: () => options.locked === true };
   const qeTrack = {
     isLocked: () => options.locked === true,
     isSyncLocked: () => true,
