@@ -105,6 +105,98 @@ function fakeTimeline(options: { clips: Array<{ id: string; start: number; end: 
   return { run, moveCalls, list, original, fromTicks, razorCalls, get clipReads() { return clipReads; } };
 }
 
+type LinkedFakeClip = { nodeId: string; name: string; start: { ticks: string }; end: { ticks: string }; group: { members: LinkedFakeClip[] } | null; selected: boolean; [key: string]: any };
+
+// One video and one audio track whose clips share link groups. Like Premiere 26.5.2,
+// a razor keeps the left piece in the original link group and leaves the right piece unlinked.
+function linkedFakeTimeline(options: { pairs: Array<{ id: string; start: number; end: number }>; linkSelectionWorks?: boolean }) {
+  let nextId = 0;
+  let undoIndex = 0;
+  const frameDuration = TICKS / 25;
+  const toTicks = (seconds: number) => String(Math.round(seconds * TICKS));
+  const lists: Record<"video" | "audio", LinkedFakeClip[]> = { video: [], audio: [] };
+  const live = () => [...lists.video, ...lists.audio];
+  const makeClip = (type: "video" | "audio", id: string, start: number, end: number): LinkedFakeClip => ({
+    nodeId: id, name: id, start: { ticks: toTicks(start) }, end: { ticks: toTicks(end) }, group: null, selected: false,
+    getLinkedItems() {
+      if (!this.group) return null;
+      const members = this.group.members.filter((clip: LinkedFakeClip) => live().includes(clip));
+      return Object.assign([...members], { numItems: members.length });
+    },
+    setSelected(value: boolean) { this.selected = value; },
+    move(delta: { ticks: string }) {
+      this.start.ticks = String(Number(this.start.ticks) + Number(delta.ticks));
+      this.end.ticks = String(Number(this.end.ticks) + Number(delta.ticks));
+      undoIndex++;
+    },
+    remove() {
+      const index = lists[type].indexOf(this as LinkedFakeClip);
+      if (index >= 0) lists[type].splice(index, 1);
+      undoIndex++;
+    },
+  });
+  for (const pair of options.pairs) {
+    const video = makeClip("video", `${pair.id}-v`, pair.start, pair.end);
+    const audio = makeClip("audio", `${pair.id}-a`, pair.start, pair.end);
+    video.group = audio.group = { members: [video, audio] };
+    lists.video.push(video);
+    lists.audio.push(audio);
+  }
+  const domTrack = (type: "video" | "audio") => {
+    const clips = new Proxy(lists[type], { get(target, property, receiver) {
+      if (property === "numItems") return target.length;
+      return Reflect.get(target, property, receiver);
+    } });
+    return { clips, isLocked: () => false };
+  };
+  const qeTrack = (type: "video" | "audio") => ({
+    isLocked: () => false,
+    isSyncLocked: () => true,
+    razor(timecode: string) {
+      const [hh, mm, ss, ff] = timecode.split(":").map(Number);
+      const cut = ((((hh * 60 + mm) * 60 + ss) * 25) + ff) * frameDuration;
+      const list = lists[type];
+      for (let i = 0; i < list.length; i++) {
+        const clip = list[i];
+        const start = Number(clip.start.ticks), end = Number(clip.end.ticks);
+        if (start < cut && end > cut) {
+          const left = makeClip(type, `${clip.nodeId}-razor-${++nextId}`, start / TICKS, cut / TICKS);
+          const right = makeClip(type, `${clip.nodeId}-razor-${++nextId}`, cut / TICKS, end / TICKS);
+          if (clip.group) { left.group = clip.group; clip.group.members = clip.group.members.map((member) => member === clip ? left : member); }
+          list.splice(i, 1, left, right);
+          undoIndex++;
+          i++;
+        }
+      }
+    },
+  });
+  const sequence = {
+    sequenceID: "fake-sequence",
+    name: "Target",
+    timebase: String(frameDuration),
+    getSettings: () => ({ videoDisplayFormat: 100 }),
+    videoTracks: Object.assign({ numTracks: 1 }, [domTrack("video")]),
+    audioTracks: Object.assign({ numTracks: 1 }, [domTrack("audio")]),
+    linkSelection() {
+      if (options.linkSelectionWorks === false) return;
+      const selected = live().filter((clip) => clip.selected);
+      const group = { members: selected };
+      for (const clip of selected) clip.group = group;
+      undoIndex++;
+    },
+  };
+  const videoQe = qeTrack("video"), audioQe = qeTrack("audio");
+  const qeSequence = { getVideoTrackAt: () => videoQe, getAudioTrackAt: () => audioQe, getUndoStackIndex: () => undoIndex };
+  const context = { app: { project: { activeSequence: sequence, sequences: { numSequences: 1, 0: sequence } }, enableQE() {} }, qe: { project: { getActiveSequence: () => qeSequence, undoStackIndex: () => undoIndex } }, Time: class { ticks = "0"; getFormatted(frameRate: { ticks: string }, displayFormat: number) { return fakeTimecode(Math.floor(Number(this.ticks) / Number(frameRate.ticks) + 0.000001), Number(frameRate.ticks), displayFormat); } } };
+  const run = (script: string) => JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, context))) as { success: boolean; data?: Record<string, any>; error?: string };
+  const span = (clip: LinkedFakeClip) => `${Number(clip.start.ticks) / TICKS}-${Number(clip.end.ticks) / TICKS}`;
+  const partners = (clip: LinkedFakeClip) => {
+    const linked = clip.getLinkedItems();
+    return linked ? Array.from(linked as LinkedFakeClip[], span).sort() : null;
+  };
+  return { run, lists, live, span, partners };
+}
+
 describe("ripple_remove_timeline_ranges", () => {
   beforeEach(() => vi.mocked(sendCommand).mockReset());
 
@@ -256,6 +348,35 @@ describe("ripple_remove_timeline_ranges", () => {
     expect(host.moveCalls.size).toBe(0);
     const active = fakeTimeline({ clips: [{ id: "before", start: 0, end: 1 }, { id: "inside", start: 1, end: 2 }, { id: "after", start: 2, end: 3 }] });
     expect(active.run(rippleRemoveRangesScript(args, false)).success).toBe(true);
+  });
+
+  it("relinks moved audio/video pieces that the per-track razors left unlinked", () => {
+    // Live 26.5.2: after removing 2-3 s from a linked 0-8 s clip, the moved 3-8 s pieces
+    // came back with getLinkedItems() null on both tracks.
+    const host = linkedFakeTimeline({ pairs: [{ id: "clip", start: 0, end: 8 }] });
+    const args = { ranges: [{ start: 2, end: 3 }], scope: "sync_locked" as const, range_content: "delete" as const };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    expect(preview.success).toBe(true);
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(true);
+    expect(applied.data?.verified).toBe(true);
+    expect(applied.data?.relinkedGroups).toBe(1);
+    for (const type of ["video", "audio"] as const) {
+      expect(host.lists[type].map(host.span)).toEqual(["0-2", "2-7"]);
+      for (const clip of host.lists[type]) expect(host.partners(clip)).toEqual([host.span(clip), host.span(clip)]);
+    }
+    expect(host.live().some((clip) => clip.selected)).toBe(false);
+  });
+
+  it("reports committed_unverified when moved pieces do not read back relinked", () => {
+    const host = linkedFakeTimeline({ pairs: [{ id: "clip", start: 0, end: 8 }], linkSelectionWorks: false });
+    const args = { ranges: [{ start: 2, end: 3 }], scope: "sync_locked" as const, range_content: "delete" as const };
+    const preview = host.run(rippleRemoveRangesScript(args, false));
+    const applied = host.run(rippleRemoveRangesScript(args, true, String(preview.data?.timelineFingerprint)));
+    expect(applied.success).toBe(false);
+    expect(applied.error).toMatch(/could not be relinked/);
+    expect(applied.data).toMatchObject({ outcome: "committed_unverified", timelineChanged: true, relinkedGroups: 0 });
+    expect(host.lists.video.map(host.span)).toEqual(["0-2", "2-7"]);
   });
 
   it("refuses partial clip overlap in the shared planner", () => {
