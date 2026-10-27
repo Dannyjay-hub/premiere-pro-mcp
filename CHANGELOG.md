@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Optional title font (PostScript name), size, exposed fill color and normalized whole-graphic position controls with per-field stored readback. Font and size write every text run of Premiere 26 AE-authored titles (`fontEditValue` / `fontSizeEditValue`) and refuse when the template locks font editing. Unexposed or animated controls remain unverified; unsupported alignment and Premiere-authored font/fill styling refuse before import. Stored font names do not establish font availability or rendered appearance.
 
+- Effect keyframes accept host-validated numeric pairs and read every stored component back. Motion Position and Anchor Point use normalized coordinates; unavailable lossless colour-key writes refuse before mutation.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

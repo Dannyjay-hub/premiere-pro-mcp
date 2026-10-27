@@ -648,7 +648,7 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
 
     copy_effect_values: {
       description:
-        "Copy verified scalar and colour effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Properties are matched by position, then by unique display name, because effects such as Lumetri Color repeat names across sections. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
+        "Copy verified scalar, numeric-array and colour effect-property values from one effect to the matching effect on another clip. Both clips must already have the same effect applied. Properties are matched by position, then by unique display name, because effects such as Lumetri Color repeat names across sections. Legacy CEP deliberately refuses Blend Mode because Premiere can corrupt its enum value on cross-clip writes.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -694,7 +694,12 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
 
           function valuesMatch(left, right) {
             if (typeof left === "number" && typeof right === "number") return Math.abs(left - right) < 0.000001;
-            return String(left) === String(right);
+            if (left instanceof Array || right instanceof Array) {
+              if (!(left instanceof Array) || !(right instanceof Array) || left.length !== right.length) return false;
+              for (var component = 0; component < left.length; component++) if (typeof left[component] !== "number" || typeof right[component] !== "number" || !isFinite(left[component]) || !isFinite(right[component]) || Math.abs(left[component] - right[component]) >= 0.000001) return false;
+              return true;
+            }
+            return typeof left === typeof right && left === right;
           }
           var copied = 0;
           var skipped = [];
@@ -767,7 +772,12 @@ export function getClipboardTools(bridgeOptions: BridgeOptions) {
                 // Section headers and opaque data (curves, blobs) are not readable values.
                 continue;
               }
-              if (valuesMatch(tgtProp.getValue(0, 0), val)) {
+              var targetValue = tgtProp.getValue(0, 0);
+              if ((val instanceof Array || targetValue instanceof Array) && (!(val instanceof Array) || !(targetValue instanceof Array) || targetValue.length !== val.length || !isCopyable(targetValue))) {
+                skipped.push({ property: srcProp.displayName, reason: "The target numeric-array shape does not match the source; no write was attempted." });
+                continue;
+              }
+              if (valuesMatch(targetValue, val)) {
                 copied++;
                 continue;
               }
