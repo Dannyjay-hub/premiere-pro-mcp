@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cooperating processes retry host-lease acquisition after a failed owner read only when a fresh filesystem check confirms the owner record disappeared. Existing unreadable or malformed records still block dispatch.
 - Required tool arguments refuse before handler dispatch, preserving capability checks and reporting the missing field (#905).
 - `close_project` routes through the connector's headless engine so closing the last project does not unload the panel before its response is written (#906).
 - Structural edits refuse attached transitions or unreadable transition collections before changing clip edges or ripple suffixes (#907).
