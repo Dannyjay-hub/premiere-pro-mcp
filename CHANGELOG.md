@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `create_source_freeze_frame` no longer places a still when its Out mark did not verify. The previous handler occupancy-checked the requested duration and then called `overwriteClip`, so a no-op Out write left Premiere's default still length (often 5s) and could overwrite the next clip on that track.
 
+### Added
+
+- Optional title font (PostScript name), size, exposed fill color and normalized whole-graphic position controls with per-field stored readback. Font and size write every text run of Premiere 26 AE-authored titles (`fontEditValue` / `fontSizeEditValue`) and refuse when the template locks font editing. Unexposed or animated controls remain unverified; unsupported alignment and Premiere-authored font/fill styling refuse before import. Stored font names do not establish font availability or rendered appearance.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added
