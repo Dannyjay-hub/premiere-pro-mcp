@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Clip duplication restores saved source marks in a safe order when the original In lies beyond the temporary copy Out. Unverified restoration reports surviving copy IDs and actual source clocks, including the media sample rate, so a failed request can be inspected without creating another copy.
 - Audio mark writes and restoration now derive their quarter-sample bias from readable media sample rates, avoiding extra-sample advances above 192 kHz. Audio duplication restores source In after sequence-frame placement and verifies it within half a media sample instead of half a video frame. Media Encoder still fallback places its temporary marks on or after the requested frame, checks the stored range before exporting, and restores sample-exact marks; invalid capture times refuse before changing marks.
 
+- Project identity and approved rendering-folder comparisons use the host's filesystem spelling, preserving POSIX case and literal backslashes while retaining Windows path aliases.
+- Export-preset extension lookup resolves the actual preset file before checking its format folder, and refuses relative paths, NUL characters and file paths ending in a separator.
+- Native workspace paths retain UNC and drive-root identity, encode filename characters in file URLs, and accept alternate Unicode spellings only when independent canonical lookup confirms the approved directory.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

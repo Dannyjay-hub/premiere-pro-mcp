@@ -5,8 +5,10 @@
 import { createHash } from "node:crypto";
 import { expectedProjectPath, expectedHostTarget } from "./project-guard.js";
 import { undoTrackingEnabled } from "./undo-tracking.js";
+import { HOST_PATH_HELPERS } from "./host-paths.js";
 
 const HELPERS = `
+${HOST_PATH_HELPERS}
 // === MCP Bridge Helpers (auto-prepended) ===
 
 // ExtendScript (ES3) has no native JSON object. Tool scripts use __jsonStringify
@@ -2103,7 +2105,7 @@ function __isDirectory(path) {
 // Open projects (Premiere keeps several open; app.project is the active one).
 // Paths compare case-insensitively with forward slashes.
 function __normProjectPath(path) {
-  return String(path || "").split(String.fromCharCode(92)).join("/").toLowerCase();
+  return __hostPathKey(path);
 }
 function __openProjects() {
   var list = [];
