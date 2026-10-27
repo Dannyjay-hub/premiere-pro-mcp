@@ -38,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `export_frame`, `capture_frame`, `export_sequence`, and `export_sequence_job_start` now refuse an output folder that does not exist as `not_applied`, before anything runs. Premiere reports a missing folder only after the command was dispatched (`export_sequence` failed inside the render with "OutputFilePath is in a folder that doesn't exist!"; QE and Media Encoder stills just wrote nothing), so these calls ended with an unknown outcome and locked further edits until recovery was acknowledged. The other exporters already checked the folder; with this change none of them locks on a missing folder. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
 
+### Added
+
+- `list_extensions` (read-only) and `open_extension` open another CEP extension panel in Premiere Pro by its extension id, so an agent can bring up the panel it is about to drive instead of asking the user to find it under Window > Extensions. They are the first panel-side commands: the CEP connector answers them itself with `__adobe_cep__.getExtensions` and `requestOpenExtension`, through the same queue, lease, and reply file as ExtendScript commands. A panel command file holds only a marker line and a JSON payload, never the helper bootstrap every ExtendScript command starts with, so the two cannot be confused. `open_extension` refuses an id that is not installed and reports `committed_unverified`, because CEP has no panel-visibility getter. CEP cannot close another extension, so there is no `close_extension`. CEP connector only; the UXP bridge has no equivalent API.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

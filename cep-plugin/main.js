@@ -350,6 +350,26 @@ function processOneCommand(cmdFileName) {
   var id = cmdFileName.replace("cmd_", "").replace(".jsx", "");
   var resFilePath = path.join(tempDir, "res_" + id + ".json");
 
+  // Panel-side commands (list/open extensions) need this panel's CEP runtime, not
+  // ExtendScript. They are answered here, synchronously, with the same reply file.
+  if (typeof MCPPanelCommands !== "undefined" && MCPPanelCommands.isPanelCommand(script)) {
+    log("Panel command: " + cmdFileName, "cmd");
+    var panelResult = MCPPanelCommands.run(script, typeof window !== "undefined" ? window.__adobe_cep__ : null);
+    commandCount++;
+    try {
+      writeResponseFile(resFilePath, JSON.stringify(panelResult));
+    } finally {
+      commandInFlight = false;
+    }
+    try {
+      var panelCount = document.getElementById("cmdCount");
+      if (panelCount) panelCount.textContent = commandCount;
+      log(panelResult.success ? "Result received" : "Command failed", panelResult.success ? "ok" : "err");
+    } catch (panelUiError) {}
+    if (bridgeRunning) processCommands();
+    return;
+  }
+
   log("Executing: " + cmdFileName + " (" + script.length + " chars)", "cmd");
 
   // While evalScript is in flight, heartbeat a busy file so the MCP server can

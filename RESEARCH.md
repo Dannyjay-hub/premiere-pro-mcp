@@ -283,6 +283,16 @@ Publish `premiere-pro-mcp@1.2.0` from `main` with a current npm authenticator OT
 
 ---
 
+### CEP panel runtime (`__adobe_cep__`, not ExtendScript)
+
+A few things exist only in the CEP panel's own runtime, never in ExtendScript, so the connector answers them itself (`cep-plugin/panel-commands.cjs`):
+
+| Call | Used by | Notes |
+|---|---|---|
+| `getExtensions(JSON.stringify([]))` | `list_extensions`, `open_extension` preflight | JSON array of installed extensions: `id`, `name`, `windowType`, `isActive`, and more. Measured in Premiere 26.3 (2026-10-27): `isActive` stayed `false` both for a panel just opened with `requestOpenExtension` and for the running headless connector itself, so it does not indicate visibility. |
+| `requestOpenExtension(id, params)` | `open_extension` | Works from the headless connector; no completion callback and no visibility getter, so the outcome is `committed_unverified` |
+| `closeExtension()` | not exposed | Closes only the calling extension; CEP has no way to close another one |
+
 ## QE DOM (Undocumented but Critical)
 
 **Must call `app.enableQE()` first.**
