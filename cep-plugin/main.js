@@ -587,7 +587,7 @@ function checkForUpdates() {
     MCPBridgeUpdater.LATEST_PACKAGE_API,
     {
       headers: {
-        Accept: "application/vnd.npm.install-v1+json",
+        Accept: MCPBridgeUpdater.LATEST_PACKAGE_ACCEPT,
         "User-Agent": "premiere-pro-mcp-connector/" + MCPBridgeUpdater.CURRENT_VERSION,
       },
     },
