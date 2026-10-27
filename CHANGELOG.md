@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Effect keyframes accept host-validated numeric pairs and read every stored component back. Motion Position and Anchor Point use normalized coordinates; unavailable lossless colour-key writes refuse before mutation.
 
+- Motion Position and Anchor Point writes accept explicit pixel or normalized units across single and batch property tools. Omitted units retain pixel behavior and warn when fractional-looking values could be mistaken for normalized coordinates; mask-fit guidance now names its units.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

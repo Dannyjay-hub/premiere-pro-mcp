@@ -1,3 +1,4 @@
+import { pointUnitsError } from "./point-units.js";
 import { setProjectItemStartTime } from "./project-item-start-time.js";
 import {
   buildToolScript,
@@ -894,26 +895,29 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     set_clip_position: {
       description:
-        "Set the Position property on a video clip's Motion effect using English or measured Spanish built-in names, then read it back. Values are in pixels.",
+        "Set the Position property on a video clip's Motion effect using English or measured Spanish built-in names, then read it back. Values default to pixels; explicit normalized values are fractions from 0 to 1. Omitted units with a 0–1 pair keeps pixels and adds a warning.",
       parameters: {
         type: "object" as const,
         properties: {
+          units: { type: "string", enum: ["pixels", "normalized"], description: "Coordinate units; defaults to pixels for compatibility. normalized means 0–1 fractions of the sequence frame for Position or source frame for Anchor Point." },
           node_id: {
             type: "string",
             description: "Node ID of the clip",
           },
           x: {
             type: "number",
-            description: "X position in sequence pixels (converted to Premiere's normalized Position when the host stores it that way)",
+            description: "X position in the selected units: sequence pixels by default, or normalized 0–1 fractions.",
           },
           y: {
             type: "number",
-            description: "Y position in sequence pixels (converted to Premiere's normalized Position when the host stores it that way)",
+            description: "Y position in the selected units: sequence pixels by default, or normalized 0–1 fractions.",
           },
         },
         required: ["node_id", "x", "y"],
       },
-      handler: async (args: { node_id: string; x: number; y: number }) => {
+      handler: async (args: { node_id: string; x: number; y: number; units?: "pixels" | "normalized" }) => {
+        const invalid = pointUnitsError(args.units, args.x, args.y);
+        if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -925,13 +929,13 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
                 if (__videoIntrinsicPropertyMatches(clip.components[i].properties[p], "Position")) {
                   var pointProp = clip.components[i].properties[p];
-                  var pointScale = __motionPointScale(pointProp, __sequenceFrameSize(app.project.activeSequence));
+                  var pointScale = __motionPointScale(pointProp, __sequenceFrameSize(app.project.activeSequence), "${escapeForExtendScript(args.units ?? "pixels")}");
                   if (!pointScale) return __error("The sequence frame size is unreadable, so pixels cannot be converted to Premiere's normalized position; nothing was changed.");
                   var written = [${args.x} * pointScale.x, ${args.y} * pointScale.y];
                   pointProp.setValue(written, true);
                   var readBack = pointProp.getValue();
-                  if (!readBack || readBack.length < 2 || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
-                    return __error("Premiere did not apply the requested position; read back " + readBack + ".");
+                  if (!readBack || readBack.length < 2 || typeof readBack[0] !== "number" || typeof readBack[1] !== "number" || !isFinite(readBack[0]) || !isFinite(readBack[1]) || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
+                    return __error("Premiere did not apply the requested position; read back " + readBack + ". Inspect before retrying.", { verified: false, outcome: "committed_unverified", timelineChanged: null, mutationAttempted: true });
                   }
                   set = { normalized: pointScale.normalized, value: [readBack[0], readBack[1]] };
                   break;
@@ -941,7 +945,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             }
           }
           if (!set) return __error("Could not set position");
-          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized });
+          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized, units: "${escapeForExtendScript(args.units ?? "pixels")}", warning: __pointUnitsWarning(${args.x}, ${args.y}, ${args.units !== undefined}, app.project.activeSequence) });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -1023,26 +1027,29 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
 
     set_clip_anchor_point: {
       description:
-        "Set the Anchor Point property on a video clip's Motion effect.",
+        "Set and read back Motion Anchor Point in source-frame pixels by default, or explicit normalized 0–1 source-frame fractions. Omitted units with a 0–1 pair keeps pixels and adds a warning.",
       parameters: {
         type: "object" as const,
         properties: {
+          units: { type: "string", enum: ["pixels", "normalized"], description: "Coordinate units; defaults to pixels for compatibility. normalized means 0–1 fractions of the sequence frame for Position or source frame for Anchor Point." },
           node_id: {
             type: "string",
             description: "Node ID of the clip",
           },
           x: {
             type: "number",
-            description: "Anchor point X in pixels",
+            description: "Anchor point X in selected units: source-frame pixels by default or normalized 0–1 fractions.",
           },
           y: {
             type: "number",
-            description: "Anchor point Y in pixels",
+            description: "Anchor point Y in selected units: source-frame pixels by default or normalized 0–1 fractions.",
           },
         },
         required: ["node_id", "x", "y"],
       },
-      handler: async (args: { node_id: string; x: number; y: number }) => {
+      handler: async (args: { node_id: string; x: number; y: number; units?: "pixels" | "normalized" }) => {
+        const invalid = pointUnitsError(args.units, args.x, args.y);
+        if (invalid) return { success: false, error: invalid };
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -1050,17 +1057,17 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var clip = result.clip;
           var set = false;
           for (var i = 0; i < clip.components.numItems; i++) {
-            if (clip.components[i].displayName === "Motion") {
+            if (clip.components[i].matchName === "AE.ADBE Motion" || clip.components[i].displayName === "Motion") {
               for (var p = 0; p < clip.components[i].properties.numItems; p++) {
-                if (clip.components[i].properties[p].displayName === "Anchor Point") {
+                if (__videoIntrinsicPropertyMatches(clip.components[i].properties[p], "Anchor Point")) {
                   var pointProp = clip.components[i].properties[p];
-                  var pointScale = __motionPointScale(pointProp, __clipSourceFrameSize(clip, app.project.activeSequence));
+                  var pointScale = __motionPointScale(pointProp, __clipSourceFrameSize(clip, app.project.activeSequence), "${escapeForExtendScript(args.units ?? "pixels")}");
                   if (!pointScale) return __error("The source frame size is unreadable, so pixels cannot be converted to Premiere's normalized anchor point; nothing was changed.");
                   var written = [${args.x} * pointScale.x, ${args.y} * pointScale.y];
                   pointProp.setValue(written, true);
                   var readBack = pointProp.getValue();
-                  if (!readBack || readBack.length < 2 || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
-                    return __error("Premiere did not apply the requested anchor point; read back " + readBack + ".");
+                  if (!readBack || readBack.length < 2 || typeof readBack[0] !== "number" || typeof readBack[1] !== "number" || !isFinite(readBack[0]) || !isFinite(readBack[1]) || Math.abs(readBack[0] - written[0]) > 1e-4 * (pointScale.normalized ? 1 : 1000) || Math.abs(readBack[1] - written[1]) > 1e-4 * (pointScale.normalized ? 1 : 1000)) {
+                    return __error("Premiere did not apply the requested anchor point; read back " + readBack + ". Inspect before retrying.", { verified: false, outcome: "committed_unverified", timelineChanged: null, mutationAttempted: true });
                   }
                   set = { normalized: pointScale.normalized, value: [readBack[0], readBack[1]] };
                   break;
@@ -1070,7 +1077,7 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
             }
           }
           if (!set) return __error("Could not set anchor point");
-          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized });
+          return __result({ x: ${args.x}, y: ${args.y}, clip: clip.name, verified: true, hostValue: set.value, hostNormalized: set.normalized, units: "${escapeForExtendScript(args.units ?? "pixels")}", warning: __pointUnitsWarning(${args.x}, ${args.y}, ${args.units !== undefined}, app.project.activeSequence) });
         `);
         return sendCommand(script, bridgeOptions);
       },
