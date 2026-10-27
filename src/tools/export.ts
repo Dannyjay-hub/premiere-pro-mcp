@@ -1912,7 +1912,7 @@ ${sequenceRangeGuardScript(range)}
           }
           var outputPath = outputFile.fsName;
           var presetFile = new File("${escapeForExtendScript(presetPath)}");
-          if (!presetFile.exists) return __error("AME preset file does not exist: " + presetFile.fsName);
+          if (!presetFile.exists) return __refuse("AME preset file does not exist: " + presetFile.fsName);
           var presetPath = presetFile.fsName;
 ${presetExtensionGuardScript()}
 ${sequenceRangeGuardScript(range)}
@@ -2615,7 +2615,7 @@ ${ameQueueBatchStartScript(startBatch)}
           srcOut.seconds = ${outSeconds};
           var removeUponCompletion = ${args.remove_on_completion !== false ? "true" : "false"};
           var presetFile = new File("${escapeForExtendScript(args.preset_path)}");
-          if (!presetFile.exists) return __error("AME preset file does not exist: " + presetFile.fsName);
+          if (!presetFile.exists) return __refuse("AME preset file does not exist: " + presetFile.fsName);
 
           // Documented signature (live 25.2): encodeFile(input, output, preset,
           // removeUponCompletion, [startTime, stopTime]) with Time objects. The
