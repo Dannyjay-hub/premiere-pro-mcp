@@ -10,11 +10,11 @@ source catalog may include unreleased actions.
 
 | Surface | Count | Availability |
 | --- | ---: | --- |
-| Registered core actions | 441 | CEP/local server catalog; host and authority checks still apply |
-| Default-profile core actions | 439 | Advertised with `inspect,edit,export,filesystem` |
+| Registered core actions | 443 | CEP/local server catalog; host and authority checks still apply |
+| Default-profile core actions | 441 | Advertised with `inspect,edit,export,filesystem` |
 | Restricted core actions | 2 | Require explicit `unsafe-script` authority |
 | Authenticated UXP additions | 96 | Advertised only while a compatible authenticated UXP panel is connected |
-| Default profile with UXP | 535 | 439 core plus 96 UXP tools |
+| Default profile with UXP | 537 | 441 core plus 96 UXP tools |
 
 ## How to read support
 
@@ -270,6 +270,7 @@ operation” when the tool has no enum-based mode.
 | `list_available_effects` | Default profile | Single operation | List available video effects in Premiere Pro. Uses the full QE catalog when exposed; otherwise returns a verified, explicitly partial set of common effects resolved by exact name. |
 | `list_available_transitions` | Default profile | Single operation | EXPERIMENTAL (undocumented QE DOM): List video transitions. Returns a built-in hint set on PPro 2026 where the registry list is empty even though by-name lookup works; the hint set is not exhaustive. |
 | `list_clip_effects` | Default profile | Single operation | List effects/components exposed by the clip's standard DOM collection, with properties and current values. Some hosts omit QE-applied effects from this collection; absence here does not prove an effect is absent. get_effect_properties uses the same collection. Inspect Premiere's Effect Controls UI when complete QE effect presence must be confirmed. |
+| `list_extensions` | Default profile | Single operation | List the CEP extension panels installed in Premiere Pro (id, name, window type, and whether each is open). Use an id with open_extension. CEP connector only. |
 | `list_markers` | Default profile | Single operation | List markers on the active sequence, or on a source project item that exposes a marker collection, including marker GUID and color when readable. A timeline-clip node_id returns a clean error instead of a raw TypeError. |
 | `list_project_items` | Default profile | Single operation | List all items in the project panel (clips, bins, sequences) |
 | `list_sequence_checkpoints` | Default profile | Single operation | List '[checkpoint]' sequences created by create_sequence_checkpoint, optionally only those cloned from one sequence, with their labels, timestamps, track and clip counts. Read-only. |
@@ -294,6 +295,7 @@ operation” when the tool has no enum-based mode.
 | `navigate_playhead` | Default profile | `start`, `end`, `in_point`, `out_point`, `work_area_in`, `work_area_out`, `next_edit`, `previous_edit`, `next_marker`, `previous_marker`, `step_forward`, `step_backward` | Move the active-sequence playhead to the start, end, in/out point, work-area bound, next/previous edit or marker, or step a number of frames, then read back the resulting position. Navigation only; it never changes clips. |
 | `nest_clips` | Default profile | Single operation | Unavailable on the legacy CEP backend: Premiere's documented createSubsequence API only creates a separate sequence and cannot safely replace the selected timeline clips with a nested-sequence reference. |
 | `normalize_loudness_file` | Default profile | Single operation | Create a new loudness-normalized media derivative with FFmpeg, then remeasure that exact output using EBU R128. When the remeasured file misses the target or true-peak ceiling (AAC encoding can raise the true peak), it renders again with a lowered ceiling or offset target, up to max_attempts, keeps the best attempt and reports every attempt's measured I and TP. Never overwrites the input or an existing output file. |
+| `open_extension` | Default profile | Single operation | Open an installed CEP extension panel in Premiere Pro by its extension id (see list_extensions). CEP has no panel-visibility getter, so success is committed_unverified: check the panel in Premiere. Another extension cannot be closed from here. CEP connector only. |
 | `open_in_source` | Default profile | Single operation | Open a project item in the Source Monitor for preview and trimming, and confirm it is the clip now showing. |
 | `open_project` | Default profile | Single operation | Open a Premiere Pro project file and make it the active project, verifying it is open. Other open projects stay open. |
 | `overwrite_clip` | Default profile | Single operation | Overwrite a project item onto validated timeline tracks and verify a new source placement at the requested time. Every video/audio stream the item actually has must land on the requested tracks; a picture-only or sound-only placement (for example 5.1 audio that does not fit a stereo track) is committed_unverified, not verified. Video-only and audio-only items overwrite only the receiving track, so Sequence.overwriteClip cannot smash V0 or A0 for the unused kind. |
