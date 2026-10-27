@@ -433,7 +433,9 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
             documentId: documentId, saved: ${save}, closeAccepted: closed === true ? true : (closed === false ? false : null) } });
         `);
         return withBridgeWorkflow(bridgeOptions, async () => {
-          const result = await sendCommand(script, { ...bridgeOptions, mutating: true, mutationOnTimeout: true });
+          // Closing the last project unloads the visible panel mid-command; the
+          // headless connector engine survives the close and can reply.
+          const result = await sendCommand(script, { ...bridgeOptions, mutating: true, mutationOnTimeout: true, hostEngine: "headless" });
           if (!result.success) return result;
           const data = result.data as { closeRequested?: boolean; path?: string; documentId?: string };
           if (data?.closeRequested !== true || typeof data.path !== "string" || typeof data.documentId !== "string") return result;

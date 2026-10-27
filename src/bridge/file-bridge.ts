@@ -195,6 +195,13 @@ export interface BridgeOptions {
   requireHeartbeat?: boolean;
   /** Mark a command as mutating so a queued-behind-busy timeout can prove it was not applied. */
   mutating?: boolean;
+  /**
+   * Ask the CEP connector to run this command in its headless engine. Closing
+   * the last project unloads Premiere's workspace panels, so a reply owed by
+   * the visible panel is lost. The name suffix keeps older connectors running
+   * the command as before.
+   */
+  hostEngine?: "headless";
 }
 
 export interface BridgeHelpers {
@@ -634,7 +641,7 @@ async function sendCommandUnchecked(
     if (failure) return failure;
   }
 
-  const id = randomUUID();
+  const id = randomUUID() + (options?.hostEngine === "headless" ? ".headless" : "");
   const cmdFile = join(tempDir, `cmd_${id}.jsx`);
   const stagedCmdFile = `${cmdFile}.staged`;
   const resFile = join(tempDir, `res_${id}.json`);
