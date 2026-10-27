@@ -143,8 +143,22 @@ function __restoreSecondsFromTicks(ticks, gridTicks) {
   return (parseFloat(ticks) + grid / 4) / TICKS_PER_SECOND;
 }
 
+function __itemAudioSampleRate(item) {
+  try {
+    var xml = String(item.getProjectMetadata() || "");
+    if (xml.length <= 1000000) {
+      var field = /Column\\.Intrinsic\\.MediaTimebase[^>]*>([\\s\\S]*?)<\\/[A-Za-z0-9_:.-]*Column\\.Intrinsic\\.MediaTimebase>/.exec(xml);
+      var value = field ? field[1].replace(/<[^>]*>/g, "") : "";
+      var match = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*Hz\\s*$/i.exec(value);
+      var hz = match ? Number(match[1]) : NaN;
+      if (isFinite(hz) && Math.floor(hz) === hz && hz >= 1 && hz <= 768000) return hz;
+    }
+  } catch (audioRateError) {}
+  return 48000;
+}
+
 function __restoreGridFromItem(item, mediaType) {
-  if (mediaType === 2) return TICKS_PER_SECOND / 48000;
+  if (mediaType === 2) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
     if (fps >= 1 && fps <= 240) {
@@ -157,7 +171,7 @@ function __restoreGridFromItem(item, mediaType) {
     }
     // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
     // that would make a "frame" of about a year. Use the audio sample grid.
-    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
+    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
   } catch (eGrid) {}
   return TICKS_PER_SECOND / 24;
 }
@@ -303,11 +317,11 @@ function __mediaGridTicks(item, mediaType) {
       var fps = parseFloat(item.getFootageInterpretation().frameRate);
       if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
       // Audio-only items report about 2.75e-8 fps; use the sample grid.
-      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
+      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
     } catch (eInterp) {}
     return TICKS_PER_SECOND / 24;
   }
-  return TICKS_PER_SECOND / 48000;
+  return TICKS_PER_SECOND / __itemAudioSampleRate(item);
 }
 
 // Media type to use for a caller's "all" (4) marks. On 26.5.2 an audio-only
@@ -373,7 +387,7 @@ function __requestedMarkWriteSeconds(item, mediaType, seconds) {
   var frameTicks = __requestedMarkFrameTicks(item, mediaType);
   // Audio marks floor an exact sample boundary one sample early the same way
   // (1.001 s reads back as sample 48047 on a 48 kHz item).
-  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / 48000;
+  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / __itemAudioSampleRate(item);
   if (!(frameTicks > 0)) return seconds;
   var frames = seconds * TICKS_PER_SECOND / frameTicks;
   var nearest = Math.round(frames);
@@ -1674,6 +1688,15 @@ function __qeTimecodeForTicks(seq, ticks) {
 // (they append .png / .jpg themselves). The playhead is never moved: the timecode
 // argument alone selects the frame. We verify against the filesystem rather than the
 // return value, and fall back to a one-frame Media Encoder export.
+function __sequenceMarkWriteSeconds(seq, ticks, restoring) {
+  var seconds = __ticksToSeconds(ticks);
+  if (seconds < 0) return seconds;
+  var hz = 48000;
+  try { var observedRate = __sampleRateHz(seq.getSettings().audioSampleRate); if (observedRate) hz = observedRate; } catch (sampleRateError) {}
+  var samples = seconds * hz;
+  return ((restoring ? Math.round(samples) : Math.ceil(samples)) + 0.25) / hz;
+}
+
 function __exportStillFrame(outputPath, ticks) {
   var seq = app.project.activeSequence;
   if (!seq) return { ok: false, error: "No active sequence", notes: [] };
@@ -1684,6 +1707,8 @@ function __exportStillFrame(outputPath, ticks) {
   if (!atTicks) {
     try { atTicks = seq.getPlayerPosition().ticks; } catch (e) { atTicks = "0"; }
   }
+
+  if (!isFinite(Number(atTicks)) || Number(atTicks) < 0) return { ok: false, error: "Still-frame export requires finite non-negative ticks", notes: notes };
 
   var dot = outputPath.lastIndexOf(".");
   var slash = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf("\\\\"));
@@ -1830,17 +1855,20 @@ function __exportStillFrame(outputPath, ticks) {
         // interval and the still export produces no file.
         var frameTicks = parseFloat(seq.timebase);
         var startTicks = parseFloat(atTicks);
-        if (!isFinite(frameTicks) || frameTicks <= 0 || !isFinite(startTicks)) return { ok: false, error: "Still-frame export requires a readable finite sequence frame grid and requested ticks", notes: notes };
+        if (!isFinite(frameTicks) || frameTicks <= 0 || !isFinite(startTicks) || startTicks < 0) return { ok: false, error: "Still-frame export requires a readable finite sequence frame grid and requested ticks", notes: notes };
         var ameMutatedMarks = false;
         var temporaryIn = String(savedIn), temporaryOut = String(savedOut);
         var guardedSequenceId = String(seq.sequenceID);
         if (destinationExisted || new File(outputPath).exists) amePath = qeBase + "-ame" + ext;
         try {
-          seq.setInPoint(__ticksToSeconds(startTicks));
+          seq.setInPoint(__sequenceMarkWriteSeconds(seq, startTicks, false));
           ameMutatedMarks = true;
           temporaryIn = String(seq.getInPointAsTime().ticks);
-          seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
+          seq.setOutPoint(__sequenceMarkWriteSeconds(seq, startTicks + frameTicks, false));
           temporaryOut = String(seq.getOutPointAsTime().ticks);
+          var sampleTicks = TICKS_PER_SECOND / 48000;
+          try { var captureRate = __sampleRateHz(seq.getSettings().audioSampleRate); if (captureRate) sampleTicks = TICKS_PER_SECOND / captureRate; } catch (captureRateError) {}
+          if (parseFloat(temporaryIn) < startTicks - __TICK_MATCH_TOL || parseFloat(temporaryIn) - startTicks > sampleTicks + __TICK_MATCH_TOL || parseFloat(temporaryOut) < startTicks + frameTicks - __TICK_MATCH_TOL || parseFloat(temporaryOut) - (startTicks + frameTicks) > sampleTicks + __TICK_MATCH_TOL) throw new Error("Premiere did not retain the requested one-frame export range");
           seq.exportAsMediaDirect(amePath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
@@ -1852,11 +1880,11 @@ function __exportStillFrame(outputPath, ticks) {
           if (!currentSequence || String(currentSequence.sequenceID) !== guardedSequenceId || currentIn !== temporaryIn || currentOut !== temporaryOut) {
             restorationFailure = "Media Encoder still export observed a concurrent sequence/mark change; automatic restoration was refused. Inspect current sequence marks before continuing.";
           } else {
-            try { seq.setInPoint(__ticksToSeconds(savedIn)); } catch (eIn) { restorationFailure = "Media Encoder still export could not restore sequence In point."; }
-            try { seq.setOutPoint(__ticksToSeconds(savedOut)); } catch (eOut) { restorationFailure = "Media Encoder still export could not restore sequence Out point."; }
+            try { seq.setInPoint(__sequenceMarkWriteSeconds(seq, savedIn, true)); } catch (eIn) { restorationFailure = "Media Encoder still export could not restore sequence In point."; }
+            try { seq.setOutPoint(__sequenceMarkWriteSeconds(seq, savedOut, true)); } catch (eOut) { restorationFailure = "Media Encoder still export could not restore sequence Out point."; }
             var finallyIn = null, finallyOut = null;
             try { finallyIn = String(seq.getInPointAsTime().ticks); finallyOut = String(seq.getOutPointAsTime().ticks); } catch (eFinally) {}
-            if (finallyIn === null || finallyOut === null || isNaN(parseFloat(finallyIn)) || isNaN(parseFloat(finallyOut)) || Math.abs(parseFloat(finallyIn) - parseFloat(savedIn)) > frameTicks / 1000 || Math.abs(parseFloat(finallyOut) - parseFloat(savedOut)) > frameTicks / 1000) restorationFailure = "Media Encoder still export left sequence in/out points unrestored; inspect marks or Undo before continuing.";
+            if (finallyIn === null || finallyOut === null || isNaN(parseFloat(finallyIn)) || isNaN(parseFloat(finallyOut)) || Math.abs(parseFloat(finallyIn) - parseFloat(savedIn)) > __TICK_MATCH_TOL || Math.abs(parseFloat(finallyOut) - parseFloat(savedOut)) > __TICK_MATCH_TOL) restorationFailure = "Media Encoder still export left sequence in/out points unrestored; inspect marks or Undo before continuing.";
           }
         }
         // Premiere 26.x setters can throw or silently no-op. A still file is
