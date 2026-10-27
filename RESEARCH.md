@@ -289,7 +289,7 @@ A few things exist only in the CEP panel's own runtime, never in ExtendScript, s
 
 | Call | Used by | Notes |
 |---|---|---|
-| `getExtensions(JSON.stringify([]))` | `list_extensions`, `open_extension` preflight | JSON array of installed extensions: `id`, `name`, `windowType`, `isActive`, and more |
+| `getExtensions(JSON.stringify([]))` | `list_extensions`, `open_extension` preflight | JSON array of installed extensions: `id`, `name`, `windowType`, `isActive`, and more. Measured in Premiere 26.3 (2026-10-27): `isActive` stayed `false` both for a panel just opened with `requestOpenExtension` and for the running headless connector itself, so it does not indicate visibility. |
 | `requestOpenExtension(id, params)` | `open_extension` | Works from the headless connector; no completion callback and no visibility getter, so the outcome is `committed_unverified` |
 | `closeExtension()` | not exposed | Closes only the calling extension; CEP has no way to close another one |
 

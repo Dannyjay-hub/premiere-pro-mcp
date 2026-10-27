@@ -44,7 +44,7 @@ export function getWorkspaceTools(bridgeOptions: BridgeOptions) {
     },
 
     list_extensions: {
-      description: "List the CEP extension panels installed in Premiere Pro (id, name, window type, and whether each is open). Use an id with open_extension. CEP connector only.",
+      description: "List the CEP extension panels installed in Premiere Pro (id, name, window type, and the isActive flag CEP reports). isActive does not show whether a panel is open: in Premiere 26.3 it stayed false for open panels. Use an id with open_extension. CEP connector only.",
       parameters: {},
       handler: async () => sendPanelCommand({ action: "list_extensions" }, bridgeOptions),
     },
