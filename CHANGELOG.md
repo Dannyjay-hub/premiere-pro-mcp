@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `ripple_remove_timeline_ranges` now relinks kept audio/video pieces after the ripple. The tool razors each track separately through QE, and in Premiere 26.5.2 the pieces moved after the cut came back unlinked from their partners (`getLinkedItems()` returned null), so a later move or trim split picture from sound. Before razoring it records each clip's link group from the preflight snapshot; after the moves are verified it links the pieces of one group that share a span and reads the links back. If a group does not read back linked, the result is `committed_unverified` with `relinkedGroups` and the pieces to link by hand. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
 
+- `export_frame`, `capture_frame`, `export_sequence`, and `export_sequence_job_start` now refuse an output folder that does not exist as `not_applied`, before anything runs. Premiere reports a missing folder only after the command was dispatched (`export_sequence` failed inside the render with "OutputFilePath is in a folder that doesn't exist!"; QE and Media Encoder stills just wrote nothing), so these calls ended with an unknown outcome and locked further edits until recovery was acknowledged. The other exporters already checked the folder; with this change none of them locks on a missing folder. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added
