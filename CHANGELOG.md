@@ -6,41 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-10-27
+
+### Added
+
+- `list_extensions` and `open_extension` list installed CEP panels and request opening a panel by its exact ID. Opening reports `committed_unverified` because CEP cannot read panel visibility (#917).
+- `remove_transition` removes one CEP transition by exact index or an unambiguous contained cut, then verifies the complete remaining span list (#907).
+- `add_title` accepts optional PostScript font, size, exposed fill color and normalized whole-graphic position, with per-field readback for compatible AE-authored templates. Stored font names do not establish font availability or rendered appearance (#902).
+- Effect keyframes accept host-validated numeric pairs with per-component readback. Motion Position and Anchor Point use normalized coordinates; unsupported color-key writes refuse before mutation (#903).
+- Motion Position and Anchor Point tools accept explicit pixel or normalized units. Omitted units retain pixel behavior and warn about fractional-looking values; mask-fit guidance names its units (#904).
+
 ### Fixed
 
-- `create_source_freeze_frame` no longer places a still when its Out mark did not verify. The previous handler occupancy-checked the requested duration and then called `overwriteClip`, so a no-op Out write left Premiere's default still length (often 5s) and could overwrite the next clip on that track.
+- Required tool arguments refuse before handler dispatch, preserving capability checks and reporting the missing field (#905).
+- `close_project` routes through the connector's headless engine so closing the last project does not unload the panel before its response is written (#906).
+- Structural edits refuse attached transitions or unreadable transition collections before changing clip edges or ripple suffixes (#907).
+- High-rate audio duplication reuses matching source marks and refuses unconfirmed temporary mark rewrites. Duplication restores saved marks in a safe order, corrects audio source In within half a media sample, and reports surviving copies if restoration fails. Still-export fallback verifies its temporary range and restores sample-exact sequence marks (#908).
+- Project and workspace path identity preserves POSIX case and literal backslashes while retaining Windows aliases. Export-preset fallback resolves the actual preset file; native workspace paths preserve UNC roots and encoded filename characters (#909).
+- `create_source_freeze_frame` skips placement unless the imported still's Out mark verifies, preventing the default still length from overwriting a neighboring clip (#912).
+- The After Effects connector stays idle inside Premiere's windowless Dynamic Link render engine so it cannot claim commands intended for the visible After Effects application (#913).
+- `ripple_remove_timeline_ranges` relinks kept audio/video pieces after the ripple and reads their membership back; failed relinking reports `committed_unverified` (#915).
+- Still and sequence exports refuse missing destination folders before dispatching an export (#916).
+- The CEP updater requests plain JSON from npm's `/latest` endpoint, avoiding HTTP 406 responses to the abbreviated package type (#918).
 
-### Added
-
-- Optional title font (PostScript name), size, exposed fill color and normalized whole-graphic position controls with per-field stored readback. Font and size write every text run of Premiere 26 AE-authored titles (`fontEditValue` / `fontSizeEditValue`) and refuse when the template locks font editing. Unexposed or animated controls remain unverified; unsupported alignment and Premiere-authored font/fill styling refuse before import. Stored font names do not establish font availability or rendered appearance.
-
-- Effect keyframes accept host-validated numeric pairs and read every stored component back. Motion Position and Anchor Point use normalized coordinates; unavailable lossless colour-key writes refuse before mutation.
-
-- Motion Position and Anchor Point writes accept explicit pixel or normalized units across single and batch property tools. Omitted units retain pixel behavior and warn when fractional-looking values could be mistaken for normalized coordinates; mask-fit guidance now names its units.
-
-- Required tool arguments now refuse before handler dispatch, preserving capability checks and returning the missing field name instead of crashing during script escaping. Direct effect-property inspection has the same guard.
-
-- `close_project` no longer hangs until its timeout when it closes the last open project. Closing the last project sends Premiere to its Home screen and unloads workspace panels, including the visible MCP connector panel. When that panel had claimed the close command, its reply was lost: Premiere closed the project, but the server waited out the full timeout (10 minutes in one live run) and then recorded an unknown outcome that blocked further edits. The close command is now named `cmd_<id>.headless.jsx`. The connector's headless engine, which survives the close, advertises itself in `headless-engine.json`, and the visible panel leaves these commands to it while it is live. Older connectors still match `cmd_*.jsx` and run the command as before. Reinstall the CEP connector to get the fix.
-
-- Structural edits refuse attached transitions before changing clip edges or ripple suffixes; remove_transition removes one exact CEP transition with independent span readback instead of leaving it stranded. Unreadable transition collections refuse safely.
-
-- High-rate audio duplication reuses matching source marks without rewriting them and refuses temporary mark changes while the native restore clock is unconfirmed, preserving the source range before timeline changes.
-- Clip duplication restores saved source marks in a safe order when the original In lies beyond the temporary copy Out. Unverified restoration reports surviving copy IDs and actual source clocks, including the media sample rate, so a failed request can be inspected without creating another copy.
-- Audio mark writes and restoration now derive their quarter-sample bias from readable media sample rates, avoiding extra-sample advances above 192 kHz. Audio duplication restores source In after sequence-frame placement and verifies it within half a media sample instead of half a video frame. Media Encoder still fallback places its temporary marks on or after the requested frame, checks the stored range before exporting, and restores sample-exact marks; invalid capture times refuse before changing marks.
-
-- Project identity and approved rendering-folder comparisons use the host's filesystem spelling, preserving POSIX case and literal backslashes while retaining Windows path aliases.
-- Export-preset extension lookup resolves the actual preset file before checking its format folder, and refuses relative paths, NUL characters and file paths ending in a separator.
-- Native workspace paths retain UNC and drive-root identity, encode filename characters in file URLs, and accept alternate Unicode spellings only when independent canonical lookup confirms the approved directory.
-
-- The After Effects connector no longer runs inside the windowless After Effects that Premiere starts for Dynamic Link (`aerendercore`). That engine loads CEP extensions too, so its connector claimed bridge commands meant for the visible After Effects: it answered for an empty project, carried out project changes there, and hung on anything that needs a window, such as opening a project. The connector now checks its process ancestry and `app.isRenderEngine` and stays idle in the render engine. Reinstall the After Effects connector to get the fix.
-
-- `ripple_remove_timeline_ranges` now relinks kept audio/video pieces after the ripple. The tool razors each track separately through QE, and in Premiere 26.5.2 the pieces moved after the cut came back unlinked from their partners (`getLinkedItems()` returned null), so a later move or trim split picture from sound. Before razoring it records each clip's link group from the preflight snapshot; after the moves are verified it links the pieces of one group that share a span and reads the links back. If a group does not read back linked, the result is `committed_unverified` with `relinkedGroups` and the pieces to link by hand. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
-
-- `export_frame`, `capture_frame`, `export_sequence`, and `export_sequence_job_start` now refuse an output folder that does not exist as `not_applied`, before anything runs. Premiere reports a missing folder only after the command was dispatched (`export_sequence` failed inside the render with "OutputFilePath is in a folder that doesn't exist!"; QE and Media Encoder stills just wrote nothing), so these calls ended with an unknown outcome and locked further edits until recovery was acknowledged. The other exporters already checked the folder; with this change none of them locks on a missing folder. Reported in a field test on v1.24.1 and reproduced live on v1.25.0.
-
-### Added
-
-- `list_extensions` (read-only) and `open_extension` open another CEP extension panel in Premiere Pro by its extension id, so an agent can bring up the panel it is about to drive instead of asking the user to find it under Window > Extensions. They are the first panel-side commands: the CEP connector answers them itself with `__adobe_cep__.getExtensions` and `requestOpenExtension`, through the same queue, lease, and reply file as ExtendScript commands. A panel command file holds only a marker line and a JSON payload, never the helper bootstrap every ExtendScript command starts with, so the two cannot be confused. `open_extension` refuses an id that is not installed and reports `committed_unverified`, because CEP has no panel-visibility getter. CEP cannot close another extension, so there is no `close_extension`. CEP connector only; the UXP bridge has no equivalent API.
+Connector changes require reinstalling the Premiere and After Effects CEP panels. Automated checks verify package behavior; live host behavior and rendered appearance remain separate validation boundaries.
 
 ## [1.25.0] - 2026-10-24
 
