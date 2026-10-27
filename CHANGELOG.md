@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-10-27
+
+### Added
+
+- `list_extensions` and `open_extension` list installed CEP panels and request opening a panel by its exact ID. Opening reports `committed_unverified` because CEP cannot read panel visibility (#917).
+- `remove_transition` removes one CEP transition by exact index or an unambiguous contained cut, then verifies the complete remaining span list (#907).
+- `add_title` accepts optional PostScript font, size, exposed fill color and normalized whole-graphic position, with per-field readback for compatible AE-authored templates. Stored font names do not establish font availability or rendered appearance (#902).
+- Effect keyframes accept host-validated numeric pairs with per-component readback. Motion Position and Anchor Point use normalized coordinates; unsupported color-key writes refuse before mutation (#903).
+- Motion Position and Anchor Point tools accept explicit pixel or normalized units. Omitted units retain pixel behavior and warn about fractional-looking values; mask-fit guidance names its units (#904).
+
+### Fixed
+
+- Cooperating processes retry host-lease acquisition after a failed owner read only when a fresh filesystem check confirms the owner record disappeared. Existing unreadable or malformed records still block dispatch.
+- Required tool arguments refuse before handler dispatch, preserving capability checks and reporting the missing field (#905).
+- `close_project` routes through the connector's headless engine so closing the last project does not unload the panel before its response is written (#906).
+- Structural edits refuse attached transitions or unreadable transition collections before changing clip edges or ripple suffixes (#907).
+- High-rate audio duplication reuses matching source marks and refuses unconfirmed temporary mark rewrites. Duplication restores saved marks in a safe order, corrects audio source In within half a media sample, and reports surviving copies if restoration fails. Still-export fallback verifies its temporary range and restores sample-exact sequence marks (#908).
+- Project and workspace path identity preserves POSIX case and literal backslashes while retaining Windows aliases. Export-preset fallback resolves the actual preset file; native workspace paths preserve UNC roots and encoded filename characters (#909).
+- `create_source_freeze_frame` skips placement unless the imported still's Out mark verifies, preventing the default still length from overwriting a neighboring clip (#912).
+- The After Effects connector stays idle inside Premiere's windowless Dynamic Link render engine so it cannot claim commands intended for the visible After Effects application (#913).
+- `ripple_remove_timeline_ranges` relinks kept audio/video pieces after the ripple and reads their membership back; failed relinking reports `committed_unverified` (#915).
+- Still and sequence exports refuse missing destination folders before dispatching an export (#916).
+- The CEP updater requests plain JSON from npm's `/latest` endpoint, avoiding HTTP 406 responses to the abbreviated package type (#918).
+
+Connector changes require reinstalling the Premiere and After Effects CEP panels. Automated checks verify package behavior; live host behavior and rendered appearance remain separate validation boundaries.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

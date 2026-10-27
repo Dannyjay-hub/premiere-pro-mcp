@@ -5,8 +5,10 @@
 import { createHash } from "node:crypto";
 import { expectedProjectPath, expectedHostTarget } from "./project-guard.js";
 import { undoTrackingEnabled } from "./undo-tracking.js";
+import { HOST_PATH_HELPERS } from "./host-paths.js";
 
 const HELPERS = `
+${HOST_PATH_HELPERS}
 // === MCP Bridge Helpers (auto-prepended) ===
 
 // ExtendScript (ES3) has no native JSON object. Tool scripts use __jsonStringify
@@ -143,8 +145,22 @@ function __restoreSecondsFromTicks(ticks, gridTicks) {
   return (parseFloat(ticks) + grid / 4) / TICKS_PER_SECOND;
 }
 
+function __itemAudioSampleRate(item) {
+  try {
+    var xml = String(item.getProjectMetadata() || "");
+    if (xml.length <= 1000000) {
+      var field = /Column\\.Intrinsic\\.MediaTimebase[^>]*>([\\s\\S]*?)<\\/[A-Za-z0-9_:.-]*Column\\.Intrinsic\\.MediaTimebase>/.exec(xml);
+      var value = field ? field[1].replace(/<[^>]*>/g, "") : "";
+      var match = /^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*Hz\\s*$/i.exec(value);
+      var hz = match ? Number(match[1]) : NaN;
+      if (isFinite(hz) && Math.floor(hz) === hz && hz >= 1 && hz <= 768000) return hz;
+    }
+  } catch (audioRateError) {}
+  return 48000;
+}
+
 function __restoreGridFromItem(item, mediaType) {
-  if (mediaType === 2) return TICKS_PER_SECOND / 48000;
+  if (mediaType === 2) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
     if (fps >= 1 && fps <= 240) {
@@ -157,7 +173,7 @@ function __restoreGridFromItem(item, mediaType) {
     }
     // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
     // that would make a "frame" of about a year. Use the audio sample grid.
-    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
+    if (fps > 0 && fps < 1) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
   } catch (eGrid) {}
   return TICKS_PER_SECOND / 24;
 }
@@ -303,11 +319,11 @@ function __mediaGridTicks(item, mediaType) {
       var fps = parseFloat(item.getFootageInterpretation().frameRate);
       if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / fps;
       // Audio-only items report about 2.75e-8 fps; use the sample grid.
-      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / 48000;
+      if (fps > 0 && fps < 1) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
     } catch (eInterp) {}
     return TICKS_PER_SECOND / 24;
   }
-  return TICKS_PER_SECOND / 48000;
+  return TICKS_PER_SECOND / __itemAudioSampleRate(item);
 }
 
 // Media type to use for a caller's "all" (4) marks. On 26.5.2 an audio-only
@@ -373,7 +389,7 @@ function __requestedMarkWriteSeconds(item, mediaType, seconds) {
   var frameTicks = __requestedMarkFrameTicks(item, mediaType);
   // Audio marks floor an exact sample boundary one sample early the same way
   // (1.001 s reads back as sample 48047 on a 48 kHz item).
-  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / 48000;
+  if (!(frameTicks > 0) && mediaType === 2) frameTicks = TICKS_PER_SECOND / __itemAudioSampleRate(item);
   if (!(frameTicks > 0)) return seconds;
   var frames = seconds * TICKS_PER_SECOND / frameTicks;
   var nearest = Math.round(frames);
@@ -627,13 +643,19 @@ function __clipSourceFrameSize(clip, seq) {
 }
 
 // Premiere's scripting API stores Motion Position and Anchor Point normalized
-// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools take pixels,
-// so scale before writing. Writing pixels directly threw clips ~1000 frame
+// to the frame (0.5, 0.5 is the centre; verified on 25.2). Tools default to pixels,
+// with explicit normalized fractions also accepted. Writing pixels directly threw clips ~1000 frame
 // widths off screen. The current value is not used to guess the space: a clip
 // already damaged that way reads back in the thousands.
-function __motionPointScale(prop, frame) {
+function __motionPointScale(prop, frame, units) {
   if (!(frame.width > 0 && frame.height > 0)) return null;
-  return { x: 1 / frame.width, y: 1 / frame.height, normalized: true };
+  return { x: units === "normalized" ? 1 : 1 / frame.width, y: units === "normalized" ? 1 : 1 / frame.height, normalized: true };
+}
+
+function __pointUnitsWarning(x, y, unitsProvided, seq) {
+  var frame = __sequenceFrameSize(seq);
+  if (!unitsProvided && x !== null && y !== null && x >= 0 && x <= 1 && y >= 0 && y <= 1 && frame.width > 2) return "These values look normalized, but omitted units means pixels. Pass units: normalized to use fractions of the frame.";
+  return null;
 }
 
 // Premiere renames Motion "Scale" to "Scale Height" once a clip has been set
@@ -1668,6 +1690,15 @@ function __qeTimecodeForTicks(seq, ticks) {
 // (they append .png / .jpg themselves). The playhead is never moved: the timecode
 // argument alone selects the frame. We verify against the filesystem rather than the
 // return value, and fall back to a one-frame Media Encoder export.
+function __sequenceMarkWriteSeconds(seq, ticks, restoring) {
+  var seconds = __ticksToSeconds(ticks);
+  if (seconds < 0) return seconds;
+  var hz = 48000;
+  try { var observedRate = __sampleRateHz(seq.getSettings().audioSampleRate); if (observedRate) hz = observedRate; } catch (sampleRateError) {}
+  var samples = seconds * hz;
+  return ((restoring ? Math.round(samples) : Math.ceil(samples)) + 0.25) / hz;
+}
+
 function __exportStillFrame(outputPath, ticks) {
   var seq = app.project.activeSequence;
   if (!seq) return { ok: false, error: "No active sequence", notes: [] };
@@ -1679,10 +1710,16 @@ function __exportStillFrame(outputPath, ticks) {
     try { atTicks = seq.getPlayerPosition().ticks; } catch (e) { atTicks = "0"; }
   }
 
+  if (!isFinite(Number(atTicks)) || Number(atTicks) < 0) return { ok: false, error: "Still-frame export requires finite non-negative ticks", notes: notes };
+
   var dot = outputPath.lastIndexOf(".");
   var slash = Math.max(outputPath.lastIndexOf("/"), outputPath.lastIndexOf("\\\\"));
   var ext = dot > slash ? outputPath.substring(dot).toLowerCase() : "";
   if (ext === "") { outputPath = outputPath + ".png"; ext = ".png"; }
+  // QE and Media Encoder report a missing folder only as an empty result after the
+  // export ran, so check it before anything is attempted.
+  var outputFolder = new File(outputPath).parent;
+  if (outputFolder && !outputFolder.exists) return { ok: false, notApplied: true, error: "Output folder does not exist: " + outputFolder.fsName + "; nothing was exported. Create the folder or choose an existing one.", notes: [] };
   var basePath = outputPath.substring(0, outputPath.length - ext.length);
   var wantJpeg = ext === ".jpg" || ext === ".jpeg";
   var qeCanWrite = wantJpeg || ext === ".png";
@@ -1824,17 +1861,20 @@ function __exportStillFrame(outputPath, ticks) {
         // interval and the still export produces no file.
         var frameTicks = parseFloat(seq.timebase);
         var startTicks = parseFloat(atTicks);
-        if (!isFinite(frameTicks) || frameTicks <= 0 || !isFinite(startTicks)) return { ok: false, error: "Still-frame export requires a readable finite sequence frame grid and requested ticks", notes: notes };
+        if (!isFinite(frameTicks) || frameTicks <= 0 || !isFinite(startTicks) || startTicks < 0) return { ok: false, error: "Still-frame export requires a readable finite sequence frame grid and requested ticks", notes: notes };
         var ameMutatedMarks = false;
         var temporaryIn = String(savedIn), temporaryOut = String(savedOut);
         var guardedSequenceId = String(seq.sequenceID);
         if (destinationExisted || new File(outputPath).exists) amePath = qeBase + "-ame" + ext;
         try {
-          seq.setInPoint(__ticksToSeconds(startTicks));
+          seq.setInPoint(__sequenceMarkWriteSeconds(seq, startTicks, false));
           ameMutatedMarks = true;
           temporaryIn = String(seq.getInPointAsTime().ticks);
-          seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
+          seq.setOutPoint(__sequenceMarkWriteSeconds(seq, startTicks + frameTicks, false));
           temporaryOut = String(seq.getOutPointAsTime().ticks);
+          var sampleTicks = TICKS_PER_SECOND / 48000;
+          try { var captureRate = __sampleRateHz(seq.getSettings().audioSampleRate); if (captureRate) sampleTicks = TICKS_PER_SECOND / captureRate; } catch (captureRateError) {}
+          if (parseFloat(temporaryIn) < startTicks - __TICK_MATCH_TOL || parseFloat(temporaryIn) - startTicks > sampleTicks + __TICK_MATCH_TOL || parseFloat(temporaryOut) < startTicks + frameTicks - __TICK_MATCH_TOL || parseFloat(temporaryOut) - (startTicks + frameTicks) > sampleTicks + __TICK_MATCH_TOL) throw new Error("Premiere did not retain the requested one-frame export range");
           seq.exportAsMediaDirect(amePath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
@@ -1846,11 +1886,11 @@ function __exportStillFrame(outputPath, ticks) {
           if (!currentSequence || String(currentSequence.sequenceID) !== guardedSequenceId || currentIn !== temporaryIn || currentOut !== temporaryOut) {
             restorationFailure = "Media Encoder still export observed a concurrent sequence/mark change; automatic restoration was refused. Inspect current sequence marks before continuing.";
           } else {
-            try { seq.setInPoint(__ticksToSeconds(savedIn)); } catch (eIn) { restorationFailure = "Media Encoder still export could not restore sequence In point."; }
-            try { seq.setOutPoint(__ticksToSeconds(savedOut)); } catch (eOut) { restorationFailure = "Media Encoder still export could not restore sequence Out point."; }
+            try { seq.setInPoint(__sequenceMarkWriteSeconds(seq, savedIn, true)); } catch (eIn) { restorationFailure = "Media Encoder still export could not restore sequence In point."; }
+            try { seq.setOutPoint(__sequenceMarkWriteSeconds(seq, savedOut, true)); } catch (eOut) { restorationFailure = "Media Encoder still export could not restore sequence Out point."; }
             var finallyIn = null, finallyOut = null;
             try { finallyIn = String(seq.getInPointAsTime().ticks); finallyOut = String(seq.getOutPointAsTime().ticks); } catch (eFinally) {}
-            if (finallyIn === null || finallyOut === null || isNaN(parseFloat(finallyIn)) || isNaN(parseFloat(finallyOut)) || Math.abs(parseFloat(finallyIn) - parseFloat(savedIn)) > frameTicks / 1000 || Math.abs(parseFloat(finallyOut) - parseFloat(savedOut)) > frameTicks / 1000) restorationFailure = "Media Encoder still export left sequence in/out points unrestored; inspect marks or Undo before continuing.";
+            if (finallyIn === null || finallyOut === null || isNaN(parseFloat(finallyIn)) || isNaN(parseFloat(finallyOut)) || Math.abs(parseFloat(finallyIn) - parseFloat(savedIn)) > __TICK_MATCH_TOL || Math.abs(parseFloat(finallyOut) - parseFloat(savedOut)) > __TICK_MATCH_TOL) restorationFailure = "Media Encoder still export left sequence in/out points unrestored; inspect marks or Undo before continuing.";
           }
         }
         // Premiere 26.x setters can throw or silently no-op. A still file is
@@ -2069,7 +2109,7 @@ function __isDirectory(path) {
 // Open projects (Premiere keeps several open; app.project is the active one).
 // Paths compare case-insensitively with forward slashes.
 function __normProjectPath(path) {
-  return String(path || "").split(String.fromCharCode(92)).join("/").toLowerCase();
+  return __hostPathKey(path);
 }
 function __openProjects() {
   var list = [];
@@ -2388,6 +2428,12 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label, validatedPa
       } catch (eLinkedRead) { return __error("Linked membership could not be verified; nothing was changed. " + String(eLinkedRead)); }
     }
   }
+  if (label === "trim" || label === "duration change") {
+    var transitionScopes = [{ type: target.trackType, index: target.trackIndex, start: Number(target.clip.start.ticks), end: Number(target.clip.end.ticks) }];
+    for (var tpi = 0; tpi < partners.length; tpi++) transitionScopes.push({ type: partners[tpi].trackType, index: partners[tpi].trackIndex, start: Number(partners[tpi].clip.start.ticks), end: Number(partners[tpi].clip.end.ticks) });
+    var transitionFailure = __transitionEditGuard(app.project.activeSequence, transitionScopes);
+    if (transitionFailure) return transitionFailure;
+  }
   // Each clip's position when it was checked. A partner is edited only if it is
   // still there when its turn comes: if Premiere moved it while writing the
   // main clip, applying the offset again would double it and still read back
@@ -2482,12 +2528,45 @@ function __runLinkedEdit(target, nodeId, includeLinked, edit, label, validatedPa
     edited.push({ nodeId: String(partner.clip.nodeId), trackType: partner.trackType, trackIndex: partner.trackIndex, verified: partnerVerified });
   }
   main.data.linkedPartnersEdited = edited;
+  if (label === "trim" || label === "duration change") main.data.transitionsAffected = [];
   if (!verified) {
     main.data.verified = false;
     main.data.outcome = "committed_unverified";
     if (!main.data.warning) main.data.warning = "The " + label + " was applied, but not every linked clip's result could be verified; inspect them.";
   }
   return __result(main.data);
+}
+
+// Structural edits refuse rather than guessing how a transition follows an edge.
+function __transitionSnapshot(track) {
+  var list = track && track.transitions;
+  if (!list || typeof list.numItems !== "number" || !isFinite(list.numItems) || list.numItems < 0 || Math.floor(list.numItems) !== list.numItems || list.numItems > 10000) throw new Error("Transition collection is unreadable or exceeds 10000 entries");
+  var result = [];
+  for (var i = 0; i < list.numItems; i++) {
+    var item = list[i], start = item && item.start ? Number(item.start.ticks) : NaN, end = item && item.end ? Number(item.end.ticks) : NaN;
+    if (!item || !item.start || !item.end || !/^\\d+$/.test(String(item.start.ticks)) || !/^\\d+$/.test(String(item.end.ticks)) || !isFinite(start) || !isFinite(end) || start < 0 || end <= start) throw new Error("Transition " + i + " has unreadable start/end ticks");
+    result.push({ index: i, startTicks: String(item.start.ticks), endTicks: String(item.end.ticks), nodeId: item.nodeId ? String(item.nodeId) : null });
+  }
+  return result;
+}
+function __transitionEditGuard(seq, scopes) {
+  var affected = [], seen = {};
+  try {
+    for (var si = 0; si < scopes.length; si++) {
+      var scope = scopes[si], tracks = scope.type === "video" ? seq.videoTracks : seq.audioTracks;
+      if (!tracks || !tracks[scope.index] || !isFinite(scope.start) || !(scope.end >= scope.start)) throw new Error("Edited track or span is unreadable");
+      var entries = __transitionSnapshot(tracks[scope.index]);
+      for (var ti = 0; ti < entries.length; ti++) {
+        var entry = entries[ti], key = scope.type + ":" + scope.index + ":" + ti;
+        if (Number(entry.endTicks) < scope.start || Number(entry.startTicks) > scope.end || seen[key]) continue;
+        seen[key] = true; entry.trackType = scope.type; entry.trackIndex = scope.index; affected.push(entry);
+      }
+    }
+  } catch (transitionReadError) {
+    return __error("Transition safety could not be inspected; no edit was attempted. Inspect the track in Premiere before retrying. " + String(transitionReadError), { mutationOutcome: "not_applied", timelineChanged: false, mutationAttempted: false, transitionsAffected: null });
+  }
+  if (affected.length) return __error("The edit could strand an attached transition. Use remove_transition for the listed indices, or edit the transition in Premiere, then inspect and retry; nothing changed.", { mutationOutcome: "not_applied", timelineChanged: false, mutationAttempted: false, transitionsAffected: affected });
+  return null;
 }
 
 // Start/end keys of a track's transitions, so readback can tell a transition

@@ -324,15 +324,15 @@ describe("issue #9 — frame export uses the QE DOM and verifies the file landed
     });
   }
 
-  it("sets and restores the AME one-frame range in seconds", () => {
+  it("sets and restores the AME one-frame range in sample-aware seconds", () => {
     const helpers = getHelpersSource();
 
     // Sequence.setInPoint/setOutPoint accept seconds. Passing ticks here made
     // the fallback target an enormous range and prevented a still from landing.
-    expect(helpers).toContain("seq.setInPoint(__ticksToSeconds(startTicks))");
-    expect(helpers).toContain("seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks))");
-    expect(helpers).toContain("seq.setInPoint(__ticksToSeconds(savedIn))");
-    expect(helpers).toContain("seq.setOutPoint(__ticksToSeconds(savedOut))");
+    expect(helpers).toContain("seq.setInPoint(__sequenceMarkWriteSeconds(seq, startTicks, false))");
+    expect(helpers).toContain("seq.setOutPoint(__sequenceMarkWriteSeconds(seq, startTicks + frameTicks, false))");
+    expect(helpers).toContain("seq.setInPoint(__sequenceMarkWriteSeconds(seq, savedIn, true))");
+    expect(helpers).toContain("seq.setOutPoint(__sequenceMarkWriteSeconds(seq, savedOut, true))");
     expect(helpers).not.toContain("seq.setInPoint(String(startTicks))");
     // If either in or out cannot be read, refuse the one-frame mutation rather
     // than leaving the sequence pinned to the still-export range.

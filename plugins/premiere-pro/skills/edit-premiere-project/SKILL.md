@@ -171,8 +171,9 @@ never replace a complete metadata packet just to apply a facility table.
 - For a freeze frame from a source-media time (not a sequence time), use
   `create_source_freeze_frame` when it is registered. It decodes the frame with
   local ffmpeg, never overwrites an existing file or an occupied timeline range,
-  and can add Motion Scale/Position punch-in keyframes. Check its `completed` and
-  `unverified` lists; an imported still remains if a later step fails.
+  and skips `place` unless the still Out mark verifies. It can add Motion
+  Scale/Position punch-in keyframes. Check its `completed` and `unverified`
+  lists; an imported still remains if a later step fails.
 
 ## Clip metadata and XMP
 
