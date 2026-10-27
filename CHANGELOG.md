@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Motion Position and Anchor Point writes accept explicit pixel or normalized units across single and batch property tools. Omitted units retain pixel behavior and warn when fractional-looking values could be mistaken for normalized coordinates; mask-fit guidance now names its units.
 
+- Required tool arguments now refuse before handler dispatch, preserving capability checks and returning the missing field name instead of crashing during script escaping. Direct effect-property inspection has the same guard.
+
 ## [1.25.0] - 2026-10-24
 
 ### Added

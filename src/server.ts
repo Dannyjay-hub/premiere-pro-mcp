@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { requiredArgumentError } from "./security/required-arguments.js";
 import {
   type CallToolResult,
   fromJsonSchema,
@@ -406,7 +407,16 @@ export function collectTools(
       toolPacks,
     }),
   );
-  return tools;
+  // Clone definitions: cached static tools must not retain another caller's authority.
+  return Object.fromEntries(Object.entries(tools).map(([name, tool]) => {
+    const handler = guardToolHandler(name, async (args: unknown) => {
+      const refused = requiredArgumentError(tool.parameters, args);
+      return refused ?? tool.handler(args);
+    }, capabilities);
+    // Source audits inspect handler text; execution still uses the guarded function.
+    Object.defineProperty(handler, "toString", { value: () => tool.handler.toString() });
+    return [name, { ...tool, handler }];
+  }));
 }
 
 export interface ServerOptions {

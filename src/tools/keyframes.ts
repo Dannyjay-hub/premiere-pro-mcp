@@ -1,3 +1,4 @@
+import { requiredArgumentError } from "../security/required-arguments.js";
 import { buildToolScript, escapeForExtendScript } from "../bridge/script-builder.js";
 import { sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 
@@ -79,6 +80,8 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         required: ["node_id", "effect_name"],
       },
       handler: async (args: { node_id: string; effect_name: string }) => {
+        const refused = requiredArgumentError({ required: ["node_id", "effect_name"], properties: { node_id: { type: "string" }, effect_name: { type: "string" } } }, args);
+        if (refused) return refused;
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
