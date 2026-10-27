@@ -147,7 +147,7 @@ function linkedFakeTimeline(options: { pairs: Array<{ id: string; start: number;
       if (property === "numItems") return target.length;
       return Reflect.get(target, property, receiver);
     } });
-    return { clips, isLocked: () => false };
+    return { clips, transitions: { numItems: 0 }, isLocked: () => false };
   };
   const qeTrack = (type: "video" | "audio") => ({
     isLocked: () => false,

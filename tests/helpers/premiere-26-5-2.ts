@@ -141,6 +141,7 @@ export function createHost2652() {
   }
   const makeTrack = (kind: "Video" | "Audio", index = 0) => ({
     id: `${kind.toLowerCase()}-${index}`, name: `${kind} ${index + 1}`,
+    transitions: { numItems: 0 },
     clips: collection(() => (kind === "Video" ? video : audio).filter((clip) => clip.trackIndex === index)), isLocked: () => false, isMuted: () => false, isTargeted: () => true,
     overwriteClip(item: any, ticks: string | HostTime) { return addClip(item, { startSeconds: Number(typeof ticks === "object" ? ticks.ticks : ticks) / TICKS, mediaType: kind, trackIndex: index }); },
     insertClip(item: any, ticks: string | HostTime) { return addClip(item, { startSeconds: Number(typeof ticks === "object" ? ticks.ticks : ticks) / TICKS, mediaType: kind, trackIndex: index }); },
