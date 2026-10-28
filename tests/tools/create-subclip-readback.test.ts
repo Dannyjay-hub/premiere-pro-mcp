@@ -90,6 +90,42 @@ describe("create_subclip reads the stored range back", () => {
     expect((await run({ item_id: "src-1", name: "Tone", in_seconds: 1.001, out_seconds: 4.004 })).data).toMatchObject({ outcome: "committed_unverified", verified: false });
   });
 
+  it("subtracts the media start timecode a BWF WAV carries before comparing", async () => {
+    // Live 26.5.2: an Envato WAV with bext time_reference 405000 at 44.1 kHz starts at 9.1837 s, so a
+    // subclip from the file's first sample stores 00:00:09:08100 and every point's offset child holds
+    // that start in ticks; the stored range is still 0-13.667 s of the file.
+    const startTicks = 2332800000000;
+    const withOffset = (column: string, timecode: string) => point(column, timecode, FRAME_25)
+      .replace("</rdf:value>", `</rdf:value><premierePrivateProjectMetaData:offset>${startTicks}</premierePrivateProjectMetaData:offset>`);
+    const audio = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta><rdf:RDF><rdf:Description>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase>44100 Hz</premierePrivateProjectMetaData:Column.Intrinsic.MediaTimebase>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.MediaStart>00:00:09:08100</premierePrivateProjectMetaData:Column.Intrinsic.MediaStart>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.VideoInPoint rdf:parseType="Resource"><rdf:value/><premierePrivateProjectMetaData:offset>${startTicks}</premierePrivateProjectMetaData:offset></premierePrivateProjectMetaData:Column.Intrinsic.VideoInPoint>`
+      + `<premierePrivateProjectMetaData:Column.Intrinsic.VideoOutPoint rdf:parseType="Resource"><rdf:value/><premierePrivateProjectMetaData:offset>${startTicks}</premierePrivateProjectMetaData:offset></premierePrivateProjectMetaData:Column.Intrinsic.VideoOutPoint>`
+      + withOffset("AudioInPoint", "00:00:09:08100")
+      + withOffset("AudioOutPoint", "00:00:22:37499")
+      + `</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
+    host(() => audio);
+    const result = await run({ item_id: "src-1", name: "M intro", in_seconds: 0, out_seconds: 41 / 3 });
+    expect(result.data).toMatchObject({ outcome: "verified", verified: true, observedInTimecode: "00:00:09:08100", observedOutTimecode: "00:00:22:37499" });
+    expect(result.data?.observedInSeconds).toBeCloseTo(0, 6);
+    expect(result.data?.observedOutSeconds).toBeCloseTo(41 / 3, 4);
+    expect(result.data?.mediaStartSeconds).toBeCloseTo(405000 / 44100, 6);
+  });
+
+  it("reads a camera clip that starts at 01:00:00:00 relative to the file", async () => {
+    const hour = String(3600 * TICKS);
+    const camera = packet("01:00:02:00", "01:00:03:24", FRAME_25)
+      .replace(/<\/rdf:value>/g, `</rdf:value><premierePrivateProjectMetaData:offset>${hour}</premierePrivateProjectMetaData:offset>`);
+    host(() => camera);
+    const result = await run({ item_id: "src-1", name: "Cam", in_seconds: 2, out_seconds: 4 });
+    expect(result.data).toMatchObject({ outcome: "verified", verified: true, observedInSeconds: 2, mediaStartSeconds: 3600 });
+    expect(result.data?.observedOutSeconds).toBeCloseTo(4, 9);
+    // Without a media start the receipt carries no mediaStartSeconds.
+    host(() => packet("00:00:02:00", "00:00:03:24", FRAME_25));
+    expect((await run({ item_id: "src-1", name: "Cam", in_seconds: 2, out_seconds: 4 })).data).not.toHaveProperty("mediaStartSeconds");
+  });
+
   it("counts drop-frame timecode at 29.97", async () => {
     host(() => packet("00;01;00;02", "00;01;01;01", FRAME_2997));
     const result = await run({ item_id: "src-1", name: "DF", in_seconds: 60.06, out_seconds: 61.06 });

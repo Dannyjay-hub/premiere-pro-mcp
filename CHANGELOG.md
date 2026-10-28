@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `create_subclip` reads a subclip's stored range relative to the start of the file, so subclips of media with a start timecode (a BWF WAV's `time_reference`, a camera clip at 01:00:00:00) verify instead of reporting a range off by the start timecode. The receipt reports `mediaStartSeconds` when the media has one.
+- `overwrite_clip` reports `sourceInShift` and a note when Premiere moves the placed clip's source In to a sequence frame, for example an audio subclip cut between frames that lands up to one frame early against its picture.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added

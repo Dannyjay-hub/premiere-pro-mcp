@@ -971,6 +971,91 @@ function __nodeIdOf(item) {
   }
 }
 
+// Read the in/out range a subclip (or a marked clip) stores in its project
+// metadata. A soft-boundary subclip's getInPoint/getOutPoint read the whole
+// media on Premiere 26.5, so the range comes from the metadata instead. Each
+// point holds an rdf:value timecode and a frame_rate child in ticks per frame;
+// the Out timecode names the last frame (or sample) and is inclusive. The
+// timecodes are in the media's own timecode space: a file with a start
+// timecode (a BWF time_reference, a camera clip starting at 01:00:00:00)
+// reads that start plus the range, and each point's offset child holds the
+// start in ticks, so it is subtracted to give seconds from the file's start.
+// Returns null when the range cannot be read.
+function __subclipStoredRange(metadata) {
+  if (!metadata) return null;
+  function __subclipOffsetTicks(body) {
+    var offset = body.match(/offset>\\s*(-?\\d+)\\s*</);
+    var ticks = offset ? parseFloat(offset[1]) : 0;
+    return isFinite(ticks) ? ticks : 0;
+  }
+  function __subclipTimecodeFrames(timecode, frameTicks) {
+    var parts = String(timecode).match(/^\\s*(\\d+)[:;.](\\d+)[:;.](\\d+)([:;.])(\\d+)\\s*$/);
+    if (!parts) return NaN;
+    var nominal = Math.round(TICKS_PER_SECOND / frameTicks);
+    var hours = parseInt(parts[1], 10);
+    var minutes = parseInt(parts[2], 10);
+    var frames = ((hours * 60 + minutes) * 60 + parseInt(parts[3], 10)) * nominal + parseInt(parts[5], 10);
+    if (parts[4] === ";" && (nominal === 30 || nominal === 60)) {
+      var totalMinutes = hours * 60 + minutes;
+      frames -= (nominal / 15) * (totalMinutes - Math.floor(totalMinutes / 10));
+    }
+    return frames;
+  }
+  function __subclipPoint(xml, column) {
+    var tagName = "Column.Intrinsic." + column;
+    var openStart = xml.indexOf(tagName);
+    if (openStart < 0) return null;
+    var openEnd = xml.indexOf(">", openStart);
+    if (openEnd < 0 || xml.charAt(openEnd - 1) === "/") return null;
+    var closeStart = xml.indexOf(tagName, openEnd);
+    if (closeStart < 0) return null;
+    var body = xml.substring(openEnd + 1, closeStart);
+    var value = body.match(/<rdf:value>\\s*([^<]*?)\\s*<\\/rdf:value>/);
+    var rate = body.match(/frame_rate>\\s*(\\d+)\\s*</);
+    if (!value || !rate) return null;
+    var frameTicks = parseFloat(rate[1]);
+    if (!isFinite(frameTicks) || frameTicks <= 0) return null;
+    var frames = __subclipTimecodeFrames(value[1], frameTicks);
+    if (!isFinite(frames)) return null;
+    return { frames: frames, frameTicks: frameTicks, timecode: value[1], offsetTicks: __subclipOffsetTicks(body) };
+  }
+  // Audio-only subclips keep empty Video points; their Audio points count
+  // samples in the last field (00:00:04:00191) and the frame_rate child is
+  // only the 25 fps display rate, so the sample rate comes from MediaTimebase.
+  function __subclipAudioPoint(xml, column) {
+    var base = xml.match(/Column\\.Intrinsic\\.MediaTimebase>\\s*([0-9.]+)\\s*Hz\\s*</);
+    var hz = base ? parseFloat(base[1]) : NaN;
+    if (!isFinite(hz) || hz <= 0 || Math.floor(hz) !== hz) return null;
+    var tagName = "Column.Intrinsic." + column;
+    var openStart = xml.indexOf(tagName);
+    if (openStart < 0) return null;
+    var openEnd = xml.indexOf(">", openStart);
+    if (openEnd < 0 || xml.charAt(openEnd - 1) === "/") return null;
+    var closeStart = xml.indexOf(tagName, openEnd);
+    if (closeStart < 0) return null;
+    var body = xml.substring(openEnd + 1, closeStart);
+    var value = body.match(/<rdf:value>\\s*(\\d+):(\\d{2}):(\\d{2}):(\\d+)\\s*<\\/rdf:value>/);
+    if (!value || parseInt(value[4], 10) >= hz) return null;
+    var samples = ((parseInt(value[1], 10) * 60 + parseInt(value[2], 10)) * 60 + parseInt(value[3], 10)) * hz + parseInt(value[4], 10);
+    return { frames: samples, frameTicks: TICKS_PER_SECOND / hz, timecode: value[1] + ":" + value[2] + ":" + value[3] + ":" + value[4], offsetTicks: __subclipOffsetTicks(body) };
+  }
+  var inPoint = __subclipPoint(metadata, "VideoInPoint");
+  var outPoint = __subclipPoint(metadata, "VideoOutPoint");
+  if (!inPoint && !outPoint) {
+    inPoint = __subclipAudioPoint(metadata, "AudioInPoint");
+    outPoint = __subclipAudioPoint(metadata, "AudioOutPoint");
+  }
+  if (!inPoint || !outPoint) return null;
+  return {
+    inSeconds: __ticksToSeconds(inPoint.frames * inPoint.frameTicks - inPoint.offsetTicks),
+    outSeconds: __ticksToSeconds((outPoint.frames + 1) * outPoint.frameTicks - outPoint.offsetTicks),
+    inTimecode: inPoint.timecode,
+    outTimecode: outPoint.timecode,
+    frameSeconds: __ticksToSeconds(Math.max(inPoint.frameTicks, outPoint.frameTicks)),
+    mediaStartSeconds: __ticksToSeconds(inPoint.offsetTicks)
+  };
+}
+
 function __findProjectItem(nodeIdOrName, rootItem) {
   if (!rootItem) rootItem = app.project.rootItem;
   var wantedId = String(nodeIdOrName);
