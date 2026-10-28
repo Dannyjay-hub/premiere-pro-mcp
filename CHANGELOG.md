@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `get_caption_style_guidance` accepts `keyword_highlight` and returns per-word colour steps, manual Graphics and Titles > Upgrade Caption to Graphic steps, and render-verification guidance. Premiere exposes no documented API for caption styles, per-word caption colour, or the upgrade command, so nothing is applied.
+- `create_caption_track` import receipts report `styleApplied: false` and point to the manual styling steps.
+- The platform capability report lists Upgrade Caption to Graphic and per-word caption colour as UI-only.
+
+### Fixed
+
+- Caption style guidance no longer names `export_frame` or review-frame exports as caption render evidence. Export Frame omits caption tracks on recent Premiere releases; guidance now routes to playback or a short burn-in `export_sequence`.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
