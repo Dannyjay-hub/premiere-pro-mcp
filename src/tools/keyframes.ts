@@ -131,7 +131,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             effect: comp.displayName,
             matchName: comp.matchName,
             trackType: result.trackType,
-            builtInComponent: __isBuiltInComponent(comp),
+            builtInComponent: result.trackType === "audio" ? __isIntrinsicAudioComponent(comp) : __isBuiltInComponent(comp),
             properties: props
           });
         `);
@@ -219,7 +219,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found: ${escapeForExtendScript(args.property_name)}");
 
           var requestedValue = ${requestedValue};
-          var builtInComponent = __isBuiltInComponent(comp);
+          var builtInComponent = result.trackType === "audio" ? __isIntrinsicAudioComponent(comp) : __isBuiltInComponent(comp);
           var scaleFields = { trackType: result.trackType, builtInComponent: builtInComponent, effectDisplayName: String(comp.displayName), matchName: __componentMatchName(comp), propertyDisplayName: String(prop.displayName) };
           function __withScaleFields(data) {
             for (var scaleKey in scaleFields) if (scaleFields.hasOwnProperty(scaleKey)) data[scaleKey] = scaleFields[scaleKey];

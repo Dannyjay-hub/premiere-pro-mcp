@@ -70,7 +70,7 @@ function host(trackType: "audio" | "video", components: Array<{ displayName: str
 function highpass(cutoff = 0.25, clamp = false) {
   const bypass = parameter("Bypass", false);
   const cutoffParam = parameter("Cutoff", cutoff, clamp);
-  return { component: { displayName: "Highpass", matchName: "AudioFX Highpass", properties: [bypass, cutoffParam] }, cutoffParam };
+  return { component: { displayName: "Highpass", matchName: "Internal Highpass", properties: [bypass, cutoffParam] }, cutoffParam };
 }
 
 const keyframes = getKeyframeTools(bridge);
@@ -100,7 +100,7 @@ describe("audio effect parameter scale on get_effect_properties", () => {
   it("does not claim a scale for audio effect values outside 0-1 and gives other effects no Highpass guidance", async () => {
     const threshold = parameter("Threshold", 1);
     const raw = parameter("Raw Plug-in Value", 440);
-    host("audio", [{ displayName: "Single-band Compressor", matchName: "ffbe710f-cd69-4139-ad26-65603616d9d4", properties: [threshold, raw] }]);
+    host("audio", [{ displayName: "Single-band Compressor", matchName: "2da3e2bc-5005-481c-bbeb-7689d3169edf", properties: [threshold, raw] }]);
     const result = await keyframes.get_effect_properties.handler({ node_id: "clip", effect_name: "Single-band Compressor" }) as any;
     expect(result.data.properties[0]).toMatchObject({ valueScale: "normalized_0_1" });
     expect(result.data.properties[0]).not.toHaveProperty("measuredGuidance");
@@ -146,6 +146,63 @@ describe("audio effect parameter scale on get_effect_properties", () => {
   });
 });
 
+// Component identities read live from Premiere 26.5.2 (macOS, en-US). Effects
+// share the "Internal " prefix with the intrinsics or use GUID match names.
+const LIVE_EFFECTS = [
+  { displayName: "Highpass", matchName: "Internal Highpass", property: "Cutoff", value: 0.25 },
+  { displayName: "Simple Parametric EQ", matchName: "Internal Parameteric EQ", property: "Boost", value: 0.5 },
+  { displayName: "DeEsser", matchName: "ffbe710f-cd69-4139-ad26-65603616d9d4", property: "Threshold", value: 0.625 },
+  { displayName: "Single-band Compressor", matchName: "2da3e2bc-5005-481c-bbeb-7689d3169edf", property: "Ratio", value: 0 },
+  { displayName: "Hard Limiter", matchName: "e0b23f05-f1a7-4ef7-9b50-7ec3e3002058", property: "Release", value: 0.375 },
+];
+
+describe("live 26.5.2 audio component identities", () => {
+  it.each(LIVE_EFFECTS)("labels $displayName ($matchName) as a normalized audio effect", async ({ displayName, matchName, property, value }) => {
+    host("audio", [{ displayName, matchName, properties: [parameter("Bypass", false), parameter(property, value)] }]);
+    const result = await keyframes.get_effect_properties.handler({ node_id: "clip", effect_name: displayName }) as any;
+    expect(result.data).toMatchObject({ matchName, builtInComponent: false, parameterScale: { kind: "normalized_0_1" } });
+    expect(result.data.warnings).toContain(AUDIO_EFFECT_SCALE_WARNING);
+    expect(result.data.properties[1]).toMatchObject({ displayName: property, value, valueScale: "normalized_0_1" });
+  });
+
+  it.each(LIVE_EFFECTS)("refuses 80 for $displayName before writing", async ({ displayName, matchName, property, value }) => {
+    const target = parameter(property, value, true);
+    host("audio", [{ displayName, matchName, properties: [parameter("Bypass", false), target] }]);
+    const result = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: matchName, property_name: property, value: 80 }) as any;
+    expect(result).toMatchObject({ success: false, data: { outcome: "not_applied", builtInComponent: false, matchName } });
+    expect(target.setValue).not.toHaveBeenCalled();
+  });
+
+  it("keeps the live intrinsics built in, with Volume Level in dB", async () => {
+    host("audio", [
+      { displayName: "Volume", matchName: "Internal Volume Stereo", properties: [parameter("Bypass", false), parameter("Level", 0.1778279410038923)] },
+      { displayName: "Channel Volume", matchName: "Internal Channel Volume Stereo", properties: [parameter("Left", 0.1778279410038923)] },
+      { displayName: "Balance", matchName: "Internal Audio Balance", properties: [parameter("Balance", 0)] },
+      { displayName: "Panner", matchName: "", properties: [parameter("Pan", 0)] },
+      { displayName: "Highpass", matchName: "Internal Highpass", properties: [parameter("Cutoff", 0.25)] },
+    ]);
+    const volume = await keyframes.get_effect_properties.handler({ node_id: "clip", effect_name: "Internal Volume Stereo" }) as any;
+    expect(volume.data).toMatchObject({ builtInComponent: true });
+    expect(volume.data).not.toHaveProperty("warnings");
+    expect(volume.data.properties[1]).toMatchObject({ value: 0.1778279410038923, displayValue: 0, displayUnits: "dB" });
+    for (const name of ["Channel Volume", "Balance", "Panner"]) {
+      const intrinsic = await keyframes.get_effect_properties.handler({ node_id: "clip", effect_name: name }) as any;
+      expect(intrinsic.data).toMatchObject({ builtInComponent: true });
+      expect(intrinsic.data).not.toHaveProperty("parameterScale");
+    }
+    // Balance takes raw -100..100 values (set_clip_pan), so it must not be guarded.
+    const pan = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: "Internal Audio Balance", property_name: "Balance", value: 50 }) as any;
+    expect(pan).toMatchObject({ success: true, data: { outcome: "verified", value: 50, builtInComponent: true } });
+    expect(pan.data).not.toHaveProperty("warnings");
+  });
+
+  it("keeps the remove-safety classifier unchanged for video clips", async () => {
+    host("video", [{ displayName: "Opacity", matchName: "AE.ADBE Opacity", properties: [parameter("Opacity", 100)] }]);
+    const result = await keyframes.get_effect_properties.handler({ node_id: "clip", effect_name: "Opacity" }) as any;
+    expect(result.data).toMatchObject({ trackType: "video", builtInComponent: true });
+  });
+});
+
 describe("audio effect parameter scale on set_effect_property", () => {
   it("refuses a value outside 0-1 before writing a normalized audio parameter", async () => {
     const { component, cutoffParam } = highpass(0.25, true);
@@ -161,7 +218,7 @@ describe("audio effect parameter scale on set_effect_property", () => {
   it("writes a normalized value and annotates the verified result", async () => {
     const { component, cutoffParam } = highpass(0.25, true);
     host("audio", [component]);
-    const result = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: "AudioFX Highpass", property_name: "Cutoff", value: 0.047 }) as any;
+    const result = await keyframes.set_effect_property.handler({ node_id: "clip", effect_name: "Internal Highpass", property_name: "Cutoff", value: 0.047 }) as any;
     expect(result).toMatchObject({ success: true, data: { outcome: "verified", value: 0.047, valueScale: "normalized_0_1", effectDisplayName: "Highpass", propertyDisplayName: "Cutoff", trackType: "audio", builtInComponent: false } });
     expect(result.data.measuredGuidance).toEqual(HIGHPASS_CUTOFF_MEASUREMENTS);
     expect(result.data.warnings).toEqual([AUDIO_EFFECT_SCALE_WARNING]);
