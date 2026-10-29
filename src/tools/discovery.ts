@@ -118,7 +118,7 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
     },
 
     get_active_sequence: {
-      description: "Get bounded, paged information about the currently active sequence (50 clips by default). Audio and video clips include source In/Out seconds. Follow pagination.nextOffset for more. Bounded heuristic source-alignment warnings cover pairs touching this page; they do not verify playback sync.",
+      description: "Get bounded, paged information about the currently active sequence (50 clips by default). Audio and video clips include source In/Out seconds. Follow pagination.nextOffset for more. Bounded source-alignment diagnostics include separate picture/sound offsets and media-pair group inconsistencies, with limited group context outside this page; they do not verify playback sync.",
       parameters: { type: "object" as const, properties: sequenceReadProperties },
       handler: async (args: SequenceReadArgs = {}) => {
         const bounds = sequenceReadScript(args, true);

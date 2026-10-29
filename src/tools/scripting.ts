@@ -283,7 +283,7 @@ Examples:
     },
 
     get_sequence_structure: {
-      description: "Get a bounded structural page of the active sequence (50 clips by default; follow pagination.nextOffset): all track counts, paged clips with positions, gaps, and clip metadata. Essential for understanding timeline state before making edits. Bounded heuristic source-alignment warnings cover pairs touching this page; they do not verify playback sync.",
+      description: "Get a bounded structural page of the active sequence (50 clips by default; follow pagination.nextOffset): all track counts, paged clips with positions, gaps, and clip metadata. Essential for understanding timeline state before making edits. Bounded source-alignment diagnostics include separate picture/sound offsets and media-pair group inconsistencies, with limited group context outside this page; they do not verify playback sync.",
       parameters: {
         type: "object" as const,
         properties: {

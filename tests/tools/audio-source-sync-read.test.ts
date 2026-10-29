@@ -182,3 +182,89 @@ it("shortens a large-name page and resumes without changing clip order", async (
   const second = await tools.get_active_sequence.handler({ clip_offset: first.data.pagination.nextOffset }) as any;
   expect(second.data.videoTracks[0].clips[0].nodeId).toBe(`v${first.data.pagination.returned}`);
 });
+
+function doubleSystem(offsets: number[], frame = 10584000000, origin = 464044896000000) {
+  const video = offsets.map((_, i) => clip(`picture-${i}`, origin + i * 10 * TICKS, i * 10 * TICKS, `video-subclip-${i}`));
+  const audio = offsets.map((offset, i) => clip(`sound-${i}`, origin + i * 10 * TICKS + offset * frame, i * 10 * TICKS, `audio-subclip-${i}`));
+  for (let i = 0; i < video.length; i++) {
+    video[i].name = `Picture "${i}" \\ name\n`;
+    audio[i].name = `Sound "${i}" \\ name\n`;
+    video[i].projectItem.getMediaPath = () => "/private/media/Jeremy_raw_video.mp4";
+    audio[i].projectItem.getMediaPath = () => "/private/media/Jeremy_raw_audio_enhanced.wav";
+    video[i].getLinkedItems = () => null;
+    audio[i].getLinkedItems = () => null;
+  }
+  fixture(video, audio, String(frame));
+  return { video, audio };
+}
+for (const name of toolNames) {
+  const run = (args = {}) => tools[name].handler(args as never) as Promise<any>;
+  describe(`${name} separate picture and sound offset groups`, () => {
+    it("reports the measured one-frame double-system offset without asserting its source zero is wrong", async () => {
+      doubleSystem([-1]);
+      const data = (await run()).data;
+      expect(data.syncCheck.comparedPairs).toBe(1);
+      expect(data.syncCheck.pairOffsets).toEqual([expect.objectContaining({ videoNodeId: "picture-0", audioNodeId: "sound-0", sourceAlignmentDeltaTicks: "-10584000000", sourceAlignmentDeltaFrames: -1, videoStartTicks: "0" })]);
+      expect(data.syncWarnings).toEqual([]);
+    });
+    it.each([["24", 10584000000], ["23.976", 10594584000], ["29.97", 8475667200]])("reports constant offsets using exact %s sequence ticks without warning", async (_rate, frame) => {
+      doubleSystem([-1, -1, -1], frame);
+      const data = (await run()).data;
+      expect(data.syncCheck.comparedPairs).toBe(3);
+      expect(data.syncCheck.pairOffsets.map((p: any) => p.sourceAlignmentDeltaFrames)).toEqual([-1, -1, -1]);
+      expect(data.syncWarnings).toEqual([]);
+    });
+    it("lists every observed pair and the mode when offsets within one media group differ", async () => {
+      const { video, audio } = doubleSystem([-1, 0, -1]);
+      const data = (await run()).data;
+      expect(data.syncWarnings).toHaveLength(1);
+      expect(data.syncWarnings[0]).toMatchObject({ code: "inconsistentOffset", pairCount: 3, distinctOffsets: 2, mostCommonOffsetFrames: -1, mostCommonOffsetCount: 2, mostCommonOffsetTied: false, pairsTruncated: false });
+      expect(data.syncWarnings[0].pairs.map((p: any) => p.sourceAlignmentDeltaFrames)).toEqual([-1, 0, -1]);
+      expect(data.syncWarnings[0].pairs[0]).toMatchObject({ videoName: video[0].name, audioName: audio[0].name, videoNodeId: video[0].nodeId, audioNodeId: audio[0].nodeId, timelineStartSeconds: 0 });
+      expect(JSON.stringify({ warnings: data.syncWarnings, check: data.syncCheck })).not.toContain("/private/media/");
+      expect(data.syncWarnings[0].scope).toContain("no pair is identified as correct");
+    });
+    it("includes bounded group context beyond a one-clip page and audio-only filters", async () => {
+      doubleSystem([-1, 0, -1]);
+      for (const args of [{ clip_limit: 1 }, { track_type: "audio", clip_limit: 1 }]) {
+        const data = (await run(args)).data;
+        expect(data.pagination.returned).toBe(1);
+        expect(data.syncCheck.comparedPairs).toBe(3);
+        expect(data.syncWarnings[0].pairs).toHaveLength(3);
+        expect(data.syncCheck.scope).toContain("bounded context");
+      }
+    });
+    it("discloses a tie rather than identifying one offset as correct", async () => {
+      doubleSystem([-1, 0]);
+      const data = (await run()).data;
+      expect(data.syncWarnings[0]).toMatchObject({ mostCommonOffsetTied: true, mostCommonOffsetCount: 1, pairCount: 2 });
+    });
+    it("does not combine different picture/sound media groups", async () => {
+      const { video, audio } = doubleSystem([-1, -1, 2]);
+      video[2].projectItem.getMediaPath = () => "/private/media/other-picture.mov";
+      audio[2].projectItem.getMediaPath = () => "/private/media/other-sound.wav";
+      const data = (await run()).data;
+      expect(data.syncCheck.comparedPairs).toBe(3);
+      expect(data.syncWarnings).toEqual([]);
+      expect(new Set(data.syncCheck.pairOffsets.map((p: any) => p.mediaPairGroup)).size).toBe(2);
+    });
+    it("leaves same-source one-frame warnings unchanged", async () => {
+      const { video, audio } = doubleSystem([-1]);
+      audio[0].projectItem.getMediaPath = video[0].projectItem.getMediaPath;
+      const data = (await run()).data;
+      expect(data.syncWarnings[0]).toMatchObject({ code: "SOURCE_ALIGNMENT_DIFFERENCE", basis: "same_source_same_start", sourceAlignmentDeltaFrames: -1 });
+      expect(data.syncCheck.comparedPairs).toBe(1);
+    });
+  });
+}
+it("bounds separate-media candidate products and diagnostic payloads", async () => {
+  const { video, audio } = doubleSystem(Array.from({ length: 100 }, (_, i) => i % 2));
+  for (const item of [...video, ...audio]) { item.start = time(0); item.end = time(5 * TICKS); }
+  const result = await tools.get_active_sequence.handler({ clip_limit: 200 }) as any;
+  expect(result.success).toBe(true);
+  expect(result.data.syncCheck.candidatePairs).toBe(4000);
+  expect(result.data.syncCheck.comparedPairs).toBeLessThanOrEqual(4000);
+  expect(result.data.syncCheck).toMatchObject({ truncated: true, status: "partial", pairOffsetsTruncated: true });
+  expect(JSON.stringify(result).length).toBeLessThanOrEqual(60000);
+  expect(result.data.pagination.returned).toBeGreaterThan(0);
+});

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Sequence source-alignment reads report offsets for unlinked separate picture/sound files at matching starts and flag inconsistent offsets within each media-pair group. Constant offsets remain observations; bounded group context and diagnostic truncation are disclosed without exposing source paths.
+
 - Paged sequence reads expose audio source In/Out and bounded source-alignment warnings for linked or unambiguous same-media pairs. Checks use the exact sequence frame duration, account for timeline offsets and retain paging and payload limits; warnings are not playback verification.
 
 ## [1.26.0] - 2026-10-27
