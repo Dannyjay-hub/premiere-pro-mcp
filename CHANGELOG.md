@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Paged sequence reads expose audio source In/Out and bounded source-alignment warnings for linked or unambiguous same-media pairs. Checks use the exact sequence frame duration, account for timeline offsets and retain paging and payload limits; warnings are not playback verification.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
