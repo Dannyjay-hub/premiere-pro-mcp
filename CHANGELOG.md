@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Caption-track import reports captured undo steps and guarded reversal guidance without guessing an undo count. Descriptions and workflow guidance warn that caption tracks render in exports by default, cannot be removed or hidden through CEP, and can be muted through a capable UXP panel.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
