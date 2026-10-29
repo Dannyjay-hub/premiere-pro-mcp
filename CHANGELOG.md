@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Additional effect-removal preflight refusals beyond #901 report `not_applied` when no removal was attempted. An explicit attempt flag keeps thrown or unverified removals recovery-required, including host calls that change a component and then throw.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
