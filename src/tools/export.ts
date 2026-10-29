@@ -2135,7 +2135,7 @@ ${ameQueueBatchStartScript(startBatch)}
     },
 
     create_subclip: {
-      description: "Create a subclip from a project item with in/out points (seconds from the start of the file, even when the media carries a start timecode). Returns the new item's nodeId and reads its stored range back from Premiere project metadata: outcome verified when the observed in/out seconds are within one media frame of the request, otherwise committed_unverified. A media start timecode is reported as mediaStartSeconds.",
+      description: "Create a subclip from a project item with in/out points (seconds from the start of the file, even when the media carries a start timecode). Returns the new item's nodeId and reads its stored range back from Premiere project metadata: outcome verified when each observed in/out point is within half a media frame (or audio sample) of the request, so a whole-frame miss is committed_unverified. Points are snapped to the nearest media frame and sent a quarter frame past it so Premiere stores that frame. A media start timecode is reported as mediaStartSeconds.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -2168,8 +2168,15 @@ ${ameQueueBatchStartScript(startBatch)}
 
           var requestedInSeconds = ${args.in_seconds};
           var requestedOutSeconds = ${args.out_seconds};
-          var inTicks = __secondsToTicks(requestedInSeconds).toString();
-          var outTicks = __secondsToTicks(requestedOutSeconds).toString();
+          // Bias each point onto the intended media frame (see __subclipWriteTicks).
+          var sourceGridTicks = __subclipSourceGridTicks(item);
+          var inTicksValue = __subclipWriteTicks(requestedInSeconds, sourceGridTicks);
+          var outTicksValue = __subclipWriteTicks(requestedOutSeconds, sourceGridTicks);
+          // A range shorter than one frame can snap both points to one frame;
+          // keep at least one frame so Premiere gets a nonempty range.
+          if (sourceGridTicks > 0 && outTicksValue <= inTicksValue) outTicksValue = inTicksValue + Math.round(sourceGridTicks);
+          var inTicks = inTicksValue.toString();
+          var outTicks = outTicksValue.toString();
 
           var subclip = item.createSubClip(
             "${escapeForExtendScript(args.name)}",
@@ -2209,12 +2216,16 @@ ${ameQueueBatchStartScript(startBatch)}
           receipt.observedInTimecode = stored.inTimecode;
           receipt.observedOutTimecode = stored.outTimecode;
           if (stored.mediaStartSeconds !== 0) receipt.mediaStartSeconds = stored.mediaStartSeconds;
-          var tolerance = stored.frameSeconds + 0.000001;
-          if (Math.abs(receipt.observedInSeconds - requestedInSeconds) <= tolerance && Math.abs(receipt.observedOutSeconds - requestedOutSeconds) <= tolerance) {
+          // Half a media frame (or sample) per point: the nearest frame to the
+          // request passes, and a whole-frame miss (a black flash at a cut, or
+          // picture a frame out of sync with sound) does not.
+          var inTolerance = stored.inFrameSeconds / 2 + 0.000000001;
+          var outTolerance = stored.outFrameSeconds / 2 + 0.000000001;
+          if (Math.abs(receipt.observedInSeconds - requestedInSeconds) <= inTolerance && Math.abs(receipt.observedOutSeconds - requestedOutSeconds) <= outTolerance) {
             receipt.outcome = "verified";
             receipt.verified = true;
           } else {
-            receipt.note = "Premiere stored a subclip range more than one media frame from the request.";
+            receipt.note = "Premiere stored a subclip range more than half a media frame from the request.";
           }
           return __result(receipt);
         `);

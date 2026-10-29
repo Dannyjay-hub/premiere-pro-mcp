@@ -159,18 +159,22 @@ function __itemAudioSampleRate(item) {
   return 48000;
 }
 
+// Footage interpretation reports NTSC rates rounded (23.976); use the exact
+// 1000/1001 rate so a frame grid lines up with Premiere's tick grid.
+function __exactNtscFrameRate(fps) {
+  if (Math.abs(fps - 23.976) < 0.001) return 24000 / 1001;
+  if (Math.abs(fps - 29.97) < 0.001) return 30000 / 1001;
+  if (Math.abs(fps - 47.952) < 0.001) return 48000 / 1001;
+  if (Math.abs(fps - 59.94) < 0.001) return 60000 / 1001;
+  if (Math.abs(fps - 119.88) < 0.001) return 120000 / 1001;
+  return fps;
+}
+
 function __restoreGridFromItem(item, mediaType) {
   if (mediaType === 2) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
   try {
     var fps = parseFloat(item.getFootageInterpretation().frameRate);
-    if (fps >= 1 && fps <= 240) {
-      if (Math.abs(fps - 23.976) < 0.001) fps = 24000 / 1001;
-      else if (Math.abs(fps - 29.97) < 0.001) fps = 30000 / 1001;
-      else if (Math.abs(fps - 47.952) < 0.001) fps = 48000 / 1001;
-      else if (Math.abs(fps - 59.94) < 0.001) fps = 60000 / 1001;
-      else if (Math.abs(fps - 119.88) < 0.001) fps = 120000 / 1001;
-      return TICKS_PER_SECOND / fps;
-    }
+    if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / __exactNtscFrameRate(fps);
     // Audio-only items and sequences report about 2.75e-8 fps on 26.5.2;
     // that would make a "frame" of about a year. Use the audio sample grid.
     if (fps > 0 && fps < 1) return TICKS_PER_SECOND / __itemAudioSampleRate(item);
@@ -1051,9 +1055,45 @@ function __subclipStoredRange(metadata) {
     outSeconds: __ticksToSeconds((outPoint.frames + 1) * outPoint.frameTicks - outPoint.offsetTicks),
     inTimecode: inPoint.timecode,
     outTimecode: outPoint.timecode,
-    frameSeconds: __ticksToSeconds(Math.max(inPoint.frameTicks, outPoint.frameTicks)),
+    inFrameSeconds: __ticksToSeconds(inPoint.frameTicks),
+    outFrameSeconds: __ticksToSeconds(outPoint.frameTicks),
     mediaStartSeconds: __ticksToSeconds(inPoint.offsetTicks)
   };
+}
+
+// Ticks per frame of a project item's own media (per sample for audio-only
+// media), or 0 when the item exposes no usable rate. Unlike
+// __restoreGridFromItem there is no 24 fps or 48 kHz guess: a subclip request
+// is snapped to this grid, and a guessed grid would move it.
+function __subclipSourceGridTicks(item) {
+  var fps = NaN;
+  try { fps = parseFloat(item.getFootageInterpretation().frameRate); } catch (subclipRateError) {}
+  if (fps >= 1 && fps <= 240) return TICKS_PER_SECOND / __exactNtscFrameRate(fps);
+  // Audio-only items report about 2.75e-8 fps on 26.5.2; use the sample rate.
+  if (fps > 0 && fps < 1) {
+    try {
+      var xml = String(item.getProjectMetadata() || "");
+      var base = xml.length <= 1000000 ? /Column\\.Intrinsic\\.MediaTimebase[^>]*>\\s*([0-9]+(?:\\.[0-9]+)?)\\s*Hz\\s*</i.exec(xml) : null;
+      var hz = base ? parseFloat(base[1]) : NaN;
+      if (isFinite(hz) && Math.floor(hz) === hz && hz >= 1 && hz <= 768000) return TICKS_PER_SECOND / hz;
+    } catch (subclipHzError) {}
+  }
+  return 0;
+}
+
+// Ticks to send createSubClip for a requested point. Premiere floors a
+// subclip point to the media's frame (or sample) grid, and on 26.5.2 a point
+// sent exactly on a boundary can land one unit early: a 24 fps In of
+// 1826.8333333 s stored 1826.7916667 s, and a 48 kHz Out stored one sample
+// low. Snap the request to the nearest frame and send a quarter frame past
+// it, so the floor lands on that frame with room for the host's rounding and
+// never reaches the next one. Without a known grid, send 1 microsecond past
+// the request: that absorbs a request rounded to 7 decimals and stays under
+// one sample at any rate up to 768 kHz, so it cannot move an exact sample.
+function __subclipWriteTicks(seconds, gridTicks) {
+  var ticks = parseFloat(seconds) * TICKS_PER_SECOND;
+  if (gridTicks > 0) return Math.round((Math.round(ticks / gridTicks) + 0.25) * gridTicks);
+  return Math.round(ticks) + Math.round(TICKS_PER_SECOND / 1000000);
 }
 
 function __findProjectItem(nodeIdOrName, rootItem) {
