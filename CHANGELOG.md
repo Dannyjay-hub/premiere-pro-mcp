@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Edit receipts honor audited handler readback for placement, properties, audio curves, effects, sequence settings, tracks, imports, keyframes and removals. Unreadable batch properties, import counts and deletion collections cannot verify a write; effect-copy wrappers preserve uncertainty and explicit partial or unknown outcomes remain unchanged.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
