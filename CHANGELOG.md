@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Undo and redo stack-guard refusals report `not_applied` before any step. Project creation checks its parent directory before calling the host, so a missing folder cannot set a recovery lock; uncertain post-call failures remain guarded.
+
 ## [1.26.0] - 2026-10-27
 
 ### Added
